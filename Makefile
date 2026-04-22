@@ -1,8 +1,9 @@
-APP_NAME ?= FreeFlow Dev
-BUNDLE_ID ?= com.zachlatta.freeflow.dev
+APP_NAME ?= WhisPress Dev
+BUNDLE_ID ?= com.automattic.whispress.dev
+WPCOM_OAUTH_CLIENT_SECRET_FILE ?=
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
-CODESIGN_IDENTITY ?= FreeFlow Dev
+CODESIGN_IDENTITY ?= WhisPress Dev
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
 empty :=
@@ -19,6 +20,15 @@ ICON_ICNS = Resources/AppIcon.icns
 .PHONY: all clean run icon dmg codesign-dmg notarize
 
 all: $(APP_EXECUTABLE_TARGET)
+	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
+	if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
+		secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
+	fi; \
+	plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"; \
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WhisPress.entitlements "$(APP_BUNDLE)" >/dev/null; \
+	if [ -n "$$secret" ]; then \
+		echo "Configured WordPress.com OAuth client secret in $(APP_BUNDLE)"; \
+	fi
 
 $(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
@@ -53,7 +63,7 @@ endif
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
-	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
+	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WhisPress.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)

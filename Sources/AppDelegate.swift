@@ -24,10 +24,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             appState.startHotkeyMonitoring()
             appState.startAccessibilityPolling()
-            Task { @MainActor in
-                UpdateManager.shared.startPeriodicChecks()
-            }
-
             if !AXIsProcessTrusted() {
                 appState.showAccessibilityAlert()
             }
@@ -82,7 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = "WhisPress"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
@@ -118,7 +114,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = "WhisPress"
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.contentView = NSHostingView(rootView: setupView)
@@ -138,10 +134,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         appState.startHotkeyMonitoring()
         appState.startAccessibilityPolling()
-        Task { @MainActor in
-            UpdateManager.shared.startPeriodicChecks()
-        }
-
         if !AXIsProcessTrusted() {
             appState.showAccessibilityAlert()
         }

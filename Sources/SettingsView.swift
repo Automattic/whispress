@@ -38,225 +38,6 @@ private let iso8601DayFormatter: DateFormatter = {
     return formatter
 }()
 
-struct ProviderSettingsFields: View {
-    @EnvironmentObject var appState: AppState
-    @Binding var apiBaseURLInput: String
-    @FocusState private var isEditingAPIBaseURL: Bool
-    @FocusState private var isEditingTranscriptionModel: Bool
-    @FocusState private var isEditingPostProcessingModel: Bool
-    @FocusState private var isEditingPostProcessingFallbackModel: Bool
-    @FocusState private var isEditingContextModel: Bool
-    @State private var transcriptionModelDraft: String = ""
-    @State private var postProcessingModelDraft: String = ""
-    @State private var postProcessingFallbackModelDraft: String = ""
-    @State private var contextModelDraft: String = ""
-
-    let showsModelDescription: Bool
-
-    private func commitAPIBaseURL() {
-        let trimmed = apiBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedBaseURL = trimmed.isEmpty ? AppState.defaultAPIBaseURL : trimmed
-        apiBaseURLInput = resolvedBaseURL
-        appState.apiBaseURL = resolvedBaseURL
-    }
-
-    private func commitTranscriptionModel() {
-        let trimmed = transcriptionModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        transcriptionModelDraft = trimmed
-        guard appState.transcriptionModel != trimmed else { return }
-        appState.transcriptionModel = trimmed
-    }
-
-    private func commitPostProcessingModel() {
-        let trimmed = postProcessingModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        postProcessingModelDraft = trimmed
-        guard appState.postProcessingModel != trimmed else { return }
-        appState.postProcessingModel = trimmed
-    }
-
-    private func commitPostProcessingFallbackModel() {
-        let trimmed = postProcessingFallbackModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        postProcessingFallbackModelDraft = trimmed
-        guard appState.postProcessingFallbackModel != trimmed else { return }
-        appState.postProcessingFallbackModel = trimmed
-    }
-
-    private func commitContextModel() {
-        let trimmed = contextModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        contextModelDraft = trimmed
-        guard appState.contextModel != trimmed else { return }
-        appState.contextModel = trimmed
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("API Base URL")
-                .font(.caption.weight(.semibold))
-
-            Text("Change this to use a different OpenAI-compatible API provider.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                TextField(AppState.defaultAPIBaseURL, text: $apiBaseURLInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .focused($isEditingAPIBaseURL)
-                    .onSubmit {
-                        commitAPIBaseURL()
-                    }
-                    .onChange(of: isEditingAPIBaseURL) { isEditing in
-                        if !isEditing {
-                            commitAPIBaseURL()
-                        }
-                    }
-
-                Button("Reset to Default") {
-                    apiBaseURLInput = AppState.defaultAPIBaseURL
-                    appState.apiBaseURL = AppState.defaultAPIBaseURL
-                }
-                .font(.caption)
-            }
-
-            if showsModelDescription {
-                Text("If you use another provider, enter that provider's model IDs here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Transcription Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultTranscriptionModel, text: $transcriptionModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingTranscriptionModel)
-                        .onSubmit {
-                            commitTranscriptionModel()
-                        }
-                        .onChange(of: isEditingTranscriptionModel) { isEditing in
-                            if !isEditing {
-                                commitTranscriptionModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        transcriptionModelDraft = AppState.defaultTranscriptionModel
-                        appState.transcriptionModel = AppState.defaultTranscriptionModel
-                    }
-                    .font(.caption)
-                }
-                Text("Used for speech-to-text transcription.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Post-Processing Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultPostProcessingModel, text: $postProcessingModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingPostProcessingModel)
-                        .onSubmit {
-                            commitPostProcessingModel()
-                        }
-                        .onChange(of: isEditingPostProcessingModel) { isEditing in
-                            if !isEditing {
-                                commitPostProcessingModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        postProcessingModelDraft = AppState.defaultPostProcessingModel
-                        appState.postProcessingModel = AppState.defaultPostProcessingModel
-                    }
-                    .font(.caption)
-                }
-                Text("Used for transcript cleanup and Edit Mode transforms.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Post-Processing Fallback Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultPostProcessingFallbackModel, text: $postProcessingFallbackModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingPostProcessingFallbackModel)
-                        .onSubmit {
-                            commitPostProcessingFallbackModel()
-                        }
-                        .onChange(of: isEditingPostProcessingFallbackModel) { isEditing in
-                            if !isEditing {
-                                commitPostProcessingFallbackModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        postProcessingFallbackModelDraft = AppState.defaultPostProcessingFallbackModel
-                        appState.postProcessingFallbackModel = AppState.defaultPostProcessingFallbackModel
-                    }
-                    .font(.caption)
-                }
-                Text("Used as the explicit retry model for transcript cleanup and Edit Mode transforms.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Context Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultContextModel, text: $contextModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingContextModel)
-                        .onSubmit {
-                            commitContextModel()
-                        }
-                        .onChange(of: isEditingContextModel) { isEditing in
-                            if !isEditing {
-                                commitContextModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        contextModelDraft = AppState.defaultContextModel
-                        appState.contextModel = AppState.defaultContextModel
-                    }
-                    .font(.caption)
-                }
-                Text("Used for context inference, with a text-only retry when screenshot analysis fails.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .onAppear {
-            transcriptionModelDraft = appState.transcriptionModel
-            postProcessingModelDraft = appState.postProcessingModel
-            postProcessingFallbackModelDraft = appState.postProcessingFallbackModel
-            contextModelDraft = appState.contextModel
-        }
-        .onChange(of: appState.transcriptionModel) { value in
-            if !isEditingTranscriptionModel {
-                transcriptionModelDraft = value
-            }
-        }
-        .onChange(of: appState.postProcessingModel) { value in
-            if !isEditingPostProcessingModel {
-                postProcessingModelDraft = value
-            }
-        }
-        .onChange(of: appState.postProcessingFallbackModel) { value in
-            if !isEditingPostProcessingFallbackModel {
-                postProcessingFallbackModelDraft = value
-            }
-        }
-        .onChange(of: appState.contextModel) { value in
-            if !isEditingContextModel {
-                contextModelDraft = value
-            }
-        }
-    }
-}
-
 // MARK: - Settings
 
 struct SettingsView: View {
@@ -294,8 +75,6 @@ struct SettingsView: View {
                 switch appState.selectedSettingsTab {
                 case .general, .none:
                     GeneralSettingsView()
-                case .prompts:
-                    PromptsSettingsView()
                 case .macros:
                     VoiceMacrosSettingsView()
                 case .runLog:
@@ -311,148 +90,34 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.openURL) private var openURL
     @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
-    @State private var apiKeyInput: String = ""
-    @State private var apiBaseURLInput: String = ""
-    @State private var advancedProviderSettingsExpanded = false
-    @State private var isValidatingKey = false
-    @State private var keyValidationError: String?
-    @State private var keyValidationSuccess = false
-    @State private var customVocabularyInput: String = ""
     @State private var micPermissionGranted = false
-    @StateObject private var githubCache = GitHubMetadataCache.shared
-    @ObservedObject private var updateManager = UpdateManager.shared
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // App branding header
                 VStack(spacing: 12) {
                     Image(nsImage: NSApp.applicationIconImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
 
-                    Text("FreeFlow")
+                    Text("WhisPress")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
 
                     Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    // GitHub card
-                    VStack(spacing: 10) {
-                        HStack(spacing: 8) {
-                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().aspectRatio(contentMode: .fill)
-                                default:
-                                    Color.gray.opacity(0.2)
-                                }
-                            }
-                            .frame(width: 22, height: 22)
-                            .clipShape(Circle())
-
-                            Button {
-                                openURL(freeflowRepoURL)
-                            } label: {
-                                Text("zachlatta/freeflow")
-                                    .font(.system(.caption, design: .monospaced).weight(.medium))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.blue)
-
-                            Spacer()
-
-                            HStack(spacing: 4) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                    .font(.caption2)
-                                if githubCache.isLoading {
-                                    ProgressView().scaleEffect(0.5)
-                                } else if let count = githubCache.starCount {
-                                    Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.yellow.opacity(0.14)))
-
-                            Button {
-                                openURL(freeflowRepoURL)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "star")
-                                    Text("Star")
-                                }
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Capsule().fill(Color.yellow.opacity(0.18)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if !githubCache.recentStargazers.isEmpty {
-                            Divider()
-                            HStack(spacing: 8) {
-                                HStack(spacing: -6) {
-                                    ForEach(githubCache.recentStargazers) { star in
-                                        Button {
-                                            openURL(star.user.htmlUrl)
-                                        } label: {
-                                            AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
-                                                switch phase {
-                                                case .success(let image):
-                                                    image.resizable().aspectRatio(contentMode: .fill)
-                                                default:
-                                                    Color.gray.opacity(0.2)
-                                                }
-                                            }
-                                            .frame(width: 22, height: 22)
-                                            .clipShape(Circle())
-                                            .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                                .clipped()
-                                Text("recently starred")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .fixedSize()
-                                Spacer()
-                            }
-                            .clipped()
-                        }
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                            )
-                    )
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 4)
                 .padding(.bottom, 4)
 
+                SettingsCard("WordPress.com", icon: "person.crop.circle.badge.checkmark") {
+                    wordpressComSection
+                }
                 SettingsCard("App", icon: "power") {
                     startupSection
-                }
-                SettingsCard("Updates", icon: "arrow.triangle.2.circlepath") {
-                    updatesSection
-                }
-                SettingsCard("API Key", icon: "key.fill") {
-                    apiKeySection
                 }
                 SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
                     hotkeySection
@@ -469,9 +134,6 @@ struct GeneralSettingsView: View {
                 SettingsCard("Sound Volume", icon: "speaker.wave.2.fill") {
                     soundVolumeSection
                 }
-                SettingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
-                    vocabularySection
-                }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionsSection
                 }
@@ -479,12 +141,92 @@ struct GeneralSettingsView: View {
             .padding(24)
         }
         .onAppear {
-            apiKeyInput = appState.apiKey
-            apiBaseURLInput = appState.apiBaseURL
-            customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             appState.refreshLaunchAtLoginStatus()
-            Task { await githubCache.fetchIfNeeded() }
+            appState.refreshWordPressComSitesFromUI()
+        }
+    }
+
+    // MARK: WordPress.com
+
+    private var wordpressComSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if appState.isWordPressComSignedIn {
+                Label("Signed in", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Text("Sign in to use WordPress.com transcription.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    appState.signInToWordPressCom()
+                } label: {
+                    if appState.isSigningInToWordPressCom {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Signing in...")
+                        }
+                    } else {
+                        Label(appState.isWordPressComSignedIn ? "Sign In Again" : "Sign In", systemImage: "person.crop.circle")
+                    }
+                }
+                .disabled(appState.isSigningInToWordPressCom)
+
+                Button {
+                    appState.refreshWordPressComSitesFromUI()
+                } label: {
+                    if appState.isRefreshingWordPressComSites {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Refreshing...")
+                        }
+                    } else {
+                        Label("Refresh Sites", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
+
+                Button("Sign Out") {
+                    appState.signOutOfWordPressCom()
+                }
+                .disabled(!appState.isWordPressComSignedIn)
+            }
+
+            if !appState.wordpressComSites.isEmpty {
+                Picker("Site", selection: Binding(
+                    get: { appState.selectedWordPressComSiteID ?? appState.wordpressComSites.first?.id ?? 0 },
+                    set: { appState.selectedWordPressComSiteID = $0 }
+                )) {
+                    ForEach(appState.wordpressComSites) { site in
+                        Text(site.displayName).tag(site.id)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                if appState.transcribeSkill != nil {
+                    Label("Transcribe skill found", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Open Transcribe Skill") {
+                        appState.openTranscribeSkill()
+                    }
+                    .font(.caption)
+                } else if appState.selectedWordPressComSiteID != nil {
+                    Text("The AI transcription endpoint will create the Transcribe skill on first use.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let message = appState.wordpressComStatusMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -492,7 +234,7 @@ struct GeneralSettingsView: View {
 
     private var startupSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
+            Toggle("Launch WhisPress at login", isOn: $appState.launchAtLogin)
             Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
 
             if SMAppService.mainApp.status == .requiresApproval {
@@ -507,201 +249,6 @@ struct GeneralSettingsView: View {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!)
                     }
                     .font(.caption)
-                }
-            }
-        }
-    }
-
-    // MARK: Updates
-
-    private var updatesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("Automatically check for updates", isOn: Binding(
-                get: { updateManager.autoCheckEnabled },
-                set: { updateManager.autoCheckEnabled = $0 }
-            ))
-
-            HStack(spacing: 10) {
-                Button {
-                    Task {
-                        await updateManager.checkForUpdates(userInitiated: true)
-                    }
-                } label: {
-                    if updateManager.isChecking {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking...")
-                        }
-                    } else {
-                        Text("Check for Updates Now")
-                    }
-                }
-                .disabled(updateManager.isChecking || updateManager.updateStatus != .idle)
-
-                if let lastCheck = updateManager.lastCheckDate {
-                    Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if updateManager.updateAvailable {
-                VStack(alignment: .leading, spacing: 8) {
-                    switch updateManager.updateStatus {
-                    case .downloading:
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Downloading update...")
-                                    .font(.caption.weight(.semibold))
-                                ProgressView(value: updateManager.downloadProgress ?? 0)
-                                    .progressViewStyle(.linear)
-                                if let progress = updateManager.downloadProgress {
-                                    Text("\(Int(progress * 100))%")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Button("Cancel") {
-                                updateManager.cancelDownload()
-                            }
-                            .font(.caption)
-                        }
-
-                    case .installing:
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Installing update...")
-                                .font(.caption.weight(.semibold))
-                        }
-
-                    case .readyToRelaunch:
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Relaunching...")
-                                .font(.caption.weight(.semibold))
-                        }
-
-                    case .error(let message):
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.red)
-                            Text(message)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                            Spacer()
-                            Button("Retry") {
-                                updateManager.updateStatus = .idle
-                                if let release = updateManager.latestRelease {
-                                    updateManager.downloadAndInstall(release: release)
-                                }
-                            }
-                            .font(.caption)
-                        }
-
-                    case .idle:
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            Text("A new version of FreeFlow is available!")
-                                .font(.caption.weight(.semibold))
-                            Spacer()
-                            Button("Update Now") {
-                                if let release = updateManager.latestRelease {
-                                    updateManager.downloadAndInstall(release: release)
-                                }
-                            }
-                            .font(.caption)
-                        }
-                    }
-                }
-                .padding(10)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(6)
-            }
-        }
-    }
-
-    // MARK: API Key
-
-    private var apiKeySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("FreeFlow uses the configured transcription model with your selected OpenAI-compatible provider.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                SecureField("Enter your Groq API key", text: $apiKeyInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .disabled(isValidatingKey)
-                    .onChange(of: apiKeyInput) { _ in
-                        keyValidationError = nil
-                        keyValidationSuccess = false
-                    }
-
-                Button(isValidatingKey ? "Validating..." : "Save") {
-                    validateAndSaveKey()
-                }
-                .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
-            }
-
-            if let error = keyValidationError {
-                Label(error, systemImage: "xmark.circle.fill")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-            } else if keyValidationSuccess {
-                Label("API key saved", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.caption)
-            }
-
-            DisclosureGroup(isExpanded: $advancedProviderSettingsExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Divider()
-                    ProviderSettingsFields(
-                        apiBaseURLInput: $apiBaseURLInput,
-                        showsModelDescription: false
-                    )
-                }
-            } label: {
-                HStack {
-                    Text("Advanced Provider Settings")
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    advancedProviderSettingsExpanded.toggle()
-                }
-            }
-            .padding(.top, 4)
-        }
-    }
-
-    private func validateAndSaveKey() {
-        let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseURL = apiBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        isValidatingKey = true
-        keyValidationError = nil
-        keyValidationSuccess = false
-
-        Task {
-            let valid = await TranscriptionService.validateAPIKey(
-                key,
-                baseURL: baseURL.isEmpty ? AppState.defaultAPIBaseURL : baseURL
-            )
-            await MainActor.run {
-                isValidatingKey = false
-                if valid {
-                    appState.apiKey = key
-                    keyValidationSuccess = true
-                } else {
-                    keyValidationError = "Validation failed. Please check your API key and provider settings, then try again."
                 }
             }
         }
@@ -812,7 +359,7 @@ struct GeneralSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Preserve clipboard after paste", isOn: $appState.preserveClipboard)
 
-            Text("FreeFlow will temporarily place the transcript on your clipboard to paste it, then restore whatever was there before. If you copy something else before the restore happens, FreeFlow leaves it alone.")
+            Text("WhisPress will temporarily place the transcript on your clipboard to paste it, then restore whatever was there before. If you copy something else before the restore happens, WhisPress leaves it alone.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -876,31 +423,6 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: Custom Vocabulary
-
-    private var vocabularySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Words and phrases to preserve during post-processing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextEditor(text: $customVocabularyInput)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 80, maxHeight: 140)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
-                .onChange(of: customVocabularyInput) { newValue in
-                    appState.customVocabulary = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-
-            Text("Separate entries with commas, new lines, or semicolons.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     // MARK: Permissions
 
     private var permissionsSection: some View {
@@ -922,15 +444,6 @@ struct GeneralSettingsView: View {
                 granted: appState.hasAccessibility,
                 action: {
                     appState.openAccessibilitySettings()
-                }
-            )
-
-            permissionRow(
-                title: "Screen Recording",
-                icon: "camera.viewfinder",
-                granted: appState.hasScreenRecordingPermission,
-                action: {
-                    appState.requestScreenCapturePermission()
                 }
             )
         }
@@ -995,474 +508,6 @@ struct MicrophoneOptionRow: View {
     }
 }
 
-// MARK: - Prompts Settings
-
-struct PromptsSettingsView: View {
-    @EnvironmentObject var appState: AppState
-    @State private var customSystemPromptInput: String = ""
-    @State private var customContextPromptInput: String = ""
-    @State private var showDefaultSystemPrompt = false
-    @State private var showDefaultContextPrompt = false
-
-    // System prompt test state
-    @State private var systemTestInput: String = "Um, so I was like, thinking we should uh, refactor the authentication module, you know?"
-    @State private var systemTestRunning = false
-    @State private var systemTestOutput: String? = nil
-    @State private var systemTestError: String? = nil
-    @State private var systemTestPrompt: String? = nil
-
-    // Context prompt test state
-    @State private var contextTestRunning = false
-    @State private var contextTestOutput: String? = nil
-    @State private var contextTestError: String? = nil
-    @State private var contextTestPrompt: String? = nil
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                SettingsCard("System Prompt", icon: "text.bubble.fill") {
-                    systemPromptSection
-                }
-                SettingsCard("Context Prompt", icon: "eye.fill") {
-                    contextPromptSection
-                }
-            }
-            .padding(24)
-        }
-        .onAppear {
-            customSystemPromptInput = appState.customSystemPrompt.isEmpty
-                ? PostProcessingService.defaultSystemPrompt
-                : appState.customSystemPrompt
-            customContextPromptInput = appState.customContextPrompt.isEmpty
-                ? AppContextService.defaultContextPrompt
-                : appState.customContextPrompt
-        }
-    }
-
-    // MARK: System Prompt
-
-    private var systemPromptSection: some View {
-        let isCustom = !appState.customSystemPrompt.isEmpty
-        let hasNewerDefault = isCustom
-            && !appState.customSystemPromptLastModified.isEmpty
-            && appState.customSystemPromptLastModified < PostProcessingService.defaultSystemPromptDate
-
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("Controls how raw transcriptions are cleaned up.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if hasNewerDefault {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .foregroundStyle(.blue)
-                    Text("A newer default prompt is available.")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Button("View Default") {
-                        showDefaultSystemPrompt.toggle()
-                    }
-                    .font(.caption)
-                    Button("Switch to Default") {
-                        customSystemPromptInput = PostProcessingService.defaultSystemPrompt
-                        appState.customSystemPrompt = ""
-                        appState.customSystemPromptLastModified = ""
-                    }
-                    .font(.caption)
-                }
-                .padding(10)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(6)
-            }
-
-            if showDefaultSystemPrompt {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Default System Prompt")
-                            .font(.caption.weight(.semibold))
-                        Spacer()
-                        Button("Hide") {
-                            showDefaultSystemPrompt = false
-                        }
-                        .font(.caption)
-                    }
-                    Text(PostProcessingService.defaultSystemPrompt)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                .padding(10)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(6)
-            }
-
-            TextEditor(text: $customSystemPromptInput)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 120, maxHeight: 200)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
-                .onChange(of: customSystemPromptInput) { newValue in
-                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let defaultTrimmed = PostProcessingService.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed == defaultTrimmed || trimmed.isEmpty {
-                        if !appState.customSystemPrompt.isEmpty {
-                            appState.customSystemPrompt = ""
-                            appState.customSystemPromptLastModified = ""
-                        }
-                    } else {
-                        appState.customSystemPrompt = trimmed
-                        let today = iso8601DayFormatter.string(from: Date())
-                        if appState.customSystemPromptLastModified != today {
-                            appState.customSystemPromptLastModified = today
-                        }
-                    }
-                }
-
-            HStack {
-                if isCustom {
-                    Label("Using custom prompt", systemImage: "pencil")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                } else {
-                    Label("Using default", systemImage: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isCustom {
-                    Button("Reset to Default") {
-                        customSystemPromptInput = PostProcessingService.defaultSystemPrompt
-                        appState.customSystemPrompt = ""
-                        appState.customSystemPromptLastModified = ""
-                    }
-                    .font(.caption)
-                }
-            }
-
-            Divider()
-
-            // Test section
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Test System Prompt")
-                    .font(.caption.weight(.semibold))
-                Text("Enter sample text to see how the current prompt cleans it up.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                TextEditor(text: $systemTestInput)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 60, maxHeight: 100)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-
-                Button {
-                    runSystemPromptTest()
-                } label: {
-                    HStack(spacing: 6) {
-                        if systemTestRunning {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Running...")
-                        } else {
-                            Image(systemName: "play.fill")
-                            Text("Test System Prompt")
-                        }
-                    }
-                }
-                .disabled(systemTestRunning || appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || systemTestInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                if appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Label("API key required to test", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                if let error = systemTestError {
-                    Label(error, systemImage: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                if let output = systemTestOutput {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Result:")
-                            .font(.caption.weight(.semibold))
-                        Text(output.isEmpty ? "(empty — no output)" : output)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.green.opacity(0.08))
-                            .cornerRadius(6)
-                    }
-                }
-
-                if let prompt = systemTestPrompt {
-                    DisclosureGroup("Full prompt sent") {
-                        Text(prompt)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func runSystemPromptTest() {
-        systemTestRunning = true
-        systemTestOutput = nil
-        systemTestError = nil
-        systemTestPrompt = nil
-
-        let service = PostProcessingService(
-            apiKey: appState.apiKey,
-            baseURL: appState.apiBaseURL,
-            preferredModel: appState.postProcessingModel,
-            preferredFallbackModel: appState.postProcessingFallbackModel
-        )
-        let input = systemTestInput
-        let customPrompt = appState.customSystemPrompt
-        let vocabulary = appState.customVocabulary
-
-        let context = AppContext(
-            appName: "FreeFlow Settings",
-            bundleIdentifier: "com.zachlatta.freeflow",
-            windowTitle: "System Prompt Test",
-            selectedText: nil,
-            currentActivity: "User is testing the system prompt in FreeFlow settings.",
-            contextPrompt: nil,
-            screenshotDataURL: nil,
-            screenshotMimeType: nil,
-            screenshotError: nil
-        )
-
-        Task {
-            do {
-                let result = try await service.postProcess(
-                    transcript: input,
-                    context: context,
-                    customVocabulary: vocabulary,
-                    customSystemPrompt: customPrompt
-                )
-                await MainActor.run {
-                    systemTestOutput = result.transcript
-                    systemTestPrompt = result.prompt
-                    systemTestRunning = false
-                }
-            } catch {
-                await MainActor.run {
-                    systemTestError = error.localizedDescription
-                    systemTestRunning = false
-                }
-            }
-        }
-    }
-
-    // MARK: Context Prompt
-
-    private var contextPromptSection: some View {
-        let isCustom = !appState.customContextPrompt.isEmpty
-        let hasNewerDefault = isCustom
-            && !appState.customContextPromptLastModified.isEmpty
-            && appState.customContextPromptLastModified < AppContextService.defaultContextPromptDate
-
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("Controls how FreeFlow infers your current activity from app metadata and screenshots.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if hasNewerDefault {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .foregroundStyle(.blue)
-                    Text("A newer default prompt is available.")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Button("View Default") {
-                        showDefaultContextPrompt.toggle()
-                    }
-                    .font(.caption)
-                    Button("Switch to Default") {
-                        customContextPromptInput = AppContextService.defaultContextPrompt
-                        appState.customContextPrompt = ""
-                        appState.customContextPromptLastModified = ""
-                    }
-                    .font(.caption)
-                }
-                .padding(10)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(6)
-            }
-
-            if showDefaultContextPrompt {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Default Context Prompt")
-                            .font(.caption.weight(.semibold))
-                        Spacer()
-                        Button("Hide") {
-                            showDefaultContextPrompt = false
-                        }
-                        .font(.caption)
-                    }
-                    Text(AppContextService.defaultContextPrompt)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                .padding(10)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(6)
-            }
-
-            TextEditor(text: $customContextPromptInput)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 120, maxHeight: 200)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
-                .onChange(of: customContextPromptInput) { newValue in
-                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let defaultTrimmed = AppContextService.defaultContextPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed == defaultTrimmed || trimmed.isEmpty {
-                        if !appState.customContextPrompt.isEmpty {
-                            appState.customContextPrompt = ""
-                            appState.customContextPromptLastModified = ""
-                        }
-                    } else {
-                        appState.customContextPrompt = trimmed
-                        let today = iso8601DayFormatter.string(from: Date())
-                        if appState.customContextPromptLastModified != today {
-                            appState.customContextPromptLastModified = today
-                        }
-                    }
-                }
-
-            HStack {
-                if isCustom {
-                    Label("Using custom prompt", systemImage: "pencil")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                } else {
-                    Label("Using default", systemImage: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isCustom {
-                    Button("Reset to Default") {
-                        customContextPromptInput = AppContextService.defaultContextPrompt
-                        appState.customContextPrompt = ""
-                        appState.customContextPromptLastModified = ""
-                    }
-                    .font(.caption)
-                }
-            }
-
-            Divider()
-
-            // Test section
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Test Context Prompt")
-                    .font(.caption.weight(.semibold))
-                Text("Captures a screenshot and metadata from the frontmost app, then runs the context prompt to infer activity.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    runContextPromptTest()
-                } label: {
-                    HStack(spacing: 6) {
-                        if contextTestRunning {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Running...")
-                        } else {
-                            Image(systemName: "play.fill")
-                            Text("Test Context Prompt")
-                        }
-                    }
-                }
-                .disabled(contextTestRunning || appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                if appState.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Label("API key required to test", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                if let error = contextTestError {
-                    Label(error, systemImage: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                if let output = contextTestOutput {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Result:")
-                            .font(.caption.weight(.semibold))
-                        Text(output.isEmpty ? "(empty — no output)" : output)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.green.opacity(0.08))
-                            .cornerRadius(6)
-                    }
-                }
-
-                if let prompt = contextTestPrompt {
-                    DisclosureGroup("Full prompt sent") {
-                        Text(prompt)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func runContextPromptTest() {
-        contextTestRunning = true
-        contextTestOutput = nil
-        contextTestError = nil
-        contextTestPrompt = nil
-
-        let service = AppContextService(
-            apiKey: appState.apiKey,
-            baseURL: appState.apiBaseURL,
-            customContextPrompt: appState.customContextPrompt,
-            contextModel: appState.contextModel
-        )
-
-        Task {
-            let context = await service.collectContext()
-            await MainActor.run {
-                if let prompt = context.contextPrompt {
-                    contextTestOutput = context.contextSummary
-                    contextTestPrompt = prompt
-                } else {
-                    contextTestError = "Context inference returned no result. This may be a permissions issue or the API could not be reached."
-                    contextTestOutput = context.contextSummary
-                }
-                contextTestRunning = false
-            }
-        }
-    }
-
-}
-
 // MARK: - Run Log
 
 struct RunLogView: View {
@@ -1512,15 +557,13 @@ struct RunLogView: View {
     }
 }
 
-// MARK: - Run Log Entry
-
 struct RunLogEntryView: View {
     let item: PipelineHistoryItem
     @EnvironmentObject var appState: AppState
     @State private var isExpanded = false
     @State private var isRetrying = false
     @State private var showContextPrompt = false
-    @State private var showPostProcessingPrompt = false
+    @State private var showServerDetails = false
 
     private var isError: Bool {
         item.postProcessingStatus.hasPrefix("Error:")
@@ -1528,7 +571,6 @@ struct RunLogEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Collapsed header
             HStack(spacing: 0) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -1602,7 +644,6 @@ struct RunLogEntryView: View {
                     .padding(.horizontal, 12)
 
                 VStack(alignment: .leading, spacing: 16) {
-                    // Audio player
                     if let audioFileName = item.audioFileName {
                         let audioURL = AppState.audioStorageDirectory().appendingPathComponent(audioFileName)
                         AudioPlayerView(audioURL: audioURL)
@@ -1617,149 +658,29 @@ struct RunLogEntryView: View {
                         }
                     }
 
-                    // Custom vocabulary
-                    if !item.customVocabulary.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Custom Vocabulary")
-                                .font(.caption.weight(.semibold))
-                            FlowLayout(spacing: 4) {
-                                ForEach(parseVocabulary(item.customVocabulary), id: \.self) { word in
-                                    Text(word)
-                                        .font(.caption2)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.accentColor.opacity(0.12))
-                                        .cornerRadius(4)
-                                }
-                            }
-                        }
-                    }
-
-                    // Pipeline steps
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Pipeline")
                             .font(.caption.weight(.semibold))
 
-                        // Step 1: Context Capture
-                        PipelineStepView(
-                            number: 1,
-                            title: "Capture Context",
-                            content: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    if let dataURL = item.contextScreenshotDataURL,
-                                       let image = imageFromDataURL(dataURL) {
-                                        Image(nsImage: image)
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fit)
-                                            .frame(maxHeight: 120)
-                                            .cornerRadius(4)
-                                    }
-
-                                    if let prompt = item.contextPrompt, !prompt.isEmpty {
-                                        Button {
-                                            showContextPrompt.toggle()
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Text(showContextPrompt ? "Hide Prompt" : "Show Prompt")
-                                                    .font(.caption)
-                                                Image(systemName: showContextPrompt ? "chevron.up" : "chevron.down")
-                                                    .font(.caption2)
-                                            }
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(Color.accentColor)
-
-                                        if showContextPrompt {
-                                            Text(prompt)
-                                                .font(.system(.caption2, design: .monospaced))
-                                                .textSelection(.enabled)
-                                                .padding(8)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                                .background(Color(nsColor: .controlBackgroundColor))
-                                                .cornerRadius(4)
+                        PipelineStepView(number: 1, title: "Capture Context") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if let prompt = item.contextPrompt, !prompt.isEmpty {
+                                    Button {
+                                        showContextPrompt.toggle()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text(showContextPrompt ? "Hide Details" : "Show Details")
+                                                .font(.caption)
+                                            Image(systemName: showContextPrompt ? "chevron.up" : "chevron.down")
+                                                .font(.caption2)
                                         }
                                     }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Color.accentColor)
 
-                                    if !item.contextSummary.isEmpty {
-                                        Text(item.contextSummary)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .textSelection(.enabled)
-                                    } else {
-                                        Text("No context captured")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        )
-
-                        // Step 2: Transcribe Audio
-                        PipelineStepView(
-                            number: 2,
-                            title: "Transcribe Audio",
-                            content: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Sent audio to the configured transcription model")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                    if !item.rawTranscript.isEmpty {
-                                        Text(item.rawTranscript)
-                                            .font(.system(.caption, design: .monospaced))
-                                            .textSelection(.enabled)
-                                            .padding(8)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(Color(nsColor: .controlBackgroundColor))
-                                            .cornerRadius(4)
-                                    } else {
-                                        Text("(empty transcript)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        )
-
-                        // Step 3: Post-Process
-                        PipelineStepView(
-                            number: 3,
-                            title: "Post-Process",
-                            content: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(item.postProcessingStatus)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-
-                                    if let prompt = item.postProcessingPrompt, !prompt.isEmpty {
-                                        Button {
-                                            showPostProcessingPrompt.toggle()
-                                        } label: {
-                                            HStack(spacing: 4) {
-                                                Text(showPostProcessingPrompt ? "Hide Prompt" : "Show Prompt")
-                                                    .font(.caption)
-                                                Image(systemName: showPostProcessingPrompt ? "chevron.up" : "chevron.down")
-                                                    .font(.caption2)
-                                            }
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(Color.accentColor)
-
-                                        if showPostProcessingPrompt {
-                                            Text(prompt)
-                                                .font(.system(.caption2, design: .monospaced))
-                                                .textSelection(.enabled)
-                                                .padding(8)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                                .background(Color(nsColor: .controlBackgroundColor))
-                                                .cornerRadius(4)
-                                        }
-                                    }
-
-                                    if !item.postProcessedTranscript.isEmpty {
-                                        Text(item.postProcessedTranscript)
-                                            .font(.system(.caption, design: .monospaced))
+                                    if showContextPrompt {
+                                        Text(prompt)
+                                            .font(.system(.caption2, design: .monospaced))
                                             .textSelection(.enabled)
                                             .padding(8)
                                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1767,8 +688,79 @@ struct RunLogEntryView: View {
                                             .cornerRadius(4)
                                     }
                                 }
+
+                                Text(item.contextSummary.isEmpty ? "No context captured" : item.contextSummary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
                             }
-                        )
+                        }
+
+                        PipelineStepView(number: 2, title: "Transcribe Audio") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Sent audio to the selected WordPress.com site.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                if !item.rawTranscript.isEmpty {
+                                    Text(item.rawTranscript)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .padding(8)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(Color(nsColor: .controlBackgroundColor))
+                                        .cornerRadius(4)
+                                } else {
+                                    Text("(empty transcript)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        PipelineStepView(number: 3, title: "Server Result") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(item.postProcessingStatus)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+
+                                if let details = item.postProcessingPrompt, !details.isEmpty {
+                                    Button {
+                                        showServerDetails.toggle()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text(showServerDetails ? "Hide Details" : "Show Details")
+                                                .font(.caption)
+                                            Image(systemName: showServerDetails ? "chevron.up" : "chevron.down")
+                                                .font(.caption2)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Color.accentColor)
+
+                                    if showServerDetails {
+                                        Text(details)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .textSelection(.enabled)
+                                            .padding(8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color(nsColor: .controlBackgroundColor))
+                                            .cornerRadius(4)
+                                    }
+                                }
+
+                                if !item.postProcessedTranscript.isEmpty {
+                                    Text(item.postProcessedTranscript)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .padding(8)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(Color(nsColor: .controlBackgroundColor))
+                                        .cornerRadius(4)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(12)
@@ -1784,15 +776,7 @@ struct RunLogEntryView: View {
             isRetrying = ids.contains(item.id)
         }
     }
-
-    private func parseVocabulary(_ text: String) -> [String] {
-        text.components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
 }
-
-// MARK: - Pipeline Step View
 
 struct PipelineStepView<Content: View>: View {
     let number: Int
@@ -1819,8 +803,6 @@ struct PipelineStepView<Content: View>: View {
         .cornerRadius(8)
     }
 }
-
-// MARK: - Audio Player
 
 class AudioPlayerDelegate: NSObject, AVAudioPlayerDelegate {
     var onFinish: (() -> Void)?
@@ -1936,50 +918,6 @@ struct AudioPlayerView: View {
     }
 }
 
-// MARK: - Flow Layout
-
-struct FlowLayout: Layout {
-    var spacing: CGFloat = 4
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = layoutSubviews(proposal: proposal, subviews: subviews)
-        return result.size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = layoutSubviews(proposal: proposal, subviews: subviews)
-        for (index, subview) in subviews.enumerated() {
-            guard index < result.positions.count else { break }
-            let pos = result.positions[index]
-            subview.place(at: CGPoint(x: bounds.minX + pos.x, y: bounds.minY + pos.y), proposal: .unspecified)
-        }
-    }
-
-    private func layoutSubviews(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
-        let maxWidth = proposal.width ?? .infinity
-        var positions: [CGPoint] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var totalHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x + size.width > maxWidth && x > 0 {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            positions.append(CGPoint(x: x, y: y))
-            rowHeight = max(rowHeight, size.height)
-            x += size.width + spacing
-            totalHeight = y + rowHeight
-        }
-
-        return (CGSize(width: maxWidth, height: totalHeight), positions)
-    }
-}
-
 // MARK: - Voice Macros Settings
 
 struct VoiceMacrosSettingsView: View {
@@ -2004,7 +942,7 @@ struct VoiceMacrosSettingsView: View {
     private var macrosSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Bypass post-processing and immediately paste your predefined text.")
+                Text("Bypass server processing and immediately paste your predefined text.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

@@ -1,7 +1,7 @@
 import Cocoa
 import os.log
 
-private let shortcutLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Shortcuts")
+private let shortcutLog = OSLog(subsystem: "com.automattic.whispress", category: "Shortcuts")
 
 enum GlobalShortcutBackendError: LocalizedError {
     case eventTapUnavailable
@@ -10,7 +10,7 @@ enum GlobalShortcutBackendError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .eventTapUnavailable:
-            return "Global shortcut monitoring could not start. FreeFlow requires keyboard monitoring permission for global shortcuts."
+            return "Global shortcut monitoring could not start. WhisPress requires keyboard monitoring permission for global shortcuts."
         case .eventTapRunLoopSourceUnavailable:
             return "Global shortcut monitoring could not start because the event tap run loop source could not be created."
         }

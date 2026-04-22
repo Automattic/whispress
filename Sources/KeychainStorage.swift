@@ -2,11 +2,11 @@ import Foundation
 import Security
 
 enum AppSettingsStorage {
-    private static let bundleID = Bundle.main.bundleIdentifier ?? "com.zachlatta.freeflow"
+    private static let bundleID = Bundle.main.bundleIdentifier ?? "com.automattic.whispress"
 
     private static var storageDirectory: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "WhisPress"
         let dir = appSupport.appendingPathComponent(appName, isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -36,6 +36,33 @@ enum AppSettingsStorage {
         var dict = loadSettings()
         dict.removeValue(forKey: account)
         writeSettings(dict)
+    }
+
+    static func loadSecure(account: String) -> String? {
+        loadFromKeychain(account: account)
+    }
+
+    static func saveSecure(_ value: String, account: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: bundleID,
+            kSecAttrAccount as String: account
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data
+        ]
+
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            SecItemAdd(addQuery as CFDictionary, nil)
+        }
+    }
+
+    static func deleteSecure(account: String) {
+        deleteFromKeychain(account: account)
     }
 
     // MARK: - File I/O

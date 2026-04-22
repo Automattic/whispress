@@ -4,63 +4,17 @@ import Combine
 import Foundation
 import ServiceManagement
 
-private struct SetupProviderSettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var apiBaseURLInput: String
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Advanced Provider Settings")
-                    .font(.title2.weight(.semibold))
-                Text("Use these fields when pointing FreeFlow at another OpenAI-compatible provider or when you need custom model IDs.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-
-            Divider()
-
-            ScrollView {
-                ProviderSettingsFields(
-                    apiBaseURLInput: $apiBaseURLInput,
-                    showsModelDescription: true
-                )
-                .padding(20)
-            }
-
-            Divider()
-
-            HStack {
-                Spacer()
-                Button("Done") {
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding(16)
-        }
-        .frame(width: 560, height: 520)
-    }
-}
-
 struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
-    @Environment(\.openURL) private var openURL
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
-        case apiKey
+        case account
         case micPermission
         case accessibility
-        case screenRecording
         case holdShortcut
         case toggleShortcut
         case commandMode
-        case vocabulary
         case launchAtLogin
         case testTranscription
         case ready
@@ -69,15 +23,8 @@ struct SetupView: View {
     @State private var currentStep = SetupStep.welcome
     @State private var micPermissionGranted = false
     @State private var accessibilityGranted = false
-    @State private var apiKeyInput: String = ""
-    @State private var apiBaseURLInput: String = ""
-    @State private var isValidatingKey = false
     @State private var keyValidationError: String?
-    @State private var showingProviderSettingsSheet = false
     @State private var accessibilityTimer: Timer?
-    @State private var screenRecordingTimer: Timer?
-    @State private var customVocabularyInput: String = ""
-    @StateObject private var githubCache = GitHubMetadataCache.shared
 
     // Test transcription state
     private enum TestPhase: Equatable {
@@ -122,7 +69,6 @@ struct SetupView: View {
                                     currentStep = previousStep(currentStep)
                                 }
                             }
-                            .disabled(isValidatingKey)
                         }
                     }
 
@@ -130,18 +76,7 @@ struct SetupView: View {
 
                     Group {
                         if currentStep != .ready {
-                            if currentStep == .apiKey {
-                                Button(isValidatingKey ? "Validating..." : "Continue") {
-                                    validateAndContinue()
-                                }
-                                .keyboardShortcut(.defaultAction)
-                                .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
-                            } else if currentStep == .vocabulary {
-                                Button("Continue") {
-                                    saveCustomVocabularyAndContinue()
-                                }
-                                .keyboardShortcut(.defaultAction)
-                            } else if currentStep == .testTranscription {
+                            if currentStep == .testTranscription {
                                 HStack(spacing: 10) {
                                     Button("Skip") {
                                         stopTestHotkeyMonitoring()
@@ -184,23 +119,13 @@ struct SetupView: View {
         }
         .frame(width: 520, height: 680)
         .onAppear {
-            apiKeyInput = appState.apiKey
-            apiBaseURLInput = appState.apiBaseURL
-            customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
-            Task {
-                await githubCache.fetchIfNeeded()
-            }
+            appState.refreshWordPressComSitesFromUI()
         }
         .onDisappear {
             accessibilityTimer?.invalidate()
-            screenRecordingTimer?.invalidate()
             appState.resumeHotkeyMonitoringAfterShortcutCapture()
-        }
-        .sheet(isPresented: $showingProviderSettingsSheet) {
-            SetupProviderSettingsSheet(apiBaseURLInput: $apiBaseURLInput)
-                .environmentObject(appState)
         }
         .onChange(of: isCapturingShortcut) { isCapturing in
             if isCapturing {
@@ -216,22 +141,18 @@ struct SetupView: View {
         switch currentStep {
         case .welcome:
             welcomeStep
-        case .apiKey:
-            apiKeyStep
+        case .account:
+            accountStep
         case .micPermission:
             micPermissionStep
         case .accessibility:
             accessibilityStep
-        case .screenRecording:
-            screenRecordingStep
         case .holdShortcut:
             holdShortcutStep
         case .toggleShortcut:
             toggleShortcutStep
         case .commandMode:
             commandModeStep
-        case .vocabulary:
-            vocabularyStep
         case .launchAtLogin:
             launchAtLoginStep
         case .testTranscription:
@@ -245,207 +166,98 @@ struct SetupView: View {
 
     var welcomeStep: some View {
         VStack(spacing: 16) {
+            Spacer(minLength: 0)
+
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 128, height: 128)
 
             VStack(spacing: 6) {
-                Text("Welcome to FreeFlow")
+                Text("Welcome to WhisPress")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
 
-                Text("Dictate text anywhere on your Mac.\nHold to talk or tap to toggle dictation.")
+                Text("Dictate text anywhere on your Mac using your selected WordPress.com site.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        default:
-                            Color.gray.opacity(0.2)
-                        }
-                    }
-                    .frame(width: 26, height: 26)
-                    .clipShape(Circle())
-
-                    Button {
-                        openURL(freeflowRepoURL)
-                    } label: {
-                        Text("zachlatta/freeflow")
-                            .font(.system(.caption, design: .monospaced).weight(.medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
-
-                    Spacer()
-
-                    HStack(spacing: 4) {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(.yellow)
-                            .font(.caption2)
-                        if githubCache.isLoading {
-                            ProgressView().scaleEffect(0.5)
-                        } else if let count = githubCache.starCount {
-                            Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.yellow.opacity(0.14)))
-
-                    Button {
-                        openURL(freeflowRepoURL)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "star")
-                            Text("Star")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.yellow.opacity(0.18)))
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if !githubCache.recentStargazers.isEmpty {
-                    Divider()
-                    HStack(spacing: 8) {
-                        HStack(spacing: -6) {
-                            ForEach(githubCache.recentStargazers) { star in
-                                Button {
-                                    openURL(star.user.htmlUrl)
-                                } label: {
-                                    AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
-                                        switch phase {
-                                        case .success(let image):
-                                            image.resizable().aspectRatio(contentMode: .fill)
-                                        default:
-                                            Color.gray.opacity(0.2)
-                                        }
-                                    }
-                                    .frame(width: 22, height: 22)
-                                    .clipShape(Circle())
-                                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .clipped()
-                        Text("recently starred")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize()
-                        Spacer()
-                    }
-                    .clipped()
-                }
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
-            )
+            Spacer(minLength: 0)
 
         }
     }
 
-    var apiKeyStep: some View {
+    var accountStep: some View {
         VStack {
             Spacer(minLength: 0)
 
             VStack(spacing: 20) {
-                Image(systemName: "key.fill")
+                Image(systemName: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 60))
                     .foregroundStyle(.blue)
 
-                Text("API Key")
+                Text("WordPress.com")
                     .font(.title)
                     .fontWeight(.bold)
 
-                Text("Enter an API key for your OpenAI-compatible provider. If you are not using Groq, expand the advanced provider settings and enter that provider's base URL and model IDs before continuing.")
+                Text("Sign in and choose the site whose Transcribe skill should guide dictation.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Using Groq?")
-                            .font(.subheadline.weight(.semibold))
-                        VStack(alignment: .leading, spacing: 2) {
-                            instructionRow(number: "1", text: "Go to [console.groq.com/keys](https://console.groq.com/keys)")
-                            instructionRow(number: "2", text: "Create a free account (if you don't have one)")
-                            instructionRow(number: "3", text: "Click **Create API Key** and copy it")
-                        }
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.blue.opacity(0.06))
-                    )
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("API Key")
-                            .font(.headline)
-                        SecureField("Paste your API key", text: $apiKeyInput)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                            .disabled(isValidatingKey)
-                            .onChange(of: apiKeyInput) { _ in
-                                keyValidationError = nil
+                VStack(alignment: .leading, spacing: 12) {
+                    if appState.isWordPressComSignedIn {
+                        Label("Signed in to WordPress.com", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Button {
+                            appState.signInToWordPressCom()
+                        } label: {
+                            if appState.isSigningInToWordPressCom {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Signing in...")
+                                }
+                            } else {
+                                Label("Sign in with WordPress.com", systemImage: "person.crop.circle")
                             }
-
-                        if let error = keyValidationError {
-                            Label(error, systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                                .font(.caption)
                         }
+                        .buttonStyle(.borderedProminent)
                     }
 
                     Button {
-                        showingProviderSettingsSheet = true
+                        appState.refreshWordPressComSitesFromUI()
                     } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "slider.horizontal.3")
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Advanced Provider Settings")
-                                    .foregroundStyle(.primary)
-                                Text("Base URL and model IDs")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        if appState.isRefreshingWordPressComSites {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Loading sites...")
                             }
-                            Spacer()
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                        } else {
+                            Label("Refresh Sites", systemImage: "arrow.clockwise")
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-                        )
                     }
-                    .buttonStyle(.plain)
-                    .padding(.top, 8)
+                    .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
+
+                    if !appState.wordpressComSites.isEmpty {
+                        Picker("Site", selection: Binding(
+                            get: { appState.selectedWordPressComSiteID ?? appState.wordpressComSites.first?.id ?? 0 },
+                            set: { appState.selectedWordPressComSiteID = $0 }
+                        )) {
+                            ForEach(appState.wordpressComSites) { site in
+                                Text(site.displayName).tag(site.id)
+                            }
+                        }
+                    }
+
+                    if let message = appState.wordpressComStatusMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: 440)
 
@@ -464,7 +276,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs access to your microphone to record audio for transcription.")
+            Text("WhisPress needs access to your microphone to record audio for transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -503,7 +315,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs Accessibility access to paste transcribed text into your apps.")
+            Text("WhisPress needs Accessibility access to paste transcribed text into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -535,57 +347,6 @@ struct SetupView: View {
         }
         .onDisappear {
             accessibilityTimer?.invalidate()
-        }
-    }
-
-    var screenRecordingStep: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "camera.viewfinder")
-                .font(.system(size: 60))
-                .foregroundStyle(.blue)
-
-            Text("Screen Recording")
-                .font(.title)
-                .fontWeight(.bold)
-
-            Text("FreeFlow intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on FreeFlow's servers (FreeFlow doesn't have servers).")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Image(systemName: "camera.viewfinder")
-                    .frame(width: 24)
-                    .foregroundStyle(.blue)
-                Text("Screen Recording")
-                Spacer()
-                if appState.hasScreenRecordingPermission {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Granted")
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Grant Access") {
-                        appState.requestScreenCapturePermission()
-                    }
-                }
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(8)
-
-        }
-        .onAppear {
-            startScreenRecordingPolling()
-        }
-        .onDisappear {
-            screenRecordingTimer?.invalidate()
         }
     }
 
@@ -635,7 +396,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, FreeFlow latches into tap mode. You can also disable tap-to-toggle entirely.")
+            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, WhisPress latches into tap mode. You can also disable tap-to-toggle entirely.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -656,41 +417,6 @@ struct SetupView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
-            }
-
-        }
-    }
-
-    var vocabularyStep: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "text.book.closed.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(.blue)
-
-            Text("Custom Vocabulary")
-                .font(.title)
-                .fontWeight(.bold)
-
-            Text("Add words and phrases that should be preserved in post-processing.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Vocabulary")
-                    .font(.headline)
-
-                TextEditor(text: $customVocabularyInput)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 130)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-
-                Text("Separate entries with commas, new lines, or semicolons.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
         }
@@ -735,7 +461,7 @@ struct SetupView: View {
                 Group {
                     switch appState.commandModeStyle {
                     case .automatic:
-                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, FreeFlow transforms that selection instead of dictating new text.")
+                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, WhisPress transforms that selection instead of dictating new text.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -785,7 +511,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Start FreeFlow automatically when you log in so it's always ready.")
+            Text("Start WhisPress automatically when you log in so it's always ready.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -794,7 +520,7 @@ struct SetupView: View {
                 Image(systemName: "sunrise.fill")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
+                Toggle("Launch WhisPress at login", isOn: $appState.launchAtLogin)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -908,7 +634,7 @@ struct SetupView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Perfect — FreeFlow is ready to go.")
+                            Text("Perfect — WhisPress is ready to go.")
                                 .font(.title2)
                                 .fontWeight(.semibold)
 
@@ -952,7 +678,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow lives in your menu bar.")
+            Text("WhisPress lives in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
@@ -996,12 +722,12 @@ struct SetupView: View {
 
     private var canContinueFromCurrentStep: Bool {
         switch currentStep {
+        case .account:
+            return appState.isWordPressComSignedIn && appState.selectedWordPressComSiteID != nil
         case .micPermission:
             return micPermissionGranted
         case .accessibility:
             return accessibilityGranted
-        case .screenRecording:
-            return appState.hasScreenRecordingPermission
         case .testTranscription:
             return testPhase == .done && !testTranscript.isEmpty && testError == nil
         default:
@@ -1041,37 +767,6 @@ struct SetupView: View {
     }
 
     // MARK: - Actions
-
-    func validateAndContinue() {
-        let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseURL = apiBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedBaseURL = baseURL.isEmpty ? AppState.defaultAPIBaseURL : baseURL
-        appState.apiBaseURL = resolvedBaseURL
-        isValidatingKey = true
-        keyValidationError = nil
-
-        Task {
-            let valid = await TranscriptionService.validateAPIKey(key, baseURL: resolvedBaseURL)
-            await MainActor.run {
-                isValidatingKey = false
-                if valid {
-                    appState.apiKey = key
-                    withAnimation {
-                        currentStep = nextStep(currentStep)
-                    }
-                } else {
-                    keyValidationError = "Validation failed. Please check your API key and provider settings, then try again."
-                }
-            }
-        }
-    }
-
-    func saveCustomVocabularyAndContinue() {
-        appState.customVocabulary = customVocabularyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        withAnimation {
-            currentStep = nextStep(currentStep)
-        }
-    }
 
     private func previousStep(_ step: SetupStep) -> SetupStep {
         let previous = SetupStep(rawValue: step.rawValue - 1)
@@ -1114,15 +809,6 @@ struct SetupView: View {
     func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
-    }
-
-    func startScreenRecordingPolling() {
-        screenRecordingTimer?.invalidate()
-        screenRecordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            DispatchQueue.main.async {
-                appState.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
-            }
-        }
     }
 
     // MARK: - Test Transcription
@@ -1199,12 +885,7 @@ struct SetupView: View {
 
                     Task {
                         do {
-                            let service = try TranscriptionService(
-                                apiKey: appState.apiKey,
-                                baseURL: appState.apiBaseURL,
-                                transcriptionModel: appState.transcriptionModel
-                            )
-                            let transcript = try await service.transcribe(fileURL: url)
+                            let transcript = try await appState.transcribeAudioForSetupTest(fileURL: url)
                             await MainActor.run {
                                 testHotkeyHarness.isTranscribing = false
                                 testAudioRecorder = nil
@@ -1271,97 +952,6 @@ struct SetupView: View {
         }
     }
 
-}
-
-struct GitHubRepoInfo: Decodable {
-    let stargazersCount: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case stargazersCount = "stargazers_count"
-    }
-}
-
-struct GitHubStarRecord: Decodable, Identifiable {
-    let user: GitHubStarUser
-
-    var id: Int {
-        user.id
-    }
-}
-
-struct GitHubStarUser: Decodable {
-    let id: Int
-    let login: String
-    let avatarUrl: URL
-    let htmlUrl: URL
-
-    /// Avatar URL resized to 44px (2x for 22pt display) for efficient loading
-    var avatarThumbnailUrl: URL {
-        // GitHub avatar URLs already have query params, so append with &
-        let separator = avatarUrl.absoluteString.contains("?") ? "&" : "?"
-        return URL(string: avatarUrl.absoluteString + "\(separator)s=44") ?? avatarUrl
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case login
-        case avatarUrl = "avatar_url"
-        case htmlUrl = "html_url"
-    }
-}
-
-@MainActor
-class GitHubMetadataCache: ObservableObject {
-    static let shared = GitHubMetadataCache()
-
-    @Published var starCount: Int?
-    @Published var recentStargazers: [GitHubStarRecord] = []
-    @Published var isLoading = true
-
-    private var lastFetchDate: Date?
-    private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
-    private let repoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
-
-    private init() {}
-
-    func fetchIfNeeded() async {
-        if let lastFetch = lastFetchDate, Date().timeIntervalSince(lastFetch) < cacheDuration {
-            return
-        }
-
-        isLoading = true
-
-        do {
-            let repoResult = try await URLSession.shared.data(from: repoAPIURL)
-            guard let repoHTTP = repoResult.1 as? HTTPURLResponse,
-                  (200..<300).contains(repoHTTP.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            let count = try JSONDecoder().decode(GitHubRepoInfo.self, from: repoResult.0).stargazersCount
-
-            var recent: [GitHubStarRecord] = []
-            if count > 0 {
-                let perPage = 100
-                let lastPage = max(1, Int(ceil(Double(count) / Double(perPage))))
-                let stargazersURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=\(perPage)&page=\(lastPage)")!
-                var request = URLRequest(url: stargazersURL)
-                request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
-                let starredResult = try await URLSession.shared.data(for: request)
-                if let starredHTTP = starredResult.1 as? HTTPURLResponse,
-                   (200..<300).contains(starredHTTP.statusCode) {
-                    let all = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
-                    recent = Array(all.suffix(15).reversed())
-                }
-            }
-
-            starCount = count
-            recentStargazers = recent
-            isLoading = false
-            lastFetchDate = Date()
-        } catch {
-            isLoading = false
-        }
-    }
 }
 
 private struct InlineTranscribingDots: View {

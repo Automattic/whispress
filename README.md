@@ -1,82 +1,75 @@
-<p align="center">
-  <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="FreeFlow icon">
-</p>
+# WhisPress
 
-<h1 align="center">FreeFlow</h1>
+WhisPress is a macOS menu bar dictation client for WordPress.com.
 
-<p align="center">
-  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
-</p>
+It records local audio, authenticates with WordPress.com, sends the recording to the selected site's generic `/ai/transcription` endpoint, and pastes the returned text at the cursor.
 
-<p align="center">
-  <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
-  <sub>Works on all Macs (Apple Silicon + Intel)</sub>
-</p>
+## Current Shape
 
----
+- WordPress.com OAuth sign-in with the native `whispress://oauth/callback` scheme.
+- Per-site configuration by selecting a WordPress.com site.
+- Server-side transcription behavior through the selected site's native `wp_guideline` skill with slug `transcribe`.
+- Thin client UI: account, site picker, shortcuts, microphone, paste behavior, voice macros, and run history.
+- No local API keys, provider URLs, model selection, prompt editing, spelling editing, or guideline editing.
 
-<p align="center">
-  <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
-</p>
+## Build
 
-<p align="center">
-  <i>Thank you to <a href="https://github.com/marcbodea">@marcbodea</a> for maintaining FreeFlow!</i>
-</p>
+```sh
+make
+```
 
-I like the concept of apps like [Wispr Flow](https://wisprflow.ai/), [Superwhisper](https://superwhisper.com/), and [Monologue](https://www.monologue.to/) that use AI to add accurate and easy-to-use transcription to your computer, but they all charge fees of ~$10/month when the underlying AI models are free to use or cost pennies.
+The default development bundle is `WhisPress Dev.app` with bundle identifier `com.automattic.whispress.dev`.
 
-So over the weekend I vibe-coded my own free version!
+## WordPress.com OAuth
 
-It's called FreeFlow. Here's how it works:
+WhisPress uses the classic registered WordPress.com OAuth app flow:
 
-1. Download the app from above or [click here](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)
-2. Get a free Groq API key from [groq.com](https://groq.com/)
-3. Hold `Fn` to talk, or tap `Command-Fn` to start and stop dictation, and have whatever you say pasted into the current text field
+- Authorization endpoint: `https://public-api.wordpress.com/oauth2/authorize`
+- Token endpoint: `https://public-api.wordpress.com/oauth2/token`
+- Redirect URI: `whispress://oauth/callback`
 
-You can also customize both shortcuts. If your toggle shortcut extends your hold shortcut, you can start in hold mode and press the extra modifier keys to latch into tap mode without stopping the recording.
+Set `WPCOMOAuthClientID` and `WPCOMOAuthClientSecret` in `Info.plist` from a WordPress.com application registered with that redirect URI. This flow exchanges the authorization code with the client secret and uses the returned long-lived bearer token for API calls.
 
-One of the cool features is that it's context aware. If you're replying to an email, it'll read the names of the people you're replying to and make sure to spell their names correctly. Same with if you're dictating into a terminal or another app. This is the same thing as Monologue's "Deep Context" feature.
+The client ID is public and is committed in `Info.plist`. The client secret is intentionally blank in source. For local testing, inject it at build time:
 
-An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
+```sh
+WPCOM_OAUTH_CLIENT_SECRET="$WPCOM_CLIENT_SECRET" make CODESIGN_IDENTITY=-
+```
 
-If you'd rather keep cleanup more literal and less context-aware, you can paste this simpler prompt into the custom system prompt setting:
+You can also keep the secret in an untracked local file and point the build at it:
 
-<details>
-  <summary>Simple post-processing prompt</summary>
+```sh
+make CODESIGN_IDENTITY=- WPCOM_OAUTH_CLIENT_SECRET_FILE=.wpcom-oauth-client-secret
+```
 
-  <pre><code>You are a dictation post-processor. You receive raw speech-to-text output and return clean text ready to be typed into an application.
+The Makefile copies `Info.plist`, writes `WPCOMOAuthClientSecret` into the built app bundle, and then signs the app. This post-build credential step runs every time `make` runs, even when Swift sources are already up to date. This client secret is not a server-grade secret once it ships inside a native app bundle; it can be extracted by someone determined. We still use it because WordPress.com's classic OAuth token endpoint requires it for registered apps, and this flow gives the long-lived token behavior WhisPress wants. Treat the secret as an app credential: do not commit it, inject it during local/release packaging, and rotate it if it leaks publicly.
 
-Your job:
-- Remove filler words (um, uh, you know, like) unless they carry meaning.
-- Fix spelling, grammar, and punctuation errors.
-- When the transcript already contains a word that is a close misspelling of a name or term from the context or custom vocabulary, correct the spelling. Never insert names or terms from context that the speaker did not say.
-- Preserve the speaker's intent, tone, and meaning exactly.
+## Endpoint Smoke Test
 
-Output rules:
-- Return ONLY the cleaned transcript text, nothing else. So NEVER output words like "Here is the cleaned transcript text:"
-- If the transcription is empty, return exactly: EMPTY
-- Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
-- Do not change the meaning of what was said.
+Call the WordPress.com AI transcription endpoint with a bearer token, site, and audio file:
 
-Example:
-RAW_TRANSCRIPTION: "hey um so i just wanted to like follow up on the meating from yesterday i think we should definately move the dedline to next friday becuz the desine team still needs more time to finish the mock ups and um yeah let me know if that works for you ok thanks"
+```sh
+WPCOM_BEARER_TOKEN="$TOKEN" Tools/wpcom-transcribe.sh \
+  --site 123456 \
+  --file /path/to/audio.mp3
+```
 
-Then your response would be ONLY the cleaned up text, so here your response is ONLY:
-"Hey, I just wanted to follow up on the meeting from yesterday. I think we should definitely move the deadline to next Friday because the design team still needs more time to finish the mockups. Let me know if that works for you. Thanks."</code></pre>
-</details>
+You can generate a tiny supported sample file locally with macOS built-ins:
 
-### FAQ
+```sh
+say "Testing WhisPress transcription through WordPress dot com." -o /tmp/whispress-test.aiff
+afconvert /tmp/whispress-test.aiff /tmp/whispress-test.m4a -f m4af -d aac
+```
 
-**Why does this use Groq instead of a local transcription model?**
+Command mode is also supported:
 
-I love this idea, and originally planned to build FreeFlow using local models, but to have post-processing (that's where you get correctly spelled names when replying to emails / etc), you need to have a local LLM too.
+```sh
+Tools/wpcom-transcribe.sh \
+  --token "$TOKEN" \
+  --site example.wordpress.com \
+  --file /path/to/command.mp3 \
+  --intent command \
+  --selected-text "Rewrite this sentence."
+```
 
-If you do that, the total pipeline takes too long for the UX to be good (5-10 seconds per transcription instead of <1s). I also had concerns around battery life.
-
-Some day!
-
-**Update:** You can now use a custom model with FreeFlow by configuring the LLM API URL in the FreeFlow settings to use Ollama. Thank you @taciturnaxolotl!
-
-## License
-
-Licensed under the MIT license.
+The script does not perform OAuth. It only posts multipart audio to `POST /wpcom/v2/sites/{site}/ai/transcription` with `curl` and prints the JSON response.
