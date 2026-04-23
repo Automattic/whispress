@@ -196,14 +196,14 @@ struct GeneralSettingsView: View {
             }
 
             if !appState.wordpressComSites.isEmpty {
-                Picker("Site", selection: Binding(
-                    get: { appState.selectedWordPressComSiteID ?? appState.wordpressComSites.first?.id ?? 0 },
-                    set: { appState.selectedWordPressComSiteID = $0 }
-                )) {
-                    ForEach(appState.wordpressComSites) { site in
-                        Text(site.displayName).tag(site.id)
-                    }
-                }
+                WordPressSiteSearchPicker(
+                    sites: appState.wordpressComSites,
+                    selectedSiteID: Binding(
+                        get: { appState.selectedWordPressComSiteID },
+                        set: { appState.selectedWordPressComSiteID = $0 }
+                    ),
+                    maxVisibleRows: 6
+                )
             }
 
             HStack(spacing: 10) {

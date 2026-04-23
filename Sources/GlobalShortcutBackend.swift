@@ -20,6 +20,7 @@ enum GlobalShortcutBackendError: LocalizedError {
 final class GlobalShortcutBackend {
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
+    private var functionKeyIsDown = false
 
     var onInputEvent: ((ShortcutInputEvent) -> ShortcutConsumeDecision)?
     var onEscapeKeyPressed: (() -> Bool)?
@@ -93,6 +94,7 @@ final class GlobalShortcutBackend {
     }
 
     private func notifyBackendReset() {
+        functionKeyIsDown = false
         _ = onInputEvent?(.backendReset)
     }
 
@@ -135,6 +137,10 @@ final class GlobalShortcutBackend {
             return false
         }
 
+        if event.keyCode == 63 {
+            functionKeyIsDown = isDown
+        }
+
         return onInputEvent?(.modifierChanged(keyCode: event.keyCode, isDown: isDown)) == .consume
     }
 
@@ -146,7 +152,7 @@ final class GlobalShortcutBackend {
 
         guard !ShortcutBinding.modifierKeyCodes.contains(event.keyCode) else { return false }
         let snapshotDecision = onInputEvent?(
-            .modifierSnapshot(ModifierKeyEventState.pressedModifierKeyCodes(for: event))
+            .modifierSnapshot(modifierSnapshotForNonModifierKeyEvent(event))
         ) ?? .passthrough
         let keyDecision = onInputEvent?(
             .keyChanged(keyCode: event.keyCode, isDown: true, isRepeat: event.isARepeat)
@@ -157,11 +163,22 @@ final class GlobalShortcutBackend {
     private func handleKeyUp(_ event: NSEvent) -> Bool {
         guard !ShortcutBinding.modifierKeyCodes.contains(event.keyCode) else { return false }
         let snapshotDecision = onInputEvent?(
-            .modifierSnapshot(ModifierKeyEventState.pressedModifierKeyCodes(for: event))
+            .modifierSnapshot(modifierSnapshotForNonModifierKeyEvent(event))
         ) ?? .passthrough
         let keyDecision = onInputEvent?(
             .keyChanged(keyCode: event.keyCode, isDown: false, isRepeat: false)
         ) ?? .passthrough
         return snapshotDecision == .consume || keyDecision == .consume
+    }
+
+    private func modifierSnapshotForNonModifierKeyEvent(_ event: NSEvent) -> Set<UInt16> {
+        var pressedModifierKeyCodes = ModifierKeyEventState.pressedModifierKeyCodes(
+            for: event,
+            includeFunctionKey: false
+        )
+        if functionKeyIsDown {
+            pressedModifierKeyCodes.insert(63)
+        }
+        return pressedModifierKeyCodes
     }
 }

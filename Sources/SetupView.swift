@@ -48,6 +48,14 @@ struct SetupView: View {
         isCapturingHoldShortcut || isCapturingToggleShortcut
     }
 
+    private static func welcomeIconImage() -> NSImage {
+        if let url = Bundle.main.url(forResource: "AppIcon-Source", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSApp.applicationIconImage
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             currentStepView
@@ -123,6 +131,9 @@ struct SetupView: View {
             checkAccessibility()
             appState.refreshWordPressComSitesFromUI()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            checkAccessibility()
+        }
         .onDisappear {
             accessibilityTimer?.invalidate()
             appState.resumeHotkeyMonitoringAfterShortcutCapture()
@@ -165,13 +176,13 @@ struct SetupView: View {
     // MARK: - Steps
 
     var welcomeStep: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 22) {
             Spacer(minLength: 0)
 
-            Image(nsImage: NSApp.applicationIconImage)
+            Image(nsImage: Self.welcomeIconImage())
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 128, height: 128)
+                .frame(width: 256, height: 256)
 
             VStack(spacing: 6) {
                 Text("Welcome to WhisPress")
@@ -241,14 +252,14 @@ struct SetupView: View {
                     .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
 
                     if !appState.wordpressComSites.isEmpty {
-                        Picker("Site", selection: Binding(
-                            get: { appState.selectedWordPressComSiteID ?? appState.wordpressComSites.first?.id ?? 0 },
-                            set: { appState.selectedWordPressComSiteID = $0 }
-                        )) {
-                            ForEach(appState.wordpressComSites) { site in
-                                Text(site.displayName).tag(site.id)
-                            }
-                        }
+                        WordPressSiteSearchPicker(
+                            sites: appState.wordpressComSites,
+                            selectedSiteID: Binding(
+                                get: { appState.selectedWordPressComSiteID },
+                                set: { appState.selectedWordPressComSiteID = $0 }
+                            ),
+                            maxVisibleRows: 4
+                        )
                     }
 
                     if let message = appState.wordpressComStatusMessage {
@@ -332,8 +343,14 @@ struct SetupView: View {
                     Text("Granted")
                         .foregroundStyle(.green)
                 } else {
-                    Button("Open Settings") {
-                        requestAccessibility()
+                    HStack(spacing: 8) {
+                        Button("Check Again") {
+                            checkAccessibility()
+                        }
+
+                        Button("Open Settings") {
+                            requestAccessibility()
+                        }
                     }
                 }
             }
@@ -794,7 +811,9 @@ struct SetupView: View {
     }
 
     func checkAccessibility() {
-        accessibilityGranted = AXIsProcessTrusted()
+        let isTrusted = AXIsProcessTrusted()
+        accessibilityGranted = isTrusted
+        appState.hasAccessibility = isTrusted
     }
 
     func startAccessibilityPolling() {
@@ -804,11 +823,17 @@ struct SetupView: View {
                 checkAccessibility()
             }
         }
+        if let accessibilityTimer {
+            RunLoop.main.add(accessibilityTimer, forMode: .common)
+        }
     }
 
     func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Test Transcription

@@ -115,8 +115,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "WhisPress"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.contentView = NSHostingView(rootView: setupView)
         window.minSize = NSSize(width: 520, height: 680)
         window.center()
