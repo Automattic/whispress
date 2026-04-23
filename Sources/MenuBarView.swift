@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
-    @ObservedObject private var updateManager = UpdateManager.shared
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -10,7 +9,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("FreeFlow v\(appVersion)")
+            Text("WhisPress v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -18,11 +17,12 @@ struct MenuBarView: View {
 
             Divider()
 
-            if !appState.hasScreenRecordingPermission {
+            if !appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil {
                 Button {
-                    appState.requestScreenCapturePermission()
+                    appState.selectedSettingsTab = .general
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
                 } label: {
-                    Label("Screen Recording Permission Needed", systemImage: "camera.viewfinder")
+                    Label("WordPress.com Sign-In Needed", systemImage: "person.crop.circle.badge.exclamationmark")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
@@ -30,7 +30,7 @@ struct MenuBarView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
-                .background(Color.orange)
+                .background(Color.blue)
 
                 Divider()
             }
@@ -244,56 +244,7 @@ struct MenuBarView: View {
                 appState.toggleDebugOverlay()
             }
 
-            if updateManager.updateAvailable {
-                Divider()
-
-                switch updateManager.updateStatus {
-                case .downloading:
-                    VStack(spacing: 4) {
-                        Text("Downloading update... \(Int((updateManager.downloadProgress ?? 0) * 100))%")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
-                        ProgressView(value: updateManager.downloadProgress ?? 0)
-                            .progressViewStyle(.linear)
-                            .tint(.white)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.blue)
-
-                case .installing, .readyToRelaunch:
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Installing update...")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.blue)
-
-                default:
-                    Button {
-                        updateManager.showUpdateAlert()
-                    } label: {
-                        Label("Update Available", systemImage: "arrow.down.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.blue)
-                }
-            }
-
-            Divider()
-
-            Button("Quit FreeFlow") {
+            Button("Quit WhisPress") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

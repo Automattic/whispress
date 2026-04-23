@@ -1,0 +1,509 @@
+import AppKit
+import AuthenticationServices
+import Foundation
+
+enum WPCOMClientError: LocalizedError {
+    case missingOAuthCredentials
+    case invalidAuthorizationCallback
+    case authorizationCancelled
+    case missingAuthorizationCode
+    case missingRefreshToken
+    case missingSelectedSite
+    case requestFailed(Int, String)
+    case invalidResponse(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingOAuthCredentials:
+            return "WordPress.com OAuth client secret is not configured."
+        case .invalidAuthorizationCallback:
+            return "WordPress.com returned an invalid authorization callback."
+        case .authorizationCancelled:
+            return "WordPress.com sign-in was cancelled."
+        case .missingAuthorizationCode:
+            return "WordPress.com did not return an authorization code."
+        case .missingRefreshToken:
+            return "WordPress.com session expired. Sign in again."
+        case .missingSelectedSite:
+            return "Choose a WordPress.com site before transcribing."
+        case .requestFailed(let statusCode, let details):
+            return "WordPress.com request failed with status \(statusCode): \(details)"
+        case .invalidResponse(let details):
+            return "Invalid WordPress.com response: \(details)"
+        }
+    }
+}
+
+struct WPCOMAuthState: Codable, Equatable {
+    var accessToken: String
+    var refreshToken: String?
+    var tokenType: String
+    var expirationDate: Date?
+
+    var authorizationHeaderValue: String {
+        "\(tokenType.isEmpty ? "Bearer" : tokenType) \(accessToken)"
+    }
+
+    var needsRefresh: Bool {
+        guard let expirationDate else { return false }
+        return expirationDate <= Date().addingTimeInterval(90)
+    }
+}
+
+struct WPCOMSite: Codable, Identifiable, Equatable {
+    let id: Int
+    let name: String
+    let url: String?
+    let slug: String?
+
+    var displayName: String {
+        if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        return slug ?? url ?? "\(id)"
+    }
+
+    var editorSitePath: String {
+        slug ?? url?.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") ?? "\(id)"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case name
+        case url = "URL"
+        case slug
+    }
+
+    init(id: Int, name: String, url: String?, slug: String?) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.slug = slug
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intID = try? container.decode(Int.self, forKey: .id) {
+            id = intID
+        } else if let stringID = try? container.decode(String.self, forKey: .id), let intID = Int(stringID) {
+            id = intID
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "Missing site ID")
+        }
+        name = (try? container.decode(String.self, forKey: .name)) ?? ""
+        url = try? container.decode(String.self, forKey: .url)
+        slug = try? container.decode(String.self, forKey: .slug)
+    }
+}
+
+struct WPCOMGuideline: Codable, Equatable {
+    let id: Int
+    let slug: String
+    let modified: String?
+    let link: String?
+}
+
+struct WPCOMTranscribeResponse: Codable, Equatable {
+    let rawTranscript: String
+    let text: String
+    let status: String
+    let siteID: Int?
+    let skillID: Int?
+    let skillCreated: Bool
+    let skillModified: String?
+    let warnings: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case rawTranscript = "raw_transcript"
+        case text
+        case status
+        case siteID = "site_id"
+        case skillID = "skill_id"
+        case skillCreated = "skill_created"
+        case skillModified = "skill_modified"
+        case warnings
+    }
+}
+
+struct WPCOMAppContextPayload: Encodable {
+    let appName: String?
+    let bundleIdentifier: String?
+    let windowTitle: String?
+    let selectedText: String?
+    let currentActivity: String
+
+    private enum CodingKeys: String, CodingKey {
+        case appName = "app_name"
+        case bundleIdentifier = "bundle_identifier"
+        case windowTitle = "window_title"
+        case selectedText = "selected_text"
+        case currentActivity = "current_activity"
+    }
+}
+
+final class WPCOMClient: NSObject {
+    private struct TokenResponse: Decodable {
+        let accessToken: String
+        let refreshToken: String?
+        let tokenType: String?
+        let expiresIn: TimeInterval?
+
+        private enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case tokenType = "token_type"
+            case expiresIn = "expires_in"
+        }
+    }
+
+    private struct SitesResponse: Decodable {
+        let sites: [WPCOMSite]
+    }
+
+    private let apiBaseURL = URL(string: "https://public-api.wordpress.com")!
+    private let oauthAuthorizeURL = URL(string: "https://public-api.wordpress.com/oauth2/authorize")!
+    private let oauthTokenURL = URL(string: "https://public-api.wordpress.com/oauth2/token")!
+    private let redirectURI = "whispress://oauth/callback"
+    private let callbackScheme = "whispress"
+    private let tokenStorageAccount = "wpcom_oauth_state"
+    private let session = URLSession(configuration: .ephemeral)
+    private var authSession: ASWebAuthenticationSession?
+
+    private var clientID: String {
+        (Bundle.main.object(forInfoDictionaryKey: "WPCOMOAuthClientID") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var clientSecret: String {
+        (Bundle.main.object(forInfoDictionaryKey: "WPCOMOAuthClientSecret") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private(set) var authState: WPCOMAuthState? {
+        didSet {
+            persistAuthState()
+        }
+    }
+
+    override init() {
+        if let stored = AppSettingsStorage.loadSecure(account: tokenStorageAccount),
+           let data = stored.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(WPCOMAuthState.self, from: data) {
+            authState = decoded
+        }
+        super.init()
+    }
+
+    var isSignedIn: Bool {
+        authState?.refreshToken != nil || authState?.accessToken.isEmpty == false
+    }
+
+    func signIn() async throws -> WPCOMAuthState {
+        let clientID = self.clientID
+        guard !clientID.isEmpty, !clientSecret.isEmpty else {
+            throw WPCOMClientError.missingOAuthCredentials
+        }
+
+        let state = Self.randomURLSafeString(byteCount: 24)
+        var components = URLComponents(url: oauthAuthorizeURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "scope", value: "global"),
+            URLQueryItem(name: "state", value: state)
+        ]
+
+        guard let authorizationURL = components.url else {
+            throw WPCOMClientError.invalidAuthorizationCallback
+        }
+
+        let callbackURL = try await authorize(url: authorizationURL)
+        guard let callbackComponents = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) else {
+            throw WPCOMClientError.invalidAuthorizationCallback
+        }
+
+        let returnedState = callbackComponents.queryItems?.first(where: { $0.name == "state" })?.value
+        guard returnedState == state else {
+            throw WPCOMClientError.invalidAuthorizationCallback
+        }
+
+        if let error = callbackComponents.queryItems?.first(where: { $0.name == "error" })?.value {
+            throw WPCOMClientError.requestFailed(401, error)
+        }
+
+        guard let code = callbackComponents.queryItems?.first(where: { $0.name == "code" })?.value else {
+            throw WPCOMClientError.missingAuthorizationCode
+        }
+
+        let token = try await exchangeCode(code, clientID: clientID, clientSecret: clientSecret)
+        authState = token
+        return token
+    }
+
+    func signOut() {
+        authSession?.cancel()
+        authSession = nil
+        authState = nil
+        AppSettingsStorage.deleteSecure(account: tokenStorageAccount)
+    }
+
+    func fetchSites() async throws -> [WPCOMSite] {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "ID,name,URL,slug")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        let response = try JSONDecoder().decode(SitesResponse.self, from: data)
+        return response.sites
+    }
+
+    func discoverTranscribeSkill(siteID: Int) async throws -> WPCOMGuideline? {
+        var components = URLComponents(string: "https://public-api.wordpress.com/wp/v2/sites/\(siteID)/guidelines")!
+        components.queryItems = [
+            URLQueryItem(name: "slug", value: "transcribe"),
+            URLQueryItem(name: "context", value: "edit")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        let guidelines = try JSONDecoder().decode([WPCOMGuideline].self, from: data)
+        return guidelines.first
+    }
+
+    func transcribe(
+        audioFileURL: URL,
+        siteID: Int,
+        intent: String,
+        selectedText: String?,
+        appContext: WPCOMAppContextPayload,
+        clientVersion: String
+    ) async throws -> WPCOMTranscribeResponse {
+        let boundary = UUID().uuidString
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/transcription")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
+
+        let contextData = try JSONEncoder().encode(appContext)
+        let contextString = String(data: contextData, encoding: .utf8) ?? "{}"
+        var fields: [String: String] = [
+            "intent": intent,
+            "app_context": contextString,
+            "client": "whispress",
+            "client_version": clientVersion
+        ]
+        if let selectedText, !selectedText.isEmpty {
+            fields["selected_text"] = selectedText
+        }
+
+        let body = try makeMultipartBody(
+            fileURL: audioFileURL,
+            fileFieldName: "audio_file",
+            fields: fields,
+            boundary: boundary
+        )
+
+        let (data, response) = try await session.upload(for: request, from: body)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(WPCOMTranscribeResponse.self, from: data)
+    }
+
+    func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
+        if let link = guideline.link, let url = URL(string: link) {
+            return url
+        }
+        return URL(string: "https://wordpress.com/post/\(site.editorSitePath)/\(guideline.id)")!
+    }
+
+    private func authorize(url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
+                if let error = error as? ASWebAuthenticationSessionError,
+                   error.code == .canceledLogin {
+                    continuation.resume(throwing: WPCOMClientError.authorizationCancelled)
+                    return
+                }
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let callbackURL else {
+                    continuation.resume(throwing: WPCOMClientError.invalidAuthorizationCallback)
+                    return
+                }
+                continuation.resume(returning: callbackURL)
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            authSession = session
+            if !session.start() {
+                continuation.resume(throwing: WPCOMClientError.authorizationCancelled)
+            }
+        }
+    }
+
+    private func exchangeCode(_ code: String, clientID: String, clientSecret: String) async throws -> WPCOMAuthState {
+        let fields = [
+            "grant_type": "authorization_code",
+            "client_id": clientID,
+            "client_secret": clientSecret,
+            "code": code,
+            "redirect_uri": redirectURI
+        ]
+        return try await requestToken(fields: fields, existingRefreshToken: nil)
+    }
+
+    private func refreshToken() async throws -> WPCOMAuthState {
+        guard let refreshToken = authState?.refreshToken else {
+            throw WPCOMClientError.missingRefreshToken
+        }
+        let clientID = self.clientID
+        guard !clientID.isEmpty, !clientSecret.isEmpty else {
+            throw WPCOMClientError.missingOAuthCredentials
+        }
+        let fields = [
+            "grant_type": "refresh_token",
+            "client_id": clientID,
+            "client_secret": clientSecret,
+            "refresh_token": refreshToken
+        ]
+        let token = try await requestToken(fields: fields, existingRefreshToken: refreshToken)
+        authState = token
+        return token
+    }
+
+    private func requestToken(fields: [String: String], existingRefreshToken: String?) async throws -> WPCOMAuthState {
+        var request = URLRequest(url: oauthTokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.formURLEncoded(fields)
+
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
+        let expirationDate = tokenResponse.expiresIn.map { Date().addingTimeInterval($0) }
+        return WPCOMAuthState(
+            accessToken: tokenResponse.accessToken,
+            refreshToken: tokenResponse.refreshToken ?? existingRefreshToken,
+            tokenType: tokenResponse.tokenType ?? "Bearer",
+            expirationDate: expirationDate
+        )
+    }
+
+    private func authenticatedData(for url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return data
+    }
+
+    private func authorizationHeaderValue() async throws -> String {
+        guard var state = authState else {
+            throw WPCOMClientError.authorizationCancelled
+        }
+        if state.needsRefresh {
+            state = try await refreshToken()
+        }
+        return state.authorizationHeaderValue
+    }
+
+    private func validate(response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw WPCOMClientError.invalidResponse("No HTTP response")
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw WPCOMClientError.requestFailed(httpResponse.statusCode, body)
+        }
+    }
+
+    private func persistAuthState() {
+        guard let authState,
+              let data = try? JSONEncoder().encode(authState),
+              let value = String(data: data, encoding: .utf8) else {
+            AppSettingsStorage.deleteSecure(account: tokenStorageAccount)
+            return
+        }
+        AppSettingsStorage.saveSecure(value, account: tokenStorageAccount)
+    }
+
+    private func makeMultipartBody(
+        fileURL: URL,
+        fileFieldName: String,
+        fields: [String: String],
+        boundary: String
+    ) throws -> Data {
+        var body = Data()
+
+        func append(_ value: String) {
+            body.append(Data(value.utf8))
+        }
+
+        for (name, value) in fields {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+            append("\(value)\r\n")
+        }
+
+        let fileData = try Data(contentsOf: fileURL)
+        let fileName = fileURL.lastPathComponent
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"\(fileFieldName)\"; filename=\"\(fileName)\"\r\n")
+        append("Content-Type: \(Self.audioContentType(for: fileURL))\r\n\r\n")
+        body.append(fileData)
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        return body
+    }
+
+    private static func audioContentType(for fileURL: URL) -> String {
+        switch fileURL.pathExtension.lowercased() {
+        case "wav": return "audio/wav"
+        case "mp3": return "audio/mpeg"
+        case "m4a": return "audio/mp4"
+        case "webm": return "audio/webm"
+        case "ogg": return "audio/ogg"
+        case "flac": return "audio/flac"
+        default: return "audio/mp4"
+        }
+    }
+
+    private static func randomURLSafeString(byteCount: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64URLEncodedString()
+    }
+
+    private static func formURLEncoded(_ fields: [String: String]) -> Data {
+        let encoded = fields
+            .map { key, value in
+                "\(urlEncode(key))=\(urlEncode(value))"
+            }
+            .joined(separator: "&")
+        return Data(encoded.utf8)
+    }
+
+    private static func urlEncode(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
+extension WPCOMClient: ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}

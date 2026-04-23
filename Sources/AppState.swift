@@ -4,9 +4,8 @@ import AppKit
 import AVFoundation
 import ServiceManagement
 import ApplicationServices
-import ScreenCaptureKit
 import os.log
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+private let recordingLog = OSLog(subsystem: "com.automattic.whispress", category: "Recording")
 
 struct VoiceMacro: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
@@ -21,7 +20,6 @@ struct PrecomputedMacro {
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
-    case prompts
     case macros
     case runLog
 
@@ -30,7 +28,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
-        case .prompts: return "Prompts"
         case .macros: return "Voice Macros"
         case .runLog: return "Run Log"
         }
@@ -39,7 +36,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
-        case .prompts: return "text.bubble"
         case .macros: return "music.mic"
         case .runLog: return "clock.arrow.circlepath"
         }
@@ -163,22 +159,11 @@ private enum SessionIntent {
 }
 
 final class AppState: ObservableObject, @unchecked Sendable {
-    private let apiKeyStorageKey = "groq_api_key"
-    private let apiBaseURLStorageKey = "api_base_url"
-    private let transcriptionModelStorageKey = "transcription_model"
-    private let postProcessingModelStorageKey = "post_processing_model"
-    private let postProcessingFallbackModelStorageKey = "post_processing_fallback_model"
-    private let contextModelStorageKey = "context_model"
     private let holdShortcutStorageKey = "hold_shortcut"
     private let toggleShortcutStorageKey = "toggle_shortcut"
     private let savedHoldCustomShortcutStorageKey = "saved_hold_custom_shortcut"
     private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
-    private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
-    private let customSystemPromptStorageKey = "custom_system_prompt"
-    private let customContextPromptStorageKey = "custom_context_prompt"
-    private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
-    private let customContextPromptLastModifiedStorageKey = "custom_context_prompt_last_modified"
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
@@ -187,56 +172,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeEnabledStorageKey = "command_mode_enabled"
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
+    private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let transcribingIndicatorDelay: TimeInterval = 0.25
     private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
-    static let defaultTranscriptionModel = "whisper-large-v3"
-    static let defaultPostProcessingModel = "openai/gpt-oss-20b"
-    static let defaultPostProcessingFallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
-    static let defaultContextModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+
 
     @Published var hasCompletedSetup: Bool {
         didSet {
             UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
-        }
-    }
-
-    @Published var apiKey: String {
-        didSet {
-            persistAPIKey(apiKey)
-            rebuildContextService()
-        }
-    }
-
-    @Published var apiBaseURL: String {
-        didSet {
-            persistAPIBaseURL(apiBaseURL)
-            rebuildContextService()
-        }
-    }
-
-    @Published var transcriptionModel: String {
-        didSet {
-            UserDefaults.standard.set(transcriptionModel, forKey: transcriptionModelStorageKey)
-        }
-    }
-
-    @Published var postProcessingModel: String {
-        didSet {
-            UserDefaults.standard.set(postProcessingModel, forKey: postProcessingModelStorageKey)
-        }
-    }
-
-    @Published var postProcessingFallbackModel: String {
-        didSet {
-            UserDefaults.standard.set(postProcessingFallbackModel, forKey: postProcessingFallbackModelStorageKey)
-        }
-    }
-
-    @Published var contextModel: String {
-        didSet {
-            UserDefaults.standard.set(contextModel, forKey: contextModelStorageKey)
-            rebuildContextService()
         }
     }
 
@@ -284,37 +228,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet {
             UserDefaults.standard.set(commandModeManualModifier.rawValue, forKey: commandModeManualModifierStorageKey)
             restartHotkeyMonitoring()
-        }
-    }
-
-    @Published var customVocabulary: String {
-        didSet {
-            UserDefaults.standard.set(customVocabulary, forKey: customVocabularyStorageKey)
-        }
-    }
-
-    @Published var customSystemPrompt: String {
-        didSet {
-            UserDefaults.standard.set(customSystemPrompt, forKey: customSystemPromptStorageKey)
-        }
-    }
-
-    @Published var customContextPrompt: String {
-        didSet {
-            UserDefaults.standard.set(customContextPrompt, forKey: customContextPromptStorageKey)
-            rebuildContextService()
-        }
-    }
-
-    @Published var customSystemPromptLastModified: String {
-        didSet {
-            UserDefaults.standard.set(customSystemPromptLastModified, forKey: customSystemPromptLastModifiedStorageKey)
-        }
-    }
-
-    @Published var customContextPromptLastModified: String {
-        didSet {
-            UserDefaults.standard.set(customContextPromptLastModified, forKey: customContextPromptLastModifiedStorageKey)
         }
     }
 
@@ -372,7 +285,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var lastPostProcessingStatus = ""
     @Published var lastContextScreenshotDataURL: String? = nil
     @Published var lastContextScreenshotStatus = "No screenshot"
-    @Published var hasScreenRecordingPermission = false
     @Published var launchAtLogin: Bool {
         didSet { setLaunchAtLogin(launchAtLogin) }
     }
@@ -383,10 +295,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
     @Published var availableMicrophones: [AudioDevice] = []
+    @Published private(set) var isWordPressComSignedIn = false
+    @Published private(set) var isSigningInToWordPressCom = false
+    @Published private(set) var isRefreshingWordPressComSites = false
+    @Published private(set) var wordpressComSites: [WPCOMSite] = []
+    @Published private(set) var transcribeSkill: WPCOMGuideline?
+    @Published var wordpressComStatusMessage: String?
+    @Published var selectedWordPressComSiteID: Int? {
+        didSet {
+            if let selectedWordPressComSiteID {
+                UserDefaults.standard.set(selectedWordPressComSiteID, forKey: selectedWPCOMSiteIDStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedWPCOMSiteIDStorageKey)
+            }
+            Task { await discoverTranscribeSkillForSelectedSite() }
+        }
+    }
+
+    var selectedWordPressComSite: WPCOMSite? {
+        guard let selectedWordPressComSiteID else { return nil }
+        return wordpressComSites.first(where: { $0.id == selectedWordPressComSiteID })
+    }
 
     let audioRecorder = AudioRecorder()
     let hotkeyManager = HotkeyManager()
     let overlayManager = RecordingOverlayManager()
+    private let wpcomClient = WPCOMClient()
     private var accessibilityTimer: Timer?
     private var audioLevelCancellable: AnyCancellable?
     private var debugOverlayTimer: Timer?
@@ -397,7 +331,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var contextService: AppContextService
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
-    private var hasShownScreenshotPermissionAlert = false
     private var audioDeviceObservers: [NSObjectProtocol] = []
     private var needsMicrophoneRefreshAfterRecording = false
     private let pipelineHistoryStore = PipelineHistoryStore()
@@ -417,12 +350,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
-        let apiBaseURL = Self.loadStoredAPIBaseURL(account: "api_base_url")
-        let transcriptionModel = UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? Self.defaultTranscriptionModel
-        let postProcessingModel = UserDefaults.standard.string(forKey: postProcessingModelStorageKey) ?? Self.defaultPostProcessingModel
-        let postProcessingFallbackModel = UserDefaults.standard.string(forKey: postProcessingFallbackModelStorageKey) ?? Self.defaultPostProcessingFallbackModel
-        let contextModel = UserDefaults.standard.string(forKey: contextModelStorageKey) ?? Self.defaultContextModel
         let shortcuts = Self.loadShortcutConfiguration(
             holdKey: holdShortcutStorageKey,
             toggleKey: toggleShortcutStorageKey
@@ -435,11 +362,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             forKey: savedToggleCustomShortcutStorageKey,
             fallback: shortcuts.toggle.isCustom ? shortcuts.toggle : nil
         )
-        let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
-        let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
-        let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
-        let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
-        let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let isCommandModeEnabled = UserDefaults.standard.object(forKey: commandModeEnabledStorageKey) == nil
             ? false
@@ -468,7 +390,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let initialAccessibility = AXIsProcessTrusted()
-        let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
         var removedAudioFileNames: [String] = []
         do {
             removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
@@ -481,20 +402,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let savedHistory = pipelineHistoryStore.loadAllHistory()
 
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
+        let storedSiteID = UserDefaults.standard.object(forKey: selectedWPCOMSiteIDStorageKey) as? Int
 
-        self.contextService = AppContextService(
-            apiKey: apiKey,
-            baseURL: apiBaseURL,
-            customContextPrompt: customContextPrompt,
-            contextModel: contextModel
-        )
+        self.contextService = AppContextService()
         self.hasCompletedSetup = hasCompletedSetup
-        self.apiKey = apiKey
-        self.apiBaseURL = apiBaseURL
-        self.transcriptionModel = transcriptionModel
-        self.postProcessingModel = postProcessingModel
-        self.postProcessingFallbackModel = postProcessingFallbackModel
-        self.contextModel = contextModel
         self.holdShortcut = shortcuts.hold
         self.toggleShortcut = shortcuts.toggle
         self.savedHoldCustomShortcut = savedHoldCustomShortcut.binding
@@ -502,11 +413,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.isCommandModeEnabled = isCommandModeEnabled
         self.commandModeStyle = commandModeStyle
         self.commandModeManualModifier = commandModeManualModifier
-        self.customVocabulary = customVocabulary
-        self.customSystemPrompt = customSystemPrompt
-        self.customContextPrompt = customContextPrompt
-        self.customSystemPromptLastModified = customSystemPromptLastModified
-        self.customContextPromptLastModified = customContextPromptLastModified
         self.shortcutStartDelay = shortcutStartDelay
         self.preserveClipboard = preserveClipboard
         self.alertSoundsEnabled = alertSoundsEnabled
@@ -514,9 +420,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.voiceMacros = initialMacros
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
-        self.hasScreenRecordingPermission = initialScreenCapturePermission
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
+        self.selectedWordPressComSiteID = storedSiteID
+        self.isWordPressComSignedIn = wpcomClient.isSignedIn
         self.precomputeMacros()
 
         refreshAvailableMicrophones()
@@ -540,6 +447,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self?.handleOverlayStopButtonPressed()
             }
         }
+
+        if wpcomClient.isSignedIn {
+            Task { await refreshWordPressComSites() }
+        }
     }
 
     deinit {
@@ -553,24 +464,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         audioDeviceObservers.removeAll()
     }
-
-    private static func loadStoredAPIKey(account: String) -> String {
-        if let storedKey = AppSettingsStorage.load(account: account), !storedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return storedKey
-        }
-        return ""
-    }
-
-    private func persistAPIKey(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            AppSettingsStorage.delete(account: apiKeyStorageKey)
-        } else {
-            AppSettingsStorage.save(trimmed, account: apiKeyStorageKey)
-        }
-    }
-
-    static let defaultAPIBaseURL = "https://api.groq.com/openai/v1"
 
     private struct StoredShortcutConfiguration {
         let hold: ShortcutBinding
@@ -588,13 +481,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let binding: ShortcutBinding?
         let hadStoredValue: Bool
         let didNormalize: Bool
-    }
-
-    private static func loadStoredAPIBaseURL(account: String) -> String {
-        if let stored = AppSettingsStorage.load(account: account), !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return stored
-        }
-        return defaultAPIBaseURL
     }
 
     private static func loadShortcutConfiguration(holdKey: String, toggleKey: String) -> StoredShortcutConfiguration {
@@ -643,24 +529,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
-    private func persistAPIBaseURL(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == Self.defaultAPIBaseURL {
-            AppSettingsStorage.delete(account: apiBaseURLStorageKey)
-        } else {
-            AppSettingsStorage.save(trimmed, account: apiBaseURLStorageKey)
-        }
-    }
-
-    private func rebuildContextService() {
-        contextService = AppContextService(
-            apiKey: apiKey,
-            baseURL: apiBaseURL,
-            customContextPrompt: customContextPrompt,
-            contextModel: contextModel
-        )
-    }
-
     private func persistShortcut(_ binding: ShortcutBinding, key: String) {
         let normalizedBinding = binding.normalizedForStorageMigration()
         guard let data = try? JSONEncoder().encode(normalizedBinding) else { return }
@@ -682,7 +550,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     static func audioStorageDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "WhisPress"
         let audioDir = appSupport.appendingPathComponent("\(appName)/audio", isDirectory: true)
         if !FileManager.default.fileExists(atPath: audioDir.path) {
             try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
@@ -730,6 +598,146 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    func signInToWordPressCom() {
+        guard !isSigningInToWordPressCom else { return }
+        isSigningInToWordPressCom = true
+        wordpressComStatusMessage = "Opening WordPress.com sign in..."
+        Task {
+            do {
+                _ = try await wpcomClient.signIn()
+                await MainActor.run {
+                    self.isWordPressComSignedIn = true
+                    self.wordpressComStatusMessage = "Signed in to WordPress.com"
+                }
+                await refreshWordPressComSites()
+            } catch {
+                await MainActor.run {
+                    self.wordpressComStatusMessage = error.localizedDescription
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+            await MainActor.run {
+                self.isSigningInToWordPressCom = false
+            }
+        }
+    }
+
+    func signOutOfWordPressCom() {
+        wpcomClient.signOut()
+        isWordPressComSignedIn = false
+        wordpressComSites = []
+        selectedWordPressComSiteID = nil
+        transcribeSkill = nil
+        wordpressComStatusMessage = "Signed out"
+    }
+
+    func refreshWordPressComSites() async {
+        await MainActor.run {
+            self.isRefreshingWordPressComSites = true
+            self.wordpressComStatusMessage = "Loading WordPress.com sites..."
+        }
+
+        do {
+            let sites = try await wpcomClient.fetchSites()
+            await MainActor.run {
+                self.wordpressComSites = sites
+                if let selected = self.selectedWordPressComSiteID,
+                   sites.contains(where: { $0.id == selected }) {
+                    // Keep the user's selected site.
+                } else {
+                    self.selectedWordPressComSiteID = sites.first?.id
+                }
+                self.isWordPressComSignedIn = true
+                self.wordpressComStatusMessage = sites.isEmpty
+                    ? "No WordPress.com sites found"
+                    : "Ready"
+                self.isRefreshingWordPressComSites = false
+            }
+            await discoverTranscribeSkillForSelectedSite()
+        } catch {
+            await MainActor.run {
+                self.wordpressComStatusMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
+                self.isRefreshingWordPressComSites = false
+                if case WPCOMClientError.missingRefreshToken = error {
+                    self.isWordPressComSignedIn = false
+                }
+            }
+        }
+    }
+
+    func refreshWordPressComSitesFromUI() {
+        Task { await refreshWordPressComSites() }
+    }
+
+    @MainActor
+    func discoverTranscribeSkillForSelectedSite() async {
+        guard let siteID = selectedWordPressComSiteID, isWordPressComSignedIn else {
+            transcribeSkill = nil
+            return
+        }
+
+        do {
+            transcribeSkill = try await wpcomClient.discoverTranscribeSkill(siteID: siteID)
+        } catch {
+            transcribeSkill = nil
+        }
+    }
+
+    func openTranscribeSkill() {
+        guard let transcribeSkill,
+              let selectedWordPressComSite else { return }
+        NSWorkspace.shared.open(wpcomClient.editURL(for: transcribeSkill, site: selectedWordPressComSite))
+    }
+
+    func transcribeAudioForSetupTest(fileURL: URL) async throws -> String {
+        let context = await contextService.collectContext()
+        let response = try await transcribeWithWordPressCom(
+            fileURL: fileURL,
+            intent: .dictation,
+            context: context
+        )
+        return response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func transcribeWithWordPressCom(
+        fileURL: URL,
+        intent: SessionIntent,
+        context: AppContext
+    ) async throws -> WPCOMTranscribeResponse {
+        guard let siteID = selectedWordPressComSiteID else {
+            throw WPCOMClientError.missingSelectedSite
+        }
+
+        let intentValue: String
+        let selectedText: String?
+        switch intent {
+        case .dictation:
+            intentValue = "dictation"
+            selectedText = nil
+        case .command(_, let text):
+            intentValue = "command"
+            selectedText = text
+        }
+
+        let appContext = WPCOMAppContextPayload(
+            appName: context.appName,
+            bundleIdentifier: context.bundleIdentifier,
+            windowTitle: context.windowTitle,
+            selectedText: context.selectedText,
+            currentActivity: context.currentActivity
+        )
+        let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        return try await wpcomClient.transcribe(
+            audioFileURL: fileURL,
+            siteID: siteID,
+            intent: intentValue,
+            selectedText: selectedText,
+            appContext: appContext,
+            clientVersion: clientVersion
+        )
+    }
+
     func retryTranscription(item: PipelineHistoryItem) {
         guard let audioFileName = item.audioFileName else { return }
         guard !retryingItemIDs.contains(item.id) else { return }
@@ -755,42 +763,37 @@ final class AppState: ObservableObject, @unchecked Sendable {
             screenshotError: nil
         )
 
-        let postProcessingService = PostProcessingService(
-            apiKey: apiKey,
-            baseURL: apiBaseURL,
-            preferredModel: postProcessingModel,
-            preferredFallbackModel: postProcessingFallbackModel
-        )
-        let capturedCustomVocabulary = customVocabulary
-        let capturedCustomSystemPrompt = customSystemPrompt
-
         Task {
             do {
-                let transcriptionService = try TranscriptionService(
-                    apiKey: apiKey,
-                    baseURL: apiBaseURL,
-                    transcriptionModel: transcriptionModel
-                )
-                let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
-
-                let finalTranscript: String
-                let processingStatus: String
-                let postProcessingPrompt: String
                 let restoredIntent = SessionIntent.fromPersisted(
                     intent: item.intent,
                     selectedText: item.selectedText
                 )
-                let result = await self.processTranscript(
-                    rawTranscript,
+                let response = try await self.transcribeWithWordPressCom(
+                    fileURL: audioURL,
                     intent: restoredIntent,
-                    context: restoredContext,
-                    postProcessingService: postProcessingService,
-                    customVocabulary: capturedCustomVocabulary,
-                    customSystemPrompt: capturedCustomSystemPrompt
+                    context: restoredContext
                 )
-                finalTranscript = result.finalTranscript
-                processingStatus = result.outcome.statusMessage(isRetry: true)
-                postProcessingPrompt = result.prompt
+                let rawTranscript = response.rawTranscript
+                var finalTranscriptDraft = response.text
+                var processingStatusDraft = response.status + " (retried)"
+                if !response.warnings.isEmpty {
+                    processingStatusDraft += " (" + response.warnings.joined(separator: ", ") + ")"
+                }
+                var postProcessingPromptDraft = response.skillID.map { "WordPress.com transcribe skill #\($0)" } ?? ""
+                if response.skillCreated {
+                    postProcessingPromptDraft += postProcessingPromptDraft.isEmpty
+                        ? "WordPress.com created transcribe skill"
+                        : " (created during request)"
+                }
+                if case .dictation = restoredIntent,
+                   let macro = self.findMatchingMacro(for: rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? finalTranscriptDraft : rawTranscript) {
+                    finalTranscriptDraft = macro.payload
+                    processingStatusDraft = TranscriptProcessingOutcome.voiceMacro(command: macro.command).statusMessage()
+                }
+                let finalTranscript = finalTranscriptDraft
+                let processingStatus = processingStatusDraft
+                let postProcessingPrompt = postProcessingPromptDraft
 
                 await MainActor.run {
                     let updatedItem = PipelineHistoryItem(
@@ -807,7 +810,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         contextScreenshotStatus: item.contextScreenshotStatus,
                         postProcessingStatus: processingStatus,
                         debugStatus: "Retried",
-                        customVocabulary: item.customVocabulary,
+                        customVocabulary: "",
                         audioFileName: item.audioFileName
                     )
                     do {
@@ -850,11 +853,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func startAccessibilityPolling() {
         accessibilityTimer?.invalidate()
         hasAccessibility = AXIsProcessTrusted()
-        hasScreenRecordingPermission = hasScreenCapturePermission()
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.hasAccessibility = AXIsProcessTrusted()
-                self?.hasScreenRecordingPermission = self?.hasScreenCapturePermission() ?? false
             }
         }
     }
@@ -902,30 +903,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             DispatchQueue.main.async {
                 completion(false)
             }
-        }
-    }
-
-    func hasScreenCapturePermission() -> Bool {
-        CGPreflightScreenCaptureAccess()
-    }
-
-    func requestScreenCapturePermission() {
-        // ScreenCaptureKit triggers the "Screen & System Audio Recording"
-        // permission dialog on macOS Sequoia+, correctly identifying the
-        // running app (unlike the legacy CGWindowListCreateImage path).
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
-            }
-        }
-
-        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
-    }
-
-    func openScreenCaptureSettings() {
-        let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-        if let url = settingsURL {
-            NSWorkspace.shared.open(url)
         }
     }
 
@@ -1454,6 +1431,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
         }
 
+        guard isWordPressComSignedIn, selectedWordPressComSiteID != nil else {
+            errorMessage = "Sign in with WordPress.com and choose a site before dictating."
+            statusText = "WordPress.com sign-in required"
+            activeRecordingTriggerMode = nil
+            currentSessionIntent = .dictation
+            shortcutSessionController.reset()
+            NotificationCenter.default.post(name: .showSettings, object: nil)
+            return false
+        }
+
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
         let manualCommandRequested = manualCommandRequested
             ?? hotkeyManager.currentPressedModifiers.contains(commandModeManualModifier.shortcutModifier)
@@ -1463,35 +1450,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             manualCommandRequested: manualCommandRequested
         ) else { return false }
 
-        if resolvedIntent.isCommandMode {
-            guard ensureScreenCaptureAccess() else { return false }
-            if let startedAt {
-                os_log(.info, log: recordingLog, "screen capture check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
-            }
-        } else {
-            hasScreenRecordingPermission = hasScreenCapturePermission()
-        }
-
         currentSessionIntent = resolvedIntent
         overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
-        return true
-    }
-
-    private func ensureScreenCaptureAccess() -> Bool {
-        let granted = hasScreenCapturePermission()
-        hasScreenRecordingPermission = granted
-        guard granted else {
-            let message = "Screen recording permission not granted. Enable in System Settings > Privacy & Security > Screen Recording."
-            errorMessage = message
-            statusText = "Screenshot Required"
-            activeRecordingTriggerMode = nil
-            currentSessionIntent = .dictation
-            shortcutSessionController.reset()
-            playAlertSound(named: "Basso")
-            showScreenshotPermissionAlert(message: message)
-            return false
-        }
-
         return true
     }
 
@@ -1572,7 +1532,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         isRecording = true
         statusText = "Starting..."
-        hasShownScreenshotPermissionAlert = false
 
         // Show initializing dots only if engine takes longer than 0.2s to start
         var overlayShown = false
@@ -1700,7 +1659,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "FreeFlow cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable FreeFlow."
+        alert.informativeText = "WhisPress cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable WhisPress."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -1715,7 +1674,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showAccessibilityAlert() {
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "FreeFlow cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable FreeFlow."
+        alert.informativeText = "WhisPress cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable WhisPress."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -1760,78 +1719,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private enum TranscriptProcessingOutcome {
-        case skippedEmptyRawTranscript
         case voiceMacro(command: String)
-        case postProcessingSucceeded
-        case postProcessingFailedFallback
-        case commandModeSucceeded(invocation: CommandInvocation)
-        case commandModeFailedFallback(invocation: CommandInvocation)
 
-        func statusMessage(isRetry: Bool = false) -> String {
+        func statusMessage() -> String {
             switch self {
-            case .skippedEmptyRawTranscript:
-                return "Skipped macros and post-processing for empty raw transcript"
             case .voiceMacro(let command):
                 return "Voice macro used: \(command)"
-            case .postProcessingSucceeded:
-                return isRetry ? "Post-processing succeeded (retried)" : "Post-processing succeeded"
-            case .postProcessingFailedFallback:
-                return isRetry
-                    ? "Post-processing failed on retry, using raw transcript"
-                    : "Post-processing failed, using raw transcript"
-            case .commandModeSucceeded(let invocation):
-                return "Edit mode succeeded (\(invocation.rawValue))"
-            case .commandModeFailedFallback(let invocation):
-                return "Edit mode failed, using selected text (\(invocation.rawValue))"
             }
-        }
-    }
-
-    private func processTranscript(
-        _ rawTranscript: String,
-        intent: SessionIntent,
-        context: AppContext,
-        postProcessingService: PostProcessingService,
-        customVocabulary: String,
-        customSystemPrompt: String
-    ) async -> (finalTranscript: String, outcome: TranscriptProcessingOutcome, prompt: String) {
-        let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedRawTranscript.isEmpty else {
-            return ("", .skippedEmptyRawTranscript, "")
-        }
-
-        if case .command(let invocation, let selectedText) = intent {
-            do {
-                let result = try await postProcessingService.commandTransform(
-                    selectedText: selectedText,
-                    voiceCommand: rawTranscript,
-                    context: context,
-                    customVocabulary: customVocabulary
-                )
-                return (result.transcript, .commandModeSucceeded(invocation: invocation), result.prompt)
-            } catch {
-                os_log(.error, log: recordingLog, "Edit mode failed: %{public}@", error.localizedDescription)
-                return (selectedText, .commandModeFailedFallback(invocation: invocation), "")
-            }
-        }
-
-        if let macro = findMatchingMacro(for: trimmedRawTranscript) {
-            os_log(.info, log: recordingLog, "Voice macro triggered: %{public}@", macro.command)
-            return (macro.payload, .voiceMacro(command: macro.command), "")
-        }
-        
-        do {
-            let result = try await postProcessingService.postProcess(
-                transcript: trimmedRawTranscript,
-                context: context,
-                customVocabulary: customVocabulary,
-                customSystemPrompt: customSystemPrompt
-            )
-            return (result.transcript, .postProcessingSucceeded, result.prompt)
-        } catch {
-            os_log(.error, log: recordingLog, "Post-processing failed: %{public}@", error.localizedDescription)
-            return (trimmedRawTranscript, .postProcessingFailedFallback, "")
         }
     }
 
@@ -1895,24 +1789,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 } catch {}
             }
 
-        let postProcessingService = PostProcessingService(
-            apiKey: apiKey,
-            baseURL: apiBaseURL,
-            preferredModel: postProcessingModel,
-            preferredFallbackModel: postProcessingFallbackModel
-        )
-
             self.transcriptionTask?.cancel()
             self.transcriptionTask = Task {
                 do {
-                    let transcriptionService = try TranscriptionService(
-                        apiKey: self.apiKey,
-                        baseURL: self.apiBaseURL,
-                        transcriptionModel: self.transcriptionModel
-                    )
-                    async let transcript = transcriptionService.transcribe(fileURL: transcriptionFileURL)
-                    let rawTranscript = try await transcript
-                    try Task.checkCancellation()
                     let appContext: AppContext
                     if let sessionContext {
                         appContext = sessionContext
@@ -1923,15 +1802,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     }
                     try Task.checkCancellation()
                     await MainActor.run { [weak self] in
-                        self?.debugStatusMessage = "Running post-processing"
+                        self?.debugStatusMessage = "Calling WordPress.com"
                     }
-                    let result = await self.processTranscript(
-                        rawTranscript,
+                    let response = try await self.transcribeWithWordPressCom(
+                        fileURL: transcriptionFileURL,
                         intent: sessionIntent,
-                        context: appContext,
-                        postProcessingService: postProcessingService,
-                        customVocabulary: self.customVocabulary,
-                        customSystemPrompt: self.customSystemPrompt
+                        context: appContext
                     )
                     try Task.checkCancellation()
 
@@ -1939,19 +1815,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         guard self.isTranscribing else { return }
                         self.lastContextSummary = appContext.contextSummary
                         self.lastContextScreenshotDataURL = appContext.screenshotDataURL
-                        self.lastContextScreenshotStatus = appContext.screenshotError
-                            ?? "available (\(appContext.screenshotMimeType ?? "image"))"
-                        let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let trimmedFinalTranscript = result.finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let processingStatus = result.outcome.statusMessage()
-                        self.lastPostProcessingPrompt = result.prompt
+                        self.lastContextScreenshotStatus = self.contextScreenshotStatus(for: appContext)
+                        let trimmedRawTranscript = response.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        var trimmedFinalTranscript = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        var processingStatus = response.status
+                        if !response.warnings.isEmpty {
+                            processingStatus += " (" + response.warnings.joined(separator: ", ") + ")"
+                        }
+                        var postProcessingPrompt = response.skillID.map { "WordPress.com transcribe skill #\($0)" } ?? ""
+                        if response.skillCreated {
+                            postProcessingPrompt += postProcessingPrompt.isEmpty
+                                ? "WordPress.com created transcribe skill"
+                                : " (created during request)"
+                        }
+
+                        if case .dictation = sessionIntent,
+                           let macro = self.findMatchingMacro(for: trimmedRawTranscript.isEmpty ? trimmedFinalTranscript : trimmedRawTranscript) {
+                            trimmedFinalTranscript = macro.payload
+                            processingStatus = TranscriptProcessingOutcome.voiceMacro(command: macro.command).statusMessage()
+                        }
+
+                        self.lastPostProcessingPrompt = postProcessingPrompt
                         self.lastRawTranscript = trimmedRawTranscript
                         self.lastPostProcessedTranscript = trimmedFinalTranscript
                         self.lastPostProcessingStatus = processingStatus
                         self.recordPipelineHistoryEntry(
                             rawTranscript: trimmedRawTranscript,
                             postProcessedTranscript: trimmedFinalTranscript,
-                            postProcessingPrompt: result.prompt,
+                            postProcessingPrompt: postProcessingPrompt,
                             context: appContext,
                             processingStatus: processingStatus,
                             intent: sessionIntent,
@@ -1966,26 +1857,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.debugStatusMessage = "Done"
                         let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
 
-                        let shouldPersistRawDictationFallback: Bool
-                        switch result.outcome {
-                        case .postProcessingFailedFallback:
-                            shouldPersistRawDictationFallback = !trimmedFinalTranscript.isEmpty
-                        default:
-                            shouldPersistRawDictationFallback = false
-                        }
-
                         if trimmedFinalTranscript.isEmpty {
                             self.statusText = "Nothing to transcribe"
                             self.clearPendingOverlayDismissToken()
                             self.overlayManager.dismiss()
                         } else {
                             self.statusText = completionStatusText
-                            if shouldPersistRawDictationFallback {
-                                self.scheduleOverlayDismissAfterFailureIndicator(after: 2.5)
-                            } else {
-                                self.clearPendingOverlayDismissToken()
-                                self.overlayManager.dismiss()
-                            }
+                            self.clearPendingOverlayDismissToken()
+                            self.overlayManager.dismiss()
 
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
                             self.pasteAtCursorWhenShortcutReleased {
@@ -1995,6 +1874,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
                         self.audioRecorder.cleanup()
                         self.refreshAvailableMicrophonesIfNeeded()
+                        Task { await self.discoverTranscribeSkillForSelectedSite() }
 
                         self.scheduleReadyStatusReset(after: 3, matching: [completionStatusText, "Nothing to transcribe"])
                     }
@@ -2027,8 +1907,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.lastPostProcessingStatus = "Error: \(error.localizedDescription)"
                         self.lastPostProcessingPrompt = ""
                         self.lastContextScreenshotDataURL = resolvedContext.screenshotDataURL
-                        self.lastContextScreenshotStatus = resolvedContext.screenshotError
-                            ?? "available (\(resolvedContext.screenshotMimeType ?? "image"))"
+                        self.lastContextScreenshotStatus = self.contextScreenshotStatus(for: resolvedContext)
                         self.recordPipelineHistoryEntry(
                             rawTranscript: "",
                             postProcessedTranscript: "",
@@ -2065,11 +1944,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             contextSummary: context.contextSummary,
             contextPrompt: context.contextPrompt,
             contextScreenshotDataURL: context.screenshotDataURL,
-            contextScreenshotStatus: context.screenshotError
-                ?? "available (\(context.screenshotMimeType ?? "image"))",
+            contextScreenshotStatus: contextScreenshotStatus(for: context),
             postProcessingStatus: processingStatus,
             debugStatus: debugStatusMessage,
-            customVocabulary: customVocabulary,
+            customVocabulary: "",
             audioFileName: audioFileName
         )
         do {
@@ -2089,7 +1967,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         lastContextSummary = "Collecting app context..."
         lastPostProcessingStatus = ""
         lastContextScreenshotDataURL = nil
-        lastContextScreenshotStatus = "Collecting screenshot..."
+        lastContextScreenshotStatus = "No screenshot"
 
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
@@ -2098,13 +1976,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary
                 self.lastContextScreenshotDataURL = context.screenshotDataURL
-                self.lastContextScreenshotStatus = context.screenshotError
-                    ?? "available (\(context.screenshotMimeType ?? "image"))"
+                self.lastContextScreenshotStatus = self.contextScreenshotStatus(for: context)
                 self.lastPostProcessingStatus = "App context captured"
-                self.handleScreenshotCaptureIssue(context.screenshotError)
             }
             return context
         }
+    }
+
+    private func contextScreenshotStatus(for context: AppContext) -> String {
+        if let error = context.screenshotError {
+            return error
+        }
+
+        if context.screenshotDataURL != nil {
+            return "available (\(context.screenshotMimeType ?? "image"))"
+        }
+
+        return "No screenshot"
     }
 
     private func fallbackContextAtStop() -> AppContext {
@@ -2115,11 +2003,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             bundleIdentifier: frontmostApp?.bundleIdentifier,
             windowTitle: windowTitle,
             selectedText: nil,
-            currentActivity: "Could not refresh app context at stop time; using text-only post-processing.",
+            currentActivity: "Could not refresh app context at stop time; using text-only app context.",
             contextPrompt: nil,
             screenshotDataURL: nil,
             screenshotMimeType: nil,
-            screenshotError: "No app context captured before stop"
+            screenshotError: nil
         )
     }
 
@@ -2164,69 +2052,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func handleScreenshotCaptureIssue(_ message: String?) {
-        guard let message, !message.isEmpty else {
-            hasShownScreenshotPermissionAlert = false
-            return
-        }
-
-        os_log(.error, "Screenshot capture issue: %{public}@", message)
-
-        if isScreenCapturePermissionError(message) && !hasShownScreenshotPermissionAlert {
-            hasScreenRecordingPermission = false
-            guard currentSessionIntent.isCommandMode else { return }
-            errorMessage = message
-            hasShownScreenshotPermissionAlert = true
-
-            // Permission errors are fatal — stop recording
-            audioRecorder.cancelRecording()
-            audioLevelCancellable?.cancel()
-            audioLevelCancellable = nil
-            contextCaptureTask?.cancel()
-            contextCaptureTask = nil
-            capturedContext = nil
-            isRecording = false
-            shortcutSessionController.reset()
-            activeRecordingTriggerMode = nil
-            statusText = "Screenshot Required"
-            overlayManager.dismiss()
-
-            playAlertSound(named: "Basso")
-            showScreenshotPermissionAlert(message: message)
-        }
-        // Non-permission errors (transient failures) — continue recording without context
-    }
-
-    private func isScreenCapturePermissionError(_ message: String) -> Bool {
-        let lowered = message.lowercased()
-        return lowered.contains("permission") || lowered.contains("screen recording")
-    }
-
-    private func showScreenshotPermissionAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "\(message)\n\nFreeFlow requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable FreeFlow."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            openScreenCaptureSettings()
-        }
-    }
-
-    private func showScreenshotCaptureErrorAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Screenshot Capture Failed"
-        alert.informativeText = "\(message)\n\nA screenshot is required for context-aware transcription. Recording has been stopped."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
-        _ = alert.runModal()
     }
 
     func toggleDebugOverlay() {

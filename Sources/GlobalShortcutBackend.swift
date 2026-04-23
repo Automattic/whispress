@@ -1,7 +1,7 @@
 import Cocoa
 import os.log
 
-private let shortcutLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Shortcuts")
+private let shortcutLog = OSLog(subsystem: "com.automattic.whispress", category: "Shortcuts")
 
 enum GlobalShortcutBackendError: LocalizedError {
     case eventTapUnavailable
@@ -10,7 +10,7 @@ enum GlobalShortcutBackendError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .eventTapUnavailable:
-            return "Global shortcut monitoring could not start. FreeFlow requires keyboard monitoring permission for global shortcuts."
+            return "Global shortcut monitoring could not start. WhisPress requires keyboard monitoring permission for global shortcuts."
         case .eventTapRunLoopSourceUnavailable:
             return "Global shortcut monitoring could not start because the event tap run loop source could not be created."
         }
@@ -20,6 +20,7 @@ enum GlobalShortcutBackendError: LocalizedError {
 final class GlobalShortcutBackend {
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
+    private var functionKeyIsDown = false
 
     var onInputEvent: ((ShortcutInputEvent) -> ShortcutConsumeDecision)?
     var onEscapeKeyPressed: (() -> Bool)?
@@ -93,6 +94,7 @@ final class GlobalShortcutBackend {
     }
 
     private func notifyBackendReset() {
+        functionKeyIsDown = false
         _ = onInputEvent?(.backendReset)
     }
 
@@ -135,6 +137,10 @@ final class GlobalShortcutBackend {
             return false
         }
 
+        if event.keyCode == 63 {
+            functionKeyIsDown = isDown
+        }
+
         return onInputEvent?(.modifierChanged(keyCode: event.keyCode, isDown: isDown)) == .consume
     }
 
@@ -146,7 +152,7 @@ final class GlobalShortcutBackend {
 
         guard !ShortcutBinding.modifierKeyCodes.contains(event.keyCode) else { return false }
         let snapshotDecision = onInputEvent?(
-            .modifierSnapshot(ModifierKeyEventState.pressedModifierKeyCodes(for: event))
+            .modifierSnapshot(modifierSnapshotForNonModifierKeyEvent(event))
         ) ?? .passthrough
         let keyDecision = onInputEvent?(
             .keyChanged(keyCode: event.keyCode, isDown: true, isRepeat: event.isARepeat)
@@ -157,11 +163,22 @@ final class GlobalShortcutBackend {
     private func handleKeyUp(_ event: NSEvent) -> Bool {
         guard !ShortcutBinding.modifierKeyCodes.contains(event.keyCode) else { return false }
         let snapshotDecision = onInputEvent?(
-            .modifierSnapshot(ModifierKeyEventState.pressedModifierKeyCodes(for: event))
+            .modifierSnapshot(modifierSnapshotForNonModifierKeyEvent(event))
         ) ?? .passthrough
         let keyDecision = onInputEvent?(
             .keyChanged(keyCode: event.keyCode, isDown: false, isRepeat: false)
         ) ?? .passthrough
         return snapshotDecision == .consume || keyDecision == .consume
+    }
+
+    private func modifierSnapshotForNonModifierKeyEvent(_ event: NSEvent) -> Set<UInt16> {
+        var pressedModifierKeyCodes = ModifierKeyEventState.pressedModifierKeyCodes(
+            for: event,
+            includeFunctionKey: false
+        )
+        if functionKeyIsDown {
+            pressedModifierKeyCodes.insert(63)
+        }
+        return pressedModifierKeyCodes
     }
 }

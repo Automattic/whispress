@@ -12,8 +12,6 @@ struct PipelineDebugPanelView: View {
                 statusMessage: appState.debugStatusMessage,
                 postProcessingStatus: appState.lastPostProcessingStatus,
                 contextSummary: appState.lastContextSummary,
-                contextScreenshotStatus: appState.lastContextScreenshotStatus,
-                contextScreenshotDataURL: appState.lastContextScreenshotDataURL,
                 rawTranscript: appState.lastRawTranscript,
                 postProcessedTranscript: appState.lastPostProcessedTranscript,
                 postProcessingPrompt: appState.lastPostProcessingPrompt
@@ -35,7 +33,7 @@ struct PipelineDebugPanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Pipeline Debug")
                 .font(.title3)
-            Text("Live data for the transcription + post-processing pipeline.")
+            Text("Live data for the WordPress.com transcription pipeline.")
                 .font(.body)
                 .foregroundStyle(.secondary)
         }

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>FreeFlow</string>
+    <string>WhisPress</string>
     <key>CFBundleDisplayName</key>
-    <string>FreeFlow</string>
+    <string>WhisPress</string>
     <key>CFBundleIdentifier</key>
-    <string>com.zachlatta.freeflow</string>
+    <string>com.automattic.whispress</string>
     <key>CFBundleVersion</key>
     <string>0.2.0</string>
     <key>CFBundleShortVersionString</key>
@@ -15,18 +15,33 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>FreeFlow</string>
+    <string>WhisPress</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>WhisPress OAuth Callback</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>whispress</string>
+            </array>
+        </dict>
+    </array>
+    <key>WPCOMOAuthClientID</key>
+    <string>138038</string>
+    <key>WPCOMOAuthClientSecret</key>
+    <string></string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>FreeFlow needs microphone access to transcribe your speech.</string>
+    <string>WhisPress needs microphone access to transcribe your speech.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>FreeFlow needs speech recognition to convert your voice to text.</string>
+    <string>WhisPress needs speech recognition to convert your voice to text.</string>
     <key>NSAccessibilityUsageDescription</key>
-    <string>FreeFlow needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+    <string>WhisPress needs accessibility access to detect the text cursor position and paste transcribed text.</string>
 </dict>
 </plist>

@@ -9,8 +9,11 @@ enum ModifierKeyEventState {
         return event.modifierFlags.contains(mappedFlag)
     }
 
-    static func pressedModifierKeyCodes(for event: NSEvent) -> Set<UInt16> {
+    static func pressedModifierKeyCodes(for event: NSEvent, includeFunctionKey: Bool = true) -> Set<UInt16> {
         ShortcutBinding.modifierKeyCodes.filter { keyCode in
+            if keyCode == 63 && !includeFunctionKey {
+                return false
+            }
             guard let mappedFlag = mappedFlag(for: keyCode) else {
                 return false
             }
