@@ -1,16 +1,25 @@
-name: Release
+# WhisPress releases are currently made manually with Tools/manual-release.sh.
+# This workflow is parked until the GitHub Actions release path is ready,
+# including Developer ID signing, notarization, and final release-channel policy.
+#
+# It has no tag push trigger on purpose. Manual dispatch requires typing ENABLE
+# so an accidental click cannot publish a release.
+name: Release (disabled)
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      enable_release_workflow:
+        description: 'Type ENABLE to run this experimental workflow.'
+        required: true
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
   build-and-release:
+    if: ${{ github.event.inputs.enable_release_workflow == 'ENABLE' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +30,21 @@ jobs:
         id: version
         run: |
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$VERSION" != "$TAG_VERSION" ]; then
-            echo "Info.plist version $VERSION does not match release tag $GITHUB_REF_NAME" >&2
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release tag points at this commit
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git fetch --tags origin
+          if ! git rev-parse "$TAG^{commit}" >/dev/null 2>&1; then
+            echo "Missing release tag $TAG. Create and push it before running this workflow." >&2
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "Release tag $TAG does not point at this commit." >&2
+            exit 1
+          fi
 
       - name: Ensure WordPress.com OAuth secret is configured
         env:
@@ -66,6 +84,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           name: WhisPress ${{ steps.version.outputs.version }}
           body: |
             ## Download

@@ -89,6 +89,37 @@ The secret is copied into the built app bundle and then the app is signed. This
 is an app credential rather than a server-grade secret, because native app
 bundles can be inspected. Do not commit it, and rotate it if it leaks publicly.
 
+## Manual Release
+
+GitHub Actions release automation is present but intentionally parked until the
+signing, notarization, and release-channel setup is finalized. For now, make
+releases locally from a clean working tree:
+
+```sh
+Tools/manual-release.sh --secret-file .wpcom-oauth-client-secret
+```
+
+That builds a universal `WhisPress.app`, verifies that the WordPress.com OAuth
+client secret was injected, and creates:
+
+```text
+build/WhisPress-0.2.0.zip
+```
+
+Inspect the zip before publishing. When it is ready, publish the GitHub Release:
+
+```sh
+Tools/manual-release.sh --secret-file .wpcom-oauth-client-secret \
+  --publish \
+  --notes "First WhisPress preview release."
+```
+
+The script uses the version from `Info.plist`, creates or reuses the matching
+`vX.Y.Z` tag, pushes the tag, and uploads the zip to
+[GitHub Releases](https://github.com/Automattic/whispress/releases). By default
+it uses ad-hoc signing; pass `--codesign-identity` when a Developer ID signing
+identity is ready.
+
 ## Endpoint Smoke Test
 
 You can test the WordPress.com transcription endpoint directly with a bearer

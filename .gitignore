@@ -3,3 +3,4 @@ build/
 *.swp
 .env
 .build
+.wpcom-oauth-client-secret
