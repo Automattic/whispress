@@ -144,6 +144,7 @@ struct GeneralSettingsView: View {
             checkMicPermission()
             appState.refreshLaunchAtLoginStatus()
             appState.refreshWordPressComSitesFromUI()
+            appState.refreshLatestExternalAppSnapshot()
         }
     }
 
@@ -196,14 +197,18 @@ struct GeneralSettingsView: View {
             }
 
             if !appState.wordpressComSites.isEmpty {
-                WordPressSiteSearchPicker(
-                    sites: appState.wordpressComSites,
-                    selectedSiteID: Binding(
-                        get: { appState.selectedWordPressComSiteID },
-                        set: { appState.selectedWordPressComSiteID = $0 }
-                    ),
-                    maxVisibleRows: 6
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Default Site")
+                        .font(.caption.weight(.semibold))
+                    WordPressSiteSearchPicker(
+                        sites: appState.wordpressComSites,
+                        selectedSiteID: Binding(
+                            get: { appState.selectedWordPressComSiteID },
+                            set: { appState.selectedWordPressComSiteID = $0 }
+                        ),
+                        maxVisibleRows: 6
+                    )
+                }
             }
 
             HStack(spacing: 10) {
@@ -222,12 +227,196 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            if !appState.wordpressComSites.isEmpty {
+                appSiteOverridesSection
+            }
+
             if let message = appState.wordpressComStatusMessage {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var appSiteOverridesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("App-Specific Sites")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button {
+                    appState.refreshLatestExternalAppSnapshot()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh current app")
+            }
+
+            currentAppSiteOverrideRow
+
+            let storedOverrides = appState.wordpressComAppSiteOverrides.filter {
+                $0.bundleIdentifier != appState.latestExternalAppSnapshot?.bundleIdentifier
+            }
+            if !storedOverrides.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(storedOverrides) { override in
+                        storedAppSiteOverrideRow(override)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var currentAppSiteOverrideRow: some View {
+        if let snapshot = appState.latestExternalAppSnapshot,
+           let bundleIdentifier = snapshot.bundleIdentifier {
+            let override = appState.wordPressComAppSiteOverride(for: bundleIdentifier)
+            HStack(spacing: 10) {
+                Image(systemName: "app.badge")
+                    .frame(width: 20)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.appName ?? bundleIdentifier)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text(bundleIdentifier)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                siteSelectionMenu(
+                    siteID: override?.siteID,
+                    allowsDefault: true,
+                    action: { siteID in
+                        appState.setWordPressComAppSiteOverride(
+                            bundleIdentifier: bundleIdentifier,
+                            appName: snapshot.appName,
+                            siteID: siteID
+                        )
+                    }
+                )
+                Button {
+                    appState.assignSelectedWordPressComSiteToLatestExternalApp()
+                } label: {
+                    Image(systemName: "pin.fill")
+                }
+                .buttonStyle(.borderless)
+                .disabled(appState.selectedWordPressComSiteID == nil)
+                .help("Pin current default site to this app")
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(6)
+        } else {
+            Text("Switch to another app, then reopen WhisPress to assign a site.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func storedAppSiteOverrideRow(_ override: WPCOMAppSiteOverride) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "app.connected.to.app.below.fill")
+                .frame(width: 20)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(override.appName)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(override.bundleIdentifier)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            siteSelectionMenu(
+                siteID: override.siteID,
+                allowsDefault: false,
+                action: { siteID in
+                    appState.setWordPressComAppSiteOverride(
+                        bundleIdentifier: override.bundleIdentifier,
+                        appName: override.appName,
+                        siteID: siteID
+                    )
+                }
+            )
+            Button {
+                appState.removeWordPressComAppSiteOverride(bundleIdentifier: override.bundleIdentifier)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove app-specific site")
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        .cornerRadius(6)
+    }
+
+    private func siteSelectionMenu(
+        siteID: Int?,
+        allowsDefault: Bool,
+        action: @escaping (Int?) -> Void
+    ) -> some View {
+        Menu {
+            if allowsDefault {
+                Button {
+                    action(nil)
+                } label: {
+                    siteMenuItem(title: "Use Default Site", isSelected: siteID == nil)
+                }
+                Divider()
+            }
+
+            ForEach(appState.wordpressComSites) { site in
+                Button {
+                    action(site.id)
+                } label: {
+                    siteMenuItem(title: site.displayName, isSelected: siteID == site.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(siteSelectionTitle(siteID: siteID, allowsDefault: allowsDefault))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .frame(maxWidth: 190, alignment: .trailing)
+    }
+
+    private func siteMenuItem(title: String, isSelected: Bool) -> some View {
+        HStack {
+            if isSelected {
+                Image(systemName: "checkmark")
+            }
+            Text(title)
+        }
+    }
+
+    private func siteSelectionTitle(siteID: Int?, allowsDefault: Bool) -> String {
+        if let siteID {
+            return siteName(siteID)
+        }
+
+        guard allowsDefault else { return "Choose Site" }
+        if let selectedWordPressComSiteID = appState.selectedWordPressComSiteID {
+            return "Default: \(siteName(selectedWordPressComSiteID))"
+        }
+        return "Use Default Site"
+    }
+
+    private func siteName(_ siteID: Int) -> String {
+        appState.wordpressComSites.first(where: { $0.id == siteID })?.displayName ?? "Site \(siteID)"
     }
 
     // MARK: Startup

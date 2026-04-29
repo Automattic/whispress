@@ -72,7 +72,11 @@ struct MenuBarView: View {
                     .padding(.vertical, 6)
             }
 
-            Divider()
+            if shouldShowCurrentAppConfigSection {
+                Divider()
+                currentAppConfigSection
+                Divider()
+            }
 
             // Manual toggle
             Button(appState.isRecording ? "Stop Recording" : "Start Dictating") {
@@ -250,5 +254,86 @@ struct MenuBarView: View {
             .keyboardShortcut("q")
         }
         .padding(4)
+        .onAppear {
+            appState.refreshLatestExternalAppSnapshot()
+        }
+    }
+
+    @ViewBuilder
+    private var currentAppConfigSection: some View {
+        if let snapshot = appState.latestExternalAppSnapshot,
+           let bundleIdentifier = snapshot.bundleIdentifier {
+            let override = appState.wordPressComAppSiteOverride(for: bundleIdentifier)
+            let effectiveSite = appState.effectiveWordPressComSite(for: bundleIdentifier)
+
+            Menu {
+                Text(bundleIdentifier)
+                Text(configSummary(site: effectiveSite, isOverride: override != nil))
+
+                Divider()
+
+                Menu("Use Site for This App") {
+                    Button {
+                        appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
+                    } label: {
+                        checkedMenuText(
+                            "Use Default Site",
+                            isSelected: override == nil
+                        )
+                    }
+
+                    Divider()
+
+                    ForEach(appState.wordpressComSites) { site in
+                        Button {
+                            appState.setWordPressComAppSiteOverride(
+                                bundleIdentifier: bundleIdentifier,
+                                appName: snapshot.appName,
+                                siteID: site.id
+                            )
+                        } label: {
+                            checkedMenuText(
+                                site.displayName,
+                                isSelected: override?.siteID == site.id
+                            )
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button("Pin Default Site to This App") {
+                    appState.assignSelectedWordPressComSiteToLatestExternalApp()
+                }
+                .disabled(appState.selectedWordPressComSiteID == nil)
+
+                if override != nil {
+                    Button("Remove App-Specific Site") {
+                        appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
+                    }
+                }
+            } label: {
+                Label(
+                    "App: \(snapshot.appName ?? bundleIdentifier)",
+                    systemImage: override == nil ? "app" : "pin.fill"
+                )
+            }
+        } else {
+            Label("App: Unknown", systemImage: "app.dashed")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var shouldShowCurrentAppConfigSection: Bool {
+        appState.isWordPressComSignedIn && !appState.wordpressComSites.isEmpty
+    }
+
+    private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
+        let siteName = site?.displayName ?? "No site selected"
+        return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
+    }
+
+    private func checkedMenuText(_ title: String, isSelected: Bool) -> Text {
+        Text(isSelected ? "✓ \(title)" : "  \(title)")
     }
 }
