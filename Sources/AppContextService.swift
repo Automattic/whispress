@@ -36,11 +36,15 @@ final class AppContextService {
             )
         }
 
-        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        return collectSelectionSnapshot(for: frontmostApp)
+    }
+
+    func collectSelectionSnapshot(for app: NSRunningApplication) -> AppSelectionSnapshot {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
         return AppSelectionSnapshot(
-            appName: frontmostApp.localizedName,
-            bundleIdentifier: frontmostApp.bundleIdentifier,
-            windowTitle: focusedWindowTitle(from: appElement) ?? frontmostApp.localizedName,
+            appName: app.localizedName,
+            bundleIdentifier: app.bundleIdentifier,
+            windowTitle: focusedWindowTitle(from: appElement) ?? app.localizedName,
             selectedText: rawSelectedText(from: appElement)
         )
     }

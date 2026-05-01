@@ -18,6 +18,14 @@ struct PrecomputedMacro {
     let normalizedCommand: String
 }
 
+struct WPCOMAppSiteOverride: Codable, Identifiable, Equatable {
+    let bundleIdentifier: String
+    var appName: String
+    var siteID: Int
+
+    var id: String { bundleIdentifier }
+}
+
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case macros
@@ -173,6 +181,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
+    private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
     private let transcribingIndicatorDelay: TimeInterval = 0.25
     private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
@@ -311,6 +320,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             Task { await discoverTranscribeSkillForSelectedSite() }
         }
     }
+    @Published var wordpressComAppSiteOverrides: [WPCOMAppSiteOverride] {
+        didSet {
+            persistWordPressComAppSiteOverrides()
+        }
+    }
+    @Published private(set) var latestExternalAppSnapshot: AppSelectionSnapshot?
 
     var selectedWordPressComSite: WPCOMSite? {
         guard let selectedWordPressComSiteID else { return nil }
@@ -331,12 +346,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var contextService: AppContextService
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
+    private var appActivationObserver: NSObjectProtocol?
     private var audioDeviceObservers: [NSObjectProtocol] = []
     private var needsMicrophoneRefreshAfterRecording = false
     private let pipelineHistoryStore = PipelineHistoryStore()
     private let shortcutSessionController = DictationShortcutSessionController()
     private var activeRecordingTriggerMode: RecordingTriggerMode?
     private var currentSessionIntent: SessionIntent = .dictation
+    private var currentSessionWordPressComSiteID: Int?
     private var pendingSelectionSnapshot: AppSelectionSnapshot?
     private var pendingManualCommandInvocation = false
     private var pendingShortcutStartTask: Task<Void, Never>?
@@ -403,6 +420,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
         let storedSiteID = UserDefaults.standard.object(forKey: selectedWPCOMSiteIDStorageKey) as? Int
+        let storedAppSiteOverrides = Self.loadWordPressComAppSiteOverrides(forKey: wpcomAppSiteOverridesStorageKey)
 
         self.contextService = AppContextService()
         self.hasCompletedSetup = hasCompletedSetup
@@ -423,11 +441,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
         self.selectedWordPressComSiteID = storedSiteID
+        self.wordpressComAppSiteOverrides = storedAppSiteOverrides
         self.isWordPressComSignedIn = wpcomClient.isSignedIn
         self.precomputeMacros()
 
         refreshAvailableMicrophones()
         installAudioDeviceObservers()
+        installAppActivationObserver()
+        refreshLatestExternalAppSnapshot()
 
         if shortcuts.didUpdateHoldStoredValue {
             persistShortcut(shortcuts.hold, key: holdShortcutStorageKey)
@@ -455,6 +476,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     deinit {
         removeAudioDeviceObservers()
+        removeAppActivationObserver()
     }
 
     private func removeAudioDeviceObservers() {
@@ -463,6 +485,35 @@ final class AppState: ObservableObject, @unchecked Sendable {
             notificationCenter.removeObserver(observer)
         }
         audioDeviceObservers.removeAll()
+    }
+
+    private func installAppActivationObserver() {
+        removeAppActivationObserver()
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.updateLatestExternalAppSnapshot(from: app)
+        }
+    }
+
+    private func removeAppActivationObserver() {
+        guard let appActivationObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(appActivationObserver)
+        self.appActivationObserver = nil
+    }
+
+    private func updateLatestExternalAppSnapshot(from app: NSRunningApplication?) {
+        guard let app,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return
+        }
+
+        let snapshot = contextService.collectSelectionSnapshot(for: app)
+        guard snapshot.bundleIdentifier != nil else { return }
+        latestExternalAppSnapshot = snapshot
     }
 
     private struct StoredShortcutConfiguration {
@@ -541,6 +592,43 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return
         }
         persistShortcut(binding, key: key)
+    }
+
+    private static func loadWordPressComAppSiteOverrides(forKey key: String) -> [WPCOMAppSiteOverride] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([WPCOMAppSiteOverride].self, from: data) else {
+            return []
+        }
+
+        var seenBundleIdentifiers = Set<String>()
+        return decoded
+            .compactMap { override -> WPCOMAppSiteOverride? in
+                let bundleIdentifier = override.bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !bundleIdentifier.isEmpty else { return nil }
+                let appName = override.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                return WPCOMAppSiteOverride(
+                    bundleIdentifier: bundleIdentifier,
+                    appName: appName.isEmpty ? bundleIdentifier : appName,
+                    siteID: override.siteID
+                )
+            }
+            .filter { override in
+                seenBundleIdentifiers.insert(override.bundleIdentifier).inserted
+            }
+            .sorted(by: Self.sortWordPressComAppSiteOverrides)
+    }
+
+    private func persistWordPressComAppSiteOverrides() {
+        guard let data = try? JSONEncoder().encode(wordpressComAppSiteOverrides) else { return }
+        UserDefaults.standard.set(data, forKey: wpcomAppSiteOverridesStorageKey)
+    }
+
+    private static func sortWordPressComAppSiteOverrides(_ lhs: WPCOMAppSiteOverride, _ rhs: WPCOMAppSiteOverride) -> Bool {
+        let nameComparison = lhs.appName.localizedCaseInsensitiveCompare(rhs.appName)
+        if nameComparison != .orderedSame {
+            return nameComparison == .orderedAscending
+        }
+        return lhs.bundleIdentifier.localizedCaseInsensitiveCompare(rhs.bundleIdentifier) == .orderedAscending
     }
 
     struct SavedAudioFile {
@@ -627,6 +715,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         isWordPressComSignedIn = false
         wordpressComSites = []
         selectedWordPressComSiteID = nil
+        wordpressComAppSiteOverrides = []
         transcribeSkill = nil
         wordpressComStatusMessage = "Signed out"
     }
@@ -647,6 +736,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 } else {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
+                self.pruneWordPressComAppSiteOverrides(validSiteIDs: Set(sites.map(\.id)))
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
                     ? "No WordPress.com sites found"
@@ -668,6 +758,70 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func refreshWordPressComSitesFromUI() {
         Task { await refreshWordPressComSites() }
+    }
+
+    func refreshLatestExternalAppSnapshot() {
+        updateLatestExternalAppSnapshot(from: NSWorkspace.shared.frontmostApplication)
+    }
+
+    func wordPressComAppSiteOverride(for bundleIdentifier: String?) -> WPCOMAppSiteOverride? {
+        guard let bundleIdentifier = normalizedBundleIdentifier(bundleIdentifier) else { return nil }
+        return wordpressComAppSiteOverrides.first { $0.bundleIdentifier == bundleIdentifier }
+    }
+
+    func setWordPressComAppSiteOverride(bundleIdentifier: String?, appName: String?, siteID: Int?) {
+        guard let bundleIdentifier = normalizedBundleIdentifier(bundleIdentifier) else { return }
+
+        var overrides = wordpressComAppSiteOverrides.filter { $0.bundleIdentifier != bundleIdentifier }
+        if let siteID {
+            let trimmedAppName = appName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = trimmedAppName?.isEmpty == false ? trimmedAppName! : bundleIdentifier
+            overrides.append(WPCOMAppSiteOverride(
+                bundleIdentifier: bundleIdentifier,
+                appName: displayName,
+                siteID: siteID
+            ))
+        }
+        wordpressComAppSiteOverrides = overrides.sorted(by: Self.sortWordPressComAppSiteOverrides)
+    }
+
+    func assignSelectedWordPressComSiteToLatestExternalApp() {
+        guard let siteID = selectedWordPressComSiteID,
+              let snapshot = latestExternalAppSnapshot else { return }
+        setWordPressComAppSiteOverride(
+            bundleIdentifier: snapshot.bundleIdentifier,
+            appName: snapshot.appName,
+            siteID: siteID
+        )
+    }
+
+    func removeWordPressComAppSiteOverride(bundleIdentifier: String) {
+        setWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier, appName: nil, siteID: nil)
+    }
+
+    func effectiveWordPressComSiteID(for bundleIdentifier: String?) -> Int? {
+        if let override = wordPressComAppSiteOverride(for: bundleIdentifier) {
+            return override.siteID
+        }
+        return selectedWordPressComSiteID
+    }
+
+    func effectiveWordPressComSite(for bundleIdentifier: String?) -> WPCOMSite? {
+        guard let siteID = effectiveWordPressComSiteID(for: bundleIdentifier) else { return nil }
+        return wordpressComSites.first { $0.id == siteID }
+    }
+
+    private func pruneWordPressComAppSiteOverrides(validSiteIDs: Set<Int>) {
+        let validOverrides = wordpressComAppSiteOverrides.filter { validSiteIDs.contains($0.siteID) }
+        if validOverrides.count != wordpressComAppSiteOverrides.count {
+            wordpressComAppSiteOverrides = validOverrides
+        }
+    }
+
+    private func normalizedBundleIdentifier(_ bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier else { return nil }
+        let trimmed = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     @MainActor
@@ -703,9 +857,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func transcribeWithWordPressCom(
         fileURL: URL,
         intent: SessionIntent,
-        context: AppContext
+        context: AppContext,
+        siteID explicitSiteID: Int? = nil
     ) async throws -> WPCOMTranscribeResponse {
-        guard let siteID = selectedWordPressComSiteID else {
+        guard let siteID = explicitSiteID ?? effectiveWordPressComSiteID(for: context.bundleIdentifier) else {
             throw WPCOMClientError.missingSelectedSite
         }
 
@@ -1241,6 +1396,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         contextCaptureTask = nil
         capturedContext = nil
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         isRecording = false
         errorMessage = nil
         debugStatusMessage = "Cancelled"
@@ -1266,6 +1422,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         isRecording = false
         isTranscribing = false
         errorMessage = nil
@@ -1360,6 +1517,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func rejectCommandModeSelectionRequirement(triggerMode: RecordingTriggerMode) {
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         activeRecordingTriggerMode = nil
         pendingSelectionSnapshot = nil
         pendingManualCommandInvocation = false
@@ -1376,6 +1534,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func rejectInvalidCommandModeModifier(triggerMode: RecordingTriggerMode, message: String) {
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         activeRecordingTriggerMode = nil
         pendingSelectionSnapshot = nil
         pendingManualCommandInvocation = false
@@ -1423,6 +1582,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = nil
             shortcutSessionController.reset()
             showAccessibilityAlert()
             return false
@@ -1431,17 +1591,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
             os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - startedAt) * 1000)
         }
 
-        guard isWordPressComSignedIn, selectedWordPressComSiteID != nil else {
-            errorMessage = "Sign in with WordPress.com and choose a site before dictating."
+        let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
+
+        guard isWordPressComSignedIn,
+              let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
+            errorMessage = "Sign in with WordPress.com and choose a default site or app-specific site before dictating."
             statusText = "WordPress.com sign-in required"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = nil
             shortcutSessionController.reset()
             NotificationCenter.default.post(name: .showSettings, object: nil)
             return false
         }
 
-        let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
         let manualCommandRequested = manualCommandRequested
             ?? hotkeyManager.currentPressedModifiers.contains(commandModeManualModifier.shortcutModifier)
         guard let resolvedIntent = resolveSessionIntent(
@@ -1451,6 +1614,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         ) else { return false }
 
         currentSessionIntent = resolvedIntent
+        currentSessionWordPressComSiteID = resolvedSiteID
         overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
         return true
     }
@@ -1483,6 +1647,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             strongSelf.beginRecording(triggerMode: .toggle)
                         } else {
                             strongSelf.currentSessionIntent = .dictation
+                            strongSelf.currentSessionWordPressComSiteID = nil
                             strongSelf.statusText = "Microphone access granted. Press and hold again to record."
                             strongSelf.scheduleReadyStatusReset(
                                 after: 2,
@@ -1494,6 +1659,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.currentSessionIntent = .dictation
+                        strongSelf.currentSessionWordPressComSiteID = nil
                         strongSelf.shortcutSessionController.reset()
                         strongSelf.showMicrophonePermissionAlert()
                     }
@@ -1505,6 +1671,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             statusText = "No Microphone"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = nil
             shortcutSessionController.reset()
             showMicrophonePermissionAlert()
             return false
@@ -1517,6 +1684,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         hotkeyManager.stop()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
+        currentSessionWordPressComSiteID = nil
         cancelRecordingInitializationTimer()
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
@@ -1631,6 +1799,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         shortcutSessionController.reset()
         errorMessage = formattedRecordingStartError(error)
         statusText = "Error"
@@ -1735,7 +1904,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
         let sessionIntent = currentSessionIntent
+        let sessionSiteID = currentSessionWordPressComSiteID
         currentSessionIntent = .dictation
+        currentSessionWordPressComSiteID = nil
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()
@@ -1807,7 +1978,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     let response = try await self.transcribeWithWordPressCom(
                         fileURL: transcriptionFileURL,
                         intent: sessionIntent,
-                        context: appContext
+                        context: appContext,
+                        siteID: sessionSiteID
                     )
                     try Task.checkCancellation()
 
