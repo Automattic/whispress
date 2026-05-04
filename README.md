@@ -103,7 +103,7 @@ That builds a universal `WhisPress.app`, verifies that the WordPress.com OAuth
 client secret was injected, and creates:
 
 ```text
-build/WhisPress-0.2.0.zip
+build/WhisPress-0.2.1.zip
 ```
 
 Inspect the zip before publishing. When it is ready, publish the GitHub Release:
