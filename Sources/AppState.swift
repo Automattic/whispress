@@ -5,18 +5,8 @@ import AVFoundation
 import ServiceManagement
 import ApplicationServices
 import os.log
+import UserNotifications
 private let recordingLog = OSLog(subsystem: "com.automattic.whispress", category: "Recording")
-
-struct VoiceMacro: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
-    var command: String
-    var payload: String
-}
-
-struct PrecomputedMacro {
-    let original: VoiceMacro
-    let normalizedCommand: String
-}
 
 struct WPCOMAppSiteOverride: Codable, Identifiable, Equatable {
     let bundleIdentifier: String
@@ -26,26 +16,109 @@ struct WPCOMAppSiteOverride: Codable, Identifiable, Equatable {
     var id: String { bundleIdentifier }
 }
 
+struct SpeechVoiceOption: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let languageCode: String
+
+    var displayName: String {
+        guard !languageCode.isEmpty else { return name }
+        let languageName = Locale.current.localizedString(forIdentifier: languageCode) ?? languageCode
+        return "\(name) (\(languageName))"
+    }
+}
+
+struct WordPressAgentConversationKey: Hashable, Identifiable {
+    let siteID: Int
+    let agentID: String
+
+    var id: String {
+        "\(siteID)|\(agentID)"
+    }
+
+    init(siteID: Int, agentID: String) {
+        self.siteID = siteID
+        self.agentID = agentID
+    }
+
+    init?(id: String) {
+        let parts = id.split(separator: "|", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let siteID = Int(parts[0]) else { return nil }
+        self.siteID = siteID
+        self.agentID = parts[1]
+    }
+}
+
+enum WordPressAgentMessageRole: String, Equatable {
+    case user
+    case agent
+    case system
+}
+
+struct WordPressAgentMessage: Identifiable, Equatable {
+    let id: UUID
+    let role: WordPressAgentMessageRole
+    let text: String
+    let date: Date
+    let state: String?
+
+    init(
+        id: UUID = UUID(),
+        role: WordPressAgentMessageRole,
+        text: String,
+        date: Date = Date(),
+        state: String? = nil
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.date = date
+        self.state = state
+    }
+}
+
+struct WordPressAgentConversation: Identifiable, Equatable {
+    let key: WordPressAgentConversationKey
+    var siteName: String?
+    var sessionID: String?
+    var messages: [WordPressAgentMessage]
+    var isSending: Bool
+    var errorMessage: String?
+    var lastUpdated: Date
+
+    var id: String { key.id }
+
+    var title: String {
+        if let siteName, !siteName.isEmpty {
+            return siteName
+        }
+        return "Site \(key.siteID)"
+    }
+}
+
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general
-    case macros
-    case runLog
+    case permissions
+    case keyBindings
+    case wordpressCom
+    case wordpressAgent
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .macros: return "Voice Macros"
-        case .runLog: return "Run Log"
+        case .permissions: return "Permissions"
+        case .keyBindings: return "Key Bindings"
+        case .wordpressCom: return "WordPress.com"
+        case .wordpressAgent: return "WordPress Agent"
         }
     }
 
     var icon: String {
         switch self {
-        case .general: return "gearshape"
-        case .macros: return "music.mic"
-        case .runLog: return "clock.arrow.circlepath"
+        case .permissions: return "lock.shield"
+        case .keyBindings: return "keyboard"
+        case .wordpressCom: return "person.crop.circle.badge.checkmark"
+        case .wordpressAgent: return "sparkles"
         }
     }
 }
@@ -132,20 +205,6 @@ private enum SessionIntent {
         }
     }
 
-    var persistedIntent: PipelineHistoryItemIntent {
-        switch self {
-        case .dictation:
-            return .dictation
-        case .command(let invocation, _):
-            switch invocation {
-            case .automatic:
-                return .commandAutomatic
-            case .manual:
-                return .commandManual
-            }
-        }
-    }
-
     var persistedSelectedText: String? {
         switch self {
         case .dictation:
@@ -153,16 +212,6 @@ private enum SessionIntent {
         case .command(_, let selectedText):
             return selectedText
         }
-    }
-
-    static func fromPersisted(intent: PipelineHistoryItemIntent, selectedText: String?) -> SessionIntent {
-        if intent == .commandAutomatic, let selectedText {
-            return .command(invocation: .automatic, selectedText: selectedText)
-        }
-        if intent == .commandManual, let selectedText {
-            return .command(invocation: .manual, selectedText: selectedText)
-        }
-        return .dictation
     }
 }
 
@@ -176,15 +225,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
     private let soundVolumeStorageKey = "sound_volume"
-    private let voiceMacrosStorageKey = "voice_macros"
     private let commandModeEnabledStorageKey = "command_mode_enabled"
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
+    private let wordpressAgentEnabledStorageKey = "wordpress_agent_enabled"
+    private let wordpressAgentSpeakRepliesStorageKey = "wordpress_agent_speak_replies"
+    private let wordpressAgentVoiceIdentifierStorageKey = "wordpress_agent_voice_identifier"
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
     private let transcribingIndicatorDelay: TimeInterval = 0.25
     private let clipboardRestoreDelay: TimeInterval = 0.15
-    let maxPipelineHistoryCount = 20
 
 
     @Published var hasCompletedSetup: Bool {
@@ -264,28 +314,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private var precomputedMacros: [PrecomputedMacro] = []
-
-    @Published var voiceMacros: [VoiceMacro] = [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(voiceMacros) {
-                UserDefaults.standard.set(data, forKey: voiceMacrosStorageKey)
-            }
-            precomputeMacros()
-        }
-    }
-
     @Published var isRecording = false
     @Published var isTranscribing = false
-    @Published var retryingItemIDs: Set<UUID> = []
     @Published var lastTranscript: String = ""
+    @Published var lastAgentResponse: String = ""
+    @Published private(set) var wordpressAgentConversations: [WordPressAgentConversation] = []
+    @Published var selectedWordPressAgentConversationID: String?
+    @Published private(set) var isWordPressAgentWindowFocused = false
     @Published var errorMessage: String?
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var hotkeyMonitoringErrorMessage: String?
     @Published var isDebugOverlayActive = false
-    @Published var selectedSettingsTab: SettingsTab? = .general
-    @Published var pipelineHistory: [PipelineHistoryItem] = []
+    @Published var selectedSettingsTab: SettingsTab? = .permissions
     @Published var debugStatusMessage = "Idle"
     @Published var lastRawTranscript = ""
     @Published var lastPostProcessedTranscript = ""
@@ -298,12 +339,31 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet { setLaunchAtLogin(launchAtLogin) }
     }
 
+    @Published var isWordPressAgentEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isWordPressAgentEnabled, forKey: wordpressAgentEnabledStorageKey)
+        }
+    }
+
+    @Published var shouldSpeakWordPressAgentReplies: Bool {
+        didSet {
+            UserDefaults.standard.set(shouldSpeakWordPressAgentReplies, forKey: wordpressAgentSpeakRepliesStorageKey)
+        }
+    }
+
+    @Published var selectedWordPressAgentVoiceIdentifier: String {
+        didSet {
+            UserDefaults.standard.set(selectedWordPressAgentVoiceIdentifier, forKey: wordpressAgentVoiceIdentifierStorageKey)
+        }
+    }
+
     @Published var selectedMicrophoneID: String {
         didSet {
             UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
         }
     }
     @Published var availableMicrophones: [AudioDevice] = []
+    @Published private(set) var availableSpeechVoices: [SpeechVoiceOption] = []
     @Published private(set) var isWordPressComSignedIn = false
     @Published private(set) var isSigningInToWordPressCom = false
     @Published private(set) var isRefreshingWordPressComSites = false
@@ -327,9 +387,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
     @Published private(set) var latestExternalAppSnapshot: AppSelectionSnapshot?
 
+    var sortedWordPressAgentConversations: [WordPressAgentConversation] {
+        wordpressAgentConversations.sorted { lhs, rhs in
+            lhs.lastUpdated > rhs.lastUpdated
+        }
+    }
+
+    var selectedWordPressAgentConversation: WordPressAgentConversation? {
+        if let selectedWordPressAgentConversationID,
+           let conversation = wordpressAgentConversations.first(where: { $0.id == selectedWordPressAgentConversationID }) {
+            return conversation
+        }
+        return sortedWordPressAgentConversations.first
+    }
+
     var selectedWordPressComSite: WPCOMSite? {
         guard let selectedWordPressComSiteID else { return nil }
         return wordpressComSites.first(where: { $0.id == selectedWordPressComSiteID })
+    }
+
+    func setWordPressAgentWindowFocused(_ isFocused: Bool) {
+        isWordPressAgentWindowFocused = isFocused
     }
 
     let audioRecorder = AudioRecorder()
@@ -342,18 +420,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var recordingInitializationTimer: DispatchSourceTimer?
     private var transcribingIndicatorTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
-    private var transcribingAudioFileName: String?
     private var contextService: AppContextService
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
     private var appActivationObserver: NSObjectProtocol?
     private var audioDeviceObservers: [NSObjectProtocol] = []
     private var needsMicrophoneRefreshAfterRecording = false
-    private let pipelineHistoryStore = PipelineHistoryStore()
     private let shortcutSessionController = DictationShortcutSessionController()
     private var activeRecordingTriggerMode: RecordingTriggerMode?
     private var currentSessionIntent: SessionIntent = .dictation
     private var currentSessionWordPressComSiteID: Int?
+    private var currentSessionWordPressAgentConversationKey: WordPressAgentConversationKey?
     private var pendingSelectionSnapshot: AppSelectionSnapshot?
     private var pendingManualCommandInvocation = false
     private var pendingShortcutStartTask: Task<Void, Never>?
@@ -363,6 +440,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
+    private let speechSynthesizer = AVSpeechSynthesizer()
 
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
@@ -397,26 +475,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
             ? UserDefaults.standard.bool(forKey: alertSoundsEnabledStorageKey)
             : soundVolume > 0
-        
-        let initialMacros: [VoiceMacro]
-        if let data = UserDefaults.standard.data(forKey: "voice_macros"),
-           let decoded = try? JSONDecoder().decode([VoiceMacro].self, from: data) {
-            initialMacros = decoded
-        } else {
-            initialMacros = []
-        }
+        let isWordPressAgentEnabled = UserDefaults.standard.object(forKey: wordpressAgentEnabledStorageKey) != nil
+            ? UserDefaults.standard.bool(forKey: wordpressAgentEnabledStorageKey)
+            : false
+        let shouldSpeakWordPressAgentReplies = UserDefaults.standard.object(forKey: wordpressAgentSpeakRepliesStorageKey) != nil
+            ? UserDefaults.standard.bool(forKey: wordpressAgentSpeakRepliesStorageKey)
+            : false
+        let selectedWordPressAgentVoiceIdentifier =
+            UserDefaults.standard.string(forKey: wordpressAgentVoiceIdentifierStorageKey) ?? ""
 
         let initialAccessibility = AXIsProcessTrusted()
-        var removedAudioFileNames: [String] = []
-        do {
-            removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
-        } catch {
-            print("Failed to trim pipeline history during init: \(error)")
-        }
-        for audioFileName in removedAudioFileNames {
-            Self.deleteAudioFile(audioFileName)
-        }
-        let savedHistory = pipelineHistoryStore.loadAllHistory()
 
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
         let storedSiteID = UserDefaults.standard.object(forKey: selectedWPCOMSiteIDStorageKey) as? Int
@@ -435,17 +503,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.preserveClipboard = preserveClipboard
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
-        self.voiceMacros = initialMacros
-        self.pipelineHistory = savedHistory
+        self.isWordPressAgentEnabled = isWordPressAgentEnabled
+        self.shouldSpeakWordPressAgentReplies = shouldSpeakWordPressAgentReplies
+        self.selectedWordPressAgentVoiceIdentifier = selectedWordPressAgentVoiceIdentifier
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
         self.selectedWordPressComSiteID = storedSiteID
         self.wordpressComAppSiteOverrides = storedAppSiteOverrides
         self.isWordPressComSignedIn = wpcomClient.isSignedIn
-        self.precomputeMacros()
 
         refreshAvailableMicrophones()
+        refreshAvailableSpeechVoices()
         installAudioDeviceObservers()
         installAppActivationObserver()
         refreshLatestExternalAppSnapshot()
@@ -631,61 +700,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return lhs.bundleIdentifier.localizedCaseInsensitiveCompare(rhs.bundleIdentifier) == .orderedAscending
     }
 
-    struct SavedAudioFile {
-        let fileName: String
-        let fileURL: URL
-    }
-
-    static func audioStorageDirectory() -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "WhisPress"
-        let audioDir = appSupport.appendingPathComponent("\(appName)/audio", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: audioDir.path) {
-            try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
-        }
-        return audioDir
-    }
-
-    static func saveAudioFile(from tempURL: URL) -> SavedAudioFile? {
-        let fileName = UUID().uuidString + ".wav"
-        let destURL = audioStorageDirectory().appendingPathComponent(fileName)
-        do {
-            try AudioNormalization.writePreferredAudioCopy(from: tempURL, to: destURL)
-            return SavedAudioFile(fileName: fileName, fileURL: destURL)
-        } catch {
-            return nil
-        }
-    }
-
-    private static func deleteAudioFile(_ fileName: String) {
-        let fileURL = audioStorageDirectory().appendingPathComponent(fileName)
-        try? FileManager.default.removeItem(at: fileURL)
-    }
-
-    func clearPipelineHistory() {
-        do {
-            let removedAudioFileNames = try pipelineHistoryStore.clearAll()
-            for audioFileName in removedAudioFileNames {
-                Self.deleteAudioFile(audioFileName)
-            }
-            pipelineHistory = []
-        } catch {
-            errorMessage = "Unable to clear run history: \(error.localizedDescription)"
-        }
-    }
-
-    func deleteHistoryEntry(id: UUID) {
-        guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
-        do {
-            if let audioFileName = try pipelineHistoryStore.delete(id: id) {
-                Self.deleteAudioFile(audioFileName)
-            }
-            pipelineHistory.remove(at: index)
-        } catch {
-            errorMessage = "Unable to delete run history entry: \(error.localizedDescription)"
-        }
-    }
-
     func signInToWordPressCom() {
         guard !isSigningInToWordPressCom else { return }
         isSigningInToWordPressCom = true
@@ -849,7 +863,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let response = try await transcribeWithWordPressCom(
             fileURL: fileURL,
             intent: .dictation,
-            context: context
+            context: context,
+            enableWordPressAgent: false,
+            saveArtifact: false
         )
         return response.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -858,21 +874,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
         fileURL: URL,
         intent: SessionIntent,
         context: AppContext,
-        siteID explicitSiteID: Int? = nil
+        siteID explicitSiteID: Int? = nil,
+        enableWordPressAgent: Bool,
+        saveArtifact: Bool
     ) async throws -> WPCOMTranscribeResponse {
         guard let siteID = explicitSiteID ?? effectiveWordPressComSiteID(for: context.bundleIdentifier) else {
             throw WPCOMClientError.missingSelectedSite
         }
 
-        let intentValue: String
         let selectedText: String?
-        switch intent {
-        case .dictation:
-            intentValue = "dictation"
-            selectedText = nil
-        case .command(_, let text):
-            intentValue = "command"
-            selectedText = text
+        let intentValue: String
+        if enableWordPressAgent {
+            intentValue = "auto"
+            selectedText = intent.persistedSelectedText
+        } else {
+            switch intent {
+            case .dictation:
+                intentValue = "dictation"
+                selectedText = nil
+            case .command(_, let text):
+                intentValue = "command"
+                selectedText = text
+            }
         }
 
         let appContext = WPCOMAppContextPayload(
@@ -889,120 +912,233 @@ final class AppState: ObservableObject, @unchecked Sendable {
             intent: intentValue,
             selectedText: selectedText,
             appContext: appContext,
-            clientVersion: clientVersion
+            clientVersion: clientVersion,
+            saveArtifact: saveArtifact
         )
     }
 
-    func retryTranscription(item: PipelineHistoryItem) {
-        guard let audioFileName = item.audioFileName else { return }
-        guard !retryingItemIDs.contains(item.id) else { return }
+    private struct WordPressAgentTurnResult {
+        let response: WPCOMAgentResponse
+        let conversationID: String
+    }
 
-        retryingItemIDs.insert(item.id)
+    func selectWordPressAgentConversation(_ conversationID: String?) {
+        guard let conversationID,
+              wordpressAgentConversations.contains(where: { $0.id == conversationID }) else {
+            if selectedWordPressAgentConversationID == nil {
+                selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
+            }
+            return
+        }
+        selectedWordPressAgentConversationID = conversationID
+    }
 
-        let audioURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
-        guard FileManager.default.fileExists(atPath: audioURL.path) else {
-            retryingItemIDs.remove(item.id)
-            errorMessage = "Audio file not found for retry."
+    func showWordPressAgentWindow(conversationID: String? = nil) {
+        selectWordPressAgentConversation(conversationID)
+        NotificationCenter.default.post(
+            name: .showWordPressAgent,
+            object: nil,
+            userInfo: conversationID.map { ["conversationID": $0] }
+        )
+    }
+
+    func sendWordPressAgentChatMessage(_ message: String, conversationID: String? = nil) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+
+        let selectedConversation = conversationID.flatMap { id in
+            wordpressAgentConversations.first(where: { $0.id == id })
+        } ?? selectedWordPressAgentConversation
+
+        guard let selectedConversation else {
+            errorMessage = "Start a WordPress Agent session from dictation first."
             return
         }
 
-        let restoredContext = AppContext(
-            appName: nil,
-            bundleIdentifier: nil,
-            windowTitle: nil,
-            selectedText: nil,
-            currentActivity: item.contextSummary,
-            contextPrompt: item.contextPrompt,
-            screenshotDataURL: item.contextScreenshotDataURL,
-            screenshotMimeType: item.contextScreenshotDataURL != nil ? "image/jpeg" : nil,
-            screenshotError: nil
-        )
+        let key = selectedConversation.key
 
         Task {
+            let context = await self.contextService.collectContext()
             do {
-                let restoredIntent = SessionIntent.fromPersisted(
-                    intent: item.intent,
-                    selectedText: item.selectedText
+                let result = try await self.callWordPressAgentMessage(
+                    message: trimmedMessage,
+                    key: key,
+                    context: context
                 )
-                let response = try await self.transcribeWithWordPressCom(
-                    fileURL: audioURL,
-                    intent: restoredIntent,
-                    context: restoredContext
-                )
-                let rawTranscript = response.rawTranscript
-                var finalTranscriptDraft = response.text
-                var processingStatusDraft = response.status + " (retried)"
-                if !response.warnings.isEmpty {
-                    processingStatusDraft += " (" + response.warnings.joined(separator: ", ") + ")"
-                }
-                var postProcessingPromptDraft = response.skillID.map { "WordPress.com transcribe skill #\($0)" } ?? ""
-                if response.skillCreated {
-                    postProcessingPromptDraft += postProcessingPromptDraft.isEmpty
-                        ? "WordPress.com created transcribe skill"
-                        : " (created during request)"
-                }
-                if case .dictation = restoredIntent,
-                   let macro = self.findMatchingMacro(for: rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? finalTranscriptDraft : rawTranscript) {
-                    finalTranscriptDraft = macro.payload
-                    processingStatusDraft = TranscriptProcessingOutcome.voiceMacro(command: macro.command).statusMessage()
-                }
-                let finalTranscript = finalTranscriptDraft
-                let processingStatus = processingStatusDraft
-                let postProcessingPrompt = postProcessingPromptDraft
-
                 await MainActor.run {
-                    let updatedItem = PipelineHistoryItem(
-                        intent: item.intent,
-                        selectedText: item.selectedText,
-                        id: item.id,
-                        timestamp: item.timestamp,
-                        rawTranscript: rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines),
-                        postProcessedTranscript: finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines),
-                        postProcessingPrompt: postProcessingPrompt,
-                        contextSummary: item.contextSummary,
-                        contextPrompt: item.contextPrompt,
-                        contextScreenshotDataURL: item.contextScreenshotDataURL,
-                        contextScreenshotStatus: item.contextScreenshotStatus,
-                        postProcessingStatus: processingStatus,
-                        debugStatus: "Retried",
-                        customVocabulary: "",
-                        audioFileName: item.audioFileName
-                    )
-                    do {
-                        try pipelineHistoryStore.update(updatedItem)
-                        pipelineHistory = pipelineHistoryStore.loadAllHistory()
-                    } catch {
-                        errorMessage = "Failed to save retry result: \(error.localizedDescription)"
-                    }
-                    retryingItemIDs.remove(item.id)
+                    self.lastAgentResponse = result.response.text
+                    self.deliverWordPressAgentNotification(reply: result.response.text, conversationID: result.conversationID)
                 }
             } catch {
                 await MainActor.run {
-                    let updatedItem = PipelineHistoryItem(
-                        intent: item.intent,
-                        selectedText: item.selectedText,
-                        id: item.id,
-                        timestamp: item.timestamp,
-                        rawTranscript: item.rawTranscript,
-                        postProcessedTranscript: item.postProcessedTranscript,
-                        postProcessingPrompt: item.postProcessingPrompt,
-                        contextSummary: item.contextSummary,
-                        contextPrompt: item.contextPrompt,
-                        contextScreenshotDataURL: item.contextScreenshotDataURL,
-                        contextScreenshotStatus: item.contextScreenshotStatus,
-                        postProcessingStatus: "Error: \(error.localizedDescription)",
-                        debugStatus: "Retry failed",
-                        customVocabulary: item.customVocabulary,
-                        audioFileName: item.audioFileName
-                    )
-                    do {
-                        try pipelineHistoryStore.update(updatedItem)
-                        pipelineHistory = pipelineHistoryStore.loadAllHistory()
-                    } catch {}
-                    retryingItemIDs.remove(item.id)
+                    self.errorMessage = error.localizedDescription
                 }
             }
         }
+    }
+
+    private func callWordPressAgent(
+        agent: WPCOMTranscribeAgent,
+        siteID: Int,
+        context: AppContext
+    ) async throws -> WordPressAgentTurnResult {
+        let agentID = normalizedWordPressAgentID(agent.id)
+        let key = WordPressAgentConversationKey(siteID: siteID, agentID: agentID)
+        let message = agent.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await callWordPressAgentMessage(message: message, key: key, context: context)
+    }
+
+    private func callWordPressAgentMessage(
+        message: String,
+        key: WordPressAgentConversationKey,
+        context: AppContext
+    ) async throws -> WordPressAgentTurnResult {
+        let sessionID = await MainActor.run {
+            self.appendWordPressAgentMessage(
+                key: key,
+                role: .user,
+                text: message,
+                state: nil,
+                markSending: true
+            )
+            return self.wordpressAgentConversations.first(where: { $0.key == key })?.sessionID
+        }
+
+        do {
+            let response = try await sendWordPressAgentMessage(
+                siteID: key.siteID,
+                agentID: key.agentID,
+                message: message,
+                sessionID: sessionID,
+                context: context
+            )
+            await MainActor.run {
+                self.recordWordPressAgentResponse(response, for: key)
+            }
+            return WordPressAgentTurnResult(response: response, conversationID: key.id)
+        } catch {
+            await MainActor.run {
+                self.markWordPressAgentConversation(key, error: error.localizedDescription)
+            }
+            throw error
+        }
+    }
+
+    private func sendWordPressAgentMessage(
+        siteID: Int,
+        agentID: String,
+        message: String,
+        sessionID: String?,
+        context: AppContext
+    ) async throws -> WPCOMAgentResponse {
+        let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let clientContext = WPCOMAgentClientContextPayload(
+            selectedSiteID: siteID,
+            appName: context.appName,
+            bundleIdentifier: context.bundleIdentifier,
+            windowTitle: context.windowTitle,
+            selectedText: context.selectedText,
+            currentActivity: context.currentActivity,
+            client: "whispress",
+            clientVersion: clientVersion
+        )
+        return try await wpcomClient.sendAgentMessage(
+            siteID: siteID,
+            agentID: agentID,
+            message: message,
+            clientContext: clientContext,
+            sessionID: sessionID
+        )
+    }
+
+    @discardableResult
+    private func appendWordPressAgentMessage(
+        key: WordPressAgentConversationKey,
+        role: WordPressAgentMessageRole,
+        text: String,
+        state: String?,
+        markSending: Bool
+    ) -> String {
+        ensureWordPressAgentConversation(for: key)
+        guard let index = wordpressAgentConversations.firstIndex(where: { $0.key == key }) else {
+            return key.id
+        }
+
+        wordpressAgentConversations[index].messages.append(
+            WordPressAgentMessage(role: role, text: text, state: state)
+        )
+        wordpressAgentConversations[index].lastUpdated = Date()
+        wordpressAgentConversations[index].isSending = markSending
+        wordpressAgentConversations[index].errorMessage = nil
+        selectedWordPressAgentConversationID = key.id
+        return key.id
+    }
+
+    private func recordWordPressAgentResponse(_ response: WPCOMAgentResponse, for key: WordPressAgentConversationKey) {
+        ensureWordPressAgentConversation(for: key)
+        guard let index = wordpressAgentConversations.firstIndex(where: { $0.key == key }) else { return }
+
+        if let sessionID = response.sessionID, !sessionID.isEmpty {
+            wordpressAgentConversations[index].sessionID = sessionID
+        }
+        if !response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            wordpressAgentConversations[index].messages.append(
+                WordPressAgentMessage(role: .agent, text: response.text, state: response.state)
+            )
+        }
+        wordpressAgentConversations[index].lastUpdated = Date()
+        wordpressAgentConversations[index].isSending = false
+        wordpressAgentConversations[index].errorMessage = nil
+        selectedWordPressAgentConversationID = key.id
+    }
+
+    private func markWordPressAgentConversation(_ key: WordPressAgentConversationKey, error: String) {
+        ensureWordPressAgentConversation(for: key)
+        guard let index = wordpressAgentConversations.firstIndex(where: { $0.key == key }) else { return }
+        wordpressAgentConversations[index].isSending = false
+        wordpressAgentConversations[index].errorMessage = error
+        wordpressAgentConversations[index].messages.append(
+            WordPressAgentMessage(role: .system, text: error, state: "failed")
+        )
+        wordpressAgentConversations[index].lastUpdated = Date()
+        selectedWordPressAgentConversationID = key.id
+    }
+
+    private func ensureWordPressAgentConversation(for key: WordPressAgentConversationKey) {
+        if let index = wordpressAgentConversations.firstIndex(where: { $0.key == key }) {
+            wordpressAgentConversations[index].siteName = siteName(forWordPressAgentSiteID: key.siteID)
+            return
+        }
+
+        wordpressAgentConversations.append(
+            WordPressAgentConversation(
+                key: key,
+                siteName: siteName(forWordPressAgentSiteID: key.siteID),
+                sessionID: nil,
+                messages: [],
+                isSending: false,
+                errorMessage: nil,
+                lastUpdated: Date()
+            )
+        )
+    }
+
+    private func normalizedWordPressAgentID(_ agentID: String) -> String {
+        let trimmed = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "dolly" : trimmed
+    }
+
+    private func wordPressAgentWindowDictationKey() -> WordPressAgentConversationKey? {
+        if let selectedWordPressAgentConversation {
+            return selectedWordPressAgentConversation.key
+        }
+
+        guard let selectedWordPressComSiteID else { return nil }
+        return WordPressAgentConversationKey(siteID: selectedWordPressComSiteID, agentID: "dolly")
+    }
+
+    private func siteName(forWordPressAgentSiteID siteID: Int) -> String? {
+        wordpressComSites.first(where: { $0.id == siteID })?.displayName
     }
 
     func startAccessibilityPolling() {
@@ -1092,6 +1228,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         needsMicrophoneRefreshAfterRecording = false
         availableMicrophones = AudioDevice.availableInputDevices()
+    }
+
+    func refreshAvailableSpeechVoices() {
+        availableSpeechVoices = AVSpeechSynthesisVoice.speechVoices()
+            .map { voice in
+                SpeechVoiceOption(
+                    id: voice.identifier,
+                    name: voice.name,
+                    languageCode: voice.language
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
     }
 
     private func refreshAvailableMicrophonesIfNeeded() {
@@ -1430,10 +1580,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Cancelled"
         overlayManager.dismiss()
         audioRecorder.cleanup()
-        if let transcribingAudioFileName {
-            Self.deleteAudioFile(transcribingAudioFileName)
-            self.transcribingAudioFileName = nil
-        }
         refreshAvailableMicrophonesIfNeeded()
         if !isRecording && !isTranscribing && statusText == "Cancelled" {
             scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
@@ -1577,6 +1723,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         startedAt: CFAbsoluteTime? = nil
     ) -> Bool {
         activeRecordingTriggerMode = triggerMode
+        currentSessionWordPressAgentConversationKey = nil
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
@@ -1593,6 +1740,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
 
+        if isWordPressAgentWindowFocused {
+            guard isWordPressComSignedIn,
+                  let agentConversationKey = wordPressAgentWindowDictationKey() else {
+                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
+                statusText = "WordPress.com sign-in required"
+                activeRecordingTriggerMode = nil
+                currentSessionIntent = .dictation
+                currentSessionWordPressComSiteID = nil
+                currentSessionWordPressAgentConversationKey = nil
+                shortcutSessionController.reset()
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+                return false
+            }
+
+            ensureWordPressAgentConversation(for: agentConversationKey)
+            currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = agentConversationKey.siteID
+            currentSessionWordPressAgentConversationKey = agentConversationKey
+            overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
+            return true
+        }
+
         guard isWordPressComSignedIn,
               let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
             errorMessage = "Sign in with WordPress.com and choose a default site or app-specific site before dictating."
@@ -1600,6 +1769,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = nil
+            currentSessionWordPressAgentConversationKey = nil
             shortcutSessionController.reset()
             NotificationCenter.default.post(name: .showSettings, object: nil)
             return false
@@ -1793,10 +1963,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         transcriptionTask = nil
         transcribingIndicatorTask?.cancel()
         transcribingIndicatorTask = nil
-        if let transcribingAudioFileName {
-            Self.deleteAudioFile(transcribingAudioFileName)
-            self.transcribingAudioFileName = nil
-        }
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
@@ -1855,21 +2021,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func precomputeMacros() {
-        precomputedMacros = voiceMacros.map { macro in
-            PrecomputedMacro(
-                original: macro,
-                normalizedCommand: normalize(macro.command)
-            )
-        }
-    }
-
-    private func normalize(_ text: String) -> String {
-        let lowercased = text.lowercased()
-        let strippedPunctuation = lowercased.components(separatedBy: CharacterSet.punctuationCharacters).joined()
-        return strippedPunctuation.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     func playAlertSound(named name: String) {
         guard alertSoundsEnabled else { return }
 
@@ -1878,24 +2029,56 @@ final class AppState: ObservableObject, @unchecked Sendable {
         sound?.play()
     }
 
-    private func findMatchingMacro(for transcript: String) -> VoiceMacro? {
-        let normalizedTranscript = normalize(transcript)
-        guard !normalizedTranscript.isEmpty else { return nil }
-
-        return precomputedMacros.first {
-            normalizedTranscript == $0.normalizedCommand
-        }?.original
+    func previewWordPressAgentVoice() {
+        speakWordPressAgentText("This is the WordPress Agent voice.")
     }
 
-    private enum TranscriptProcessingOutcome {
-        case voiceMacro(command: String)
-
-        func statusMessage() -> String {
-            switch self {
-            case .voiceMacro(let command):
-                return "Voice macro used: \(command)"
-            }
+    private func deliverWordPressAgentNotification(reply: String, conversationID: String?) {
+        let trimmedReply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = trimmedReply.isEmpty ? "The WordPress Agent finished." : trimmedReply
+        let content = UNMutableNotificationContent()
+        content.title = "WordPress Agent"
+        content.body = String(body.prefix(240))
+        content.sound = alertSoundsEnabled ? .default : nil
+        if let conversationID {
+            content.userInfo = ["conversationID": conversationID]
         }
+
+        let request = UNNotificationRequest(
+            identifier: "wordpress-agent-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            UNUserNotificationCenter.current().add(request)
+        }
+
+        speakWordPressAgentReply(body)
+    }
+
+    private func speakWordPressAgentReply(_ reply: String) {
+        let trimmedReply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard shouldSpeakWordPressAgentReplies, !trimmedReply.isEmpty else { return }
+
+        speakWordPressAgentText(trimmedReply)
+    }
+
+    private func speakWordPressAgentText(_ text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+
+        let utterance = AVSpeechUtterance(string: String(trimmedText.prefix(1200)))
+        if !selectedWordPressAgentVoiceIdentifier.isEmpty,
+           let voice = AVSpeechSynthesisVoice(identifier: selectedWordPressAgentVoiceIdentifier) {
+            utterance.voice = voice
+        }
+        speechSynthesizer.speak(utterance)
     }
 
     private func stopAndTranscribe() {
@@ -1905,8 +2088,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         activeRecordingTriggerMode = nil
         let sessionIntent = currentSessionIntent
         let sessionSiteID = currentSessionWordPressComSiteID
+        let sessionWordPressAgentEnabled = isWordPressAgentEnabled
+        let sessionWordPressAgentConversationKey = currentSessionWordPressAgentConversationKey
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
+        currentSessionWordPressAgentConversationKey = nil
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()
@@ -1941,9 +2127,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 return
             }
 
-            let savedAudioFile = Self.saveAudioFile(from: fileURL)
-            let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
-            self.transcribingAudioFileName = savedAudioFile?.fileName
             self.statusText = "Transcribing..."
             self.debugStatusMessage = "Transcribing audio"
 
@@ -1976,21 +2159,67 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self?.debugStatusMessage = "Calling WordPress.com"
                     }
                     let response = try await self.transcribeWithWordPressCom(
-                        fileURL: transcriptionFileURL,
+                        fileURL: fileURL,
                         intent: sessionIntent,
                         context: appContext,
-                        siteID: sessionSiteID
+                        siteID: sessionSiteID,
+                        enableWordPressAgent: sessionWordPressAgentEnabled && sessionWordPressAgentConversationKey == nil,
+                        saveArtifact: true
                     )
                     try Task.checkCancellation()
 
+                    var agentReply: WordPressAgentTurnResult?
+                    if let sessionWordPressAgentConversationKey {
+                        let agentMessage = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !agentMessage.isEmpty {
+                            await MainActor.run { [weak self] in
+                                guard let self, self.isTranscribing else { return }
+                                self.statusText = "Asking WordPress Agent..."
+                                self.debugStatusMessage = "Calling WordPress Agent"
+                                self.lastAgentResponse = ""
+                            }
+                            agentReply = try await self.callWordPressAgentMessage(
+                                message: agentMessage,
+                                key: sessionWordPressAgentConversationKey,
+                                context: appContext
+                            )
+                            try Task.checkCancellation()
+                        }
+                    } else if sessionWordPressAgentEnabled,
+                       response.status == "agent_requested",
+                       let agent = response.agent {
+                        let agentSiteID = response.siteID
+                            ?? sessionSiteID
+                            ?? self.effectiveWordPressComSiteID(for: appContext.bundleIdentifier)
+                        guard let agentSiteID else {
+                            throw WPCOMClientError.missingSelectedSite
+                        }
+                        await MainActor.run { [weak self] in
+                            guard let self, self.isTranscribing else { return }
+                            self.statusText = "Asking WordPress Agent..."
+                            self.debugStatusMessage = "Calling WordPress Agent"
+                            self.lastAgentResponse = ""
+                        }
+                        agentReply = try await self.callWordPressAgent(
+                            agent: agent,
+                            siteID: agentSiteID,
+                            context: appContext
+                        )
+                        try Task.checkCancellation()
+                    }
+
+                    let completedAgentReply = agentReply
                     await MainActor.run {
                         guard self.isTranscribing else { return }
                         self.lastContextSummary = appContext.contextSummary
                         self.lastContextScreenshotDataURL = appContext.screenshotDataURL
                         self.lastContextScreenshotStatus = self.contextScreenshotStatus(for: appContext)
                         let trimmedRawTranscript = response.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                        var trimmedFinalTranscript = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let trimmedFinalTranscript = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         var processingStatus = response.status
+                        if let detectedIntent = response.detectedIntent {
+                            processingStatus += " (\(detectedIntent))"
+                        }
                         if !response.warnings.isEmpty {
                             processingStatus += " (" + response.warnings.joined(separator: ", ") + ")"
                         }
@@ -2000,36 +2229,38 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 ? "WordPress.com created transcribe skill"
                                 : " (created during request)"
                         }
-
-                        if case .dictation = sessionIntent,
-                           let macro = self.findMatchingMacro(for: trimmedRawTranscript.isEmpty ? trimmedFinalTranscript : trimmedRawTranscript) {
-                            trimmedFinalTranscript = macro.payload
-                            processingStatus = TranscriptProcessingOutcome.voiceMacro(command: macro.command).statusMessage()
+                        if let artifactID = response.artifactID {
+                            postProcessingPrompt += postProcessingPrompt.isEmpty
+                                ? "WordPress.com saved transcription artifact #\(artifactID)"
+                                : " (artifact #\(artifactID))"
                         }
 
                         self.lastPostProcessingPrompt = postProcessingPrompt
                         self.lastRawTranscript = trimmedRawTranscript
                         self.lastPostProcessedTranscript = trimmedFinalTranscript
                         self.lastPostProcessingStatus = processingStatus
-                        self.recordPipelineHistoryEntry(
-                            rawTranscript: trimmedRawTranscript,
-                            postProcessedTranscript: trimmedFinalTranscript,
-                            postProcessingPrompt: postProcessingPrompt,
-                            context: appContext,
-                            processingStatus: processingStatus,
-                            intent: sessionIntent,
-                            audioFileName: savedAudioFile?.fileName
-                        )
                         self.transcriptionTask = nil
                         self.transcribingIndicatorTask?.cancel()
                         self.transcribingIndicatorTask = nil
-                        self.transcribingAudioFileName = nil
                         self.lastTranscript = trimmedFinalTranscript
                         self.isTranscribing = false
                         self.debugStatusMessage = "Done"
                         let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
 
-                        if trimmedFinalTranscript.isEmpty {
+                        if let agentReply = completedAgentReply {
+                            let reply = agentReply.response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            self.lastAgentResponse = reply
+                            self.lastTranscript = ""
+                            self.lastPostProcessedTranscript = reply
+                            self.lastPostProcessingStatus = "WordPress Agent \(agentReply.response.state)"
+                            self.statusText = reply.isEmpty ? "WordPress Agent finished" : "WordPress Agent replied"
+                            self.clearPendingOverlayDismissToken()
+                            self.overlayManager.dismiss()
+                            self.deliverWordPressAgentNotification(
+                                reply: reply,
+                                conversationID: agentReply.conversationID
+                            )
+                        } else if trimmedFinalTranscript.isEmpty {
                             self.statusText = "Nothing to transcribe"
                             self.clearPendingOverlayDismissToken()
                             self.overlayManager.dismiss()
@@ -2048,7 +2279,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.refreshAvailableMicrophonesIfNeeded()
                         Task { await self.discoverTranscribeSkillForSelectedSite() }
 
-                        self.scheduleReadyStatusReset(after: 3, matching: [completionStatusText, "Nothing to transcribe"])
+                        self.scheduleReadyStatusReset(
+                            after: 3,
+                            matching: [completionStatusText, "Nothing to transcribe", "WordPress Agent replied", "WordPress Agent finished"]
+                        )
                     }
                 } catch is CancellationError {
                     await MainActor.run {
@@ -2068,7 +2302,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.transcriptionTask = nil
                         self.transcribingIndicatorTask?.cancel()
                         self.transcribingIndicatorTask = nil
-                        self.transcribingAudioFileName = nil
                         self.errorMessage = error.localizedDescription
                         self.isTranscribing = false
                         self.statusText = "Error"
@@ -2080,56 +2313,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.lastPostProcessingPrompt = ""
                         self.lastContextScreenshotDataURL = resolvedContext.screenshotDataURL
                         self.lastContextScreenshotStatus = self.contextScreenshotStatus(for: resolvedContext)
-                        self.recordPipelineHistoryEntry(
-                            rawTranscript: "",
-                            postProcessedTranscript: "",
-                            postProcessingPrompt: "",
-                            context: resolvedContext,
-                            processingStatus: "Error: \(error.localizedDescription)",
-                            intent: sessionIntent,
-                            audioFileName: savedAudioFile?.fileName
-                        )
                         self.audioRecorder.cleanup()
                         self.refreshAvailableMicrophonesIfNeeded()
                     }
                 }
             }
-        }
-    }
-
-    private func recordPipelineHistoryEntry(
-        rawTranscript: String,
-        postProcessedTranscript: String,
-        postProcessingPrompt: String,
-        context: AppContext,
-        processingStatus: String,
-        intent: SessionIntent,
-        audioFileName: String? = nil
-    ) {
-        let newEntry = PipelineHistoryItem(
-            intent: intent.persistedIntent,
-            selectedText: intent.persistedSelectedText,
-            timestamp: Date(),
-            rawTranscript: rawTranscript,
-            postProcessedTranscript: postProcessedTranscript,
-            postProcessingPrompt: postProcessingPrompt,
-            contextSummary: context.contextSummary,
-            contextPrompt: context.contextPrompt,
-            contextScreenshotDataURL: context.screenshotDataURL,
-            contextScreenshotStatus: contextScreenshotStatus(for: context),
-            postProcessingStatus: processingStatus,
-            debugStatus: debugStatusMessage,
-            customVocabulary: "",
-            audioFileName: audioFileName
-        )
-        do {
-            let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
-            for audioFileName in removedAudioFileNames {
-                Self.deleteAudioFile(audioFileName)
-            }
-            pipelineHistory = pipelineHistoryStore.loadAllHistory()
-        } catch {
-            errorMessage = "Unable to save run history entry: \(error.localizedDescription)"
         }
     }
 
@@ -2276,7 +2464,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func toggleDebugPanel() {
-        selectedSettingsTab = .runLog
+        selectedSettingsTab = .permissions
         NotificationCenter.default.post(name: .showSettings, object: nil)
     }
 

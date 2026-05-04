@@ -1,11 +1,15 @@
 import SwiftUI
+import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var agentWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleShowSetup),
@@ -16,6 +20,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleShowSettings),
             name: .showSettings,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowWordPressAgent),
+            name: .showWordPressAgent,
             object: nil
         )
 
@@ -48,6 +58,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowSettings() {
         showSettingsWindow()
+    }
+
+    @objc private func handleShowWordPressAgent(_ notification: Notification) {
+        showWordPressAgentWindow(conversationID: notification.userInfo?["conversationID"] as? String)
     }
 
     private func showSettingsWindow() {
@@ -92,10 +106,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            if self?.setupWindow == nil {
+            self?.settingsWindow = nil
+            if self?.setupWindow == nil && self?.agentWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
-            self?.settingsWindow = nil
+        }
+    }
+
+    private func showWordPressAgentWindow(conversationID: String? = nil) {
+        NSApp.setActivationPolicy(.regular)
+
+        appState.selectWordPressAgentConversation(conversationID)
+
+        if let agentWindow, agentWindow.isVisible {
+            agentWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            appState.setWordPressAgentWindowFocused(agentWindow.isKeyWindow)
+            return
+        }
+
+        if agentWindow == nil {
+            presentWordPressAgentWindow()
+        } else {
+            agentWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            appState.setWordPressAgentWindowFocused(agentWindow?.isKeyWindow == true)
+        }
+    }
+
+    private func presentWordPressAgentWindow() {
+        let agentView = WordPressAgentWindowView()
+            .environmentObject(appState)
+        let hostingView = NSHostingView(rootView: agentView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "WordPress Agent"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        agentWindow = window
+        appState.setWordPressAgentWindowFocused(window.isKeyWindow)
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentWindowFocused(true)
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentWindowFocused(false)
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentWindowFocused(false)
+            self?.agentWindow = nil
+            if self?.setupWindow == nil && self?.settingsWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
 
@@ -141,5 +224,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !AXIsProcessTrusted() {
             appState.showAccessibilityAlert()
         }
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let conversationID = response.notification.request.content.userInfo["conversationID"] as? String
+        DispatchQueue.main.async { [weak self] in
+            self?.showWordPressAgentWindow(conversationID: conversationID)
+            completionHandler()
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 }
