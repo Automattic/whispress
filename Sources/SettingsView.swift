@@ -86,6 +86,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var micPermissionGranted = false
+    @State private var elevenLabsAPIKeyInput = ""
     let tab: SettingsTab
 
     var body: some View {
@@ -117,6 +118,9 @@ struct GeneralSettingsView: View {
             appState.refreshLaunchAtLoginStatus()
             appState.refreshWordPressComSitesFromUI()
             appState.refreshAvailableSpeechVoices()
+            if appState.hasElevenLabsAPIKey {
+                appState.refreshElevenLabsVoicesFromUI()
+            }
             appState.refreshLatestExternalAppSnapshot()
         }
     }
@@ -224,32 +228,125 @@ struct GeneralSettingsView: View {
             Toggle("Read WordPress Agent Replies Aloud", isOn: $appState.shouldSpeakWordPressAgentReplies)
                 .disabled(!appState.isWordPressComSignedIn || !appState.isWordPressAgentEnabled)
 
-            Text("Uses the native macOS voice to speak the same reply shown in the notification.")
+            Text("Uses the selected voice provider to speak the same reply shown in the notification.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            wordpressAgentSpeechControls
+
+            if !appState.isWordPressComSignedIn {
+                Text("Sign in to WordPress.com before enabling the WordPress Agent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var wordpressAgentSpeechControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Speech", selection: $appState.wordpressAgentSpeechProvider) {
+                ForEach(WordPressAgentSpeechProvider.allCases) { provider in
+                    Text(provider.title).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 280)
+
+            switch appState.wordpressAgentSpeechProvider {
+            case .system:
+                systemSpeechControls
+            case .elevenLabs:
+                elevenLabsSpeechControls
+            }
+        }
+    }
+
+    private var systemSpeechControls: some View {
+        HStack(spacing: 10) {
+            Picker("Voice", selection: $appState.selectedWordPressAgentVoiceIdentifier) {
+                Text("System Default").tag("")
+                ForEach(appState.availableSpeechVoices) { voice in
+                    Text(voice.displayName).tag(voice.id)
+                }
+            }
+            .frame(maxWidth: 360)
+
+            Button {
+                appState.previewWordPressAgentVoice()
+            } label: {
+                Label("Preview", systemImage: "speaker.wave.2.fill")
+            }
+        }
+        .disabled(
+            !appState.isWordPressComSignedIn
+            || !appState.isWordPressAgentEnabled
+        )
+    }
+
+    private var elevenLabsSpeechControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Picker("Voice", selection: $appState.selectedWordPressAgentVoiceIdentifier) {
-                    Text("System Default").tag("")
-                    ForEach(appState.availableSpeechVoices) { voice in
+                SecureField(
+                    appState.hasElevenLabsAPIKey ? "Saved API key" : "ElevenLabs API key",
+                    text: $elevenLabsAPIKeyInput
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 360)
+
+                Button {
+                    appState.saveElevenLabsAPIKey(elevenLabsAPIKeyInput)
+                    elevenLabsAPIKeyInput = ""
+                } label: {
+                    Label("Save", systemImage: "key.fill")
+                }
+                .disabled(elevenLabsAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button {
+                    elevenLabsAPIKeyInput = ""
+                    appState.clearElevenLabsAPIKey()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(!appState.hasElevenLabsAPIKey && elevenLabsAPIKeyInput.isEmpty)
+            }
+
+            HStack(spacing: 10) {
+                Picker("Voice", selection: $appState.selectedElevenLabsVoiceIdentifier) {
+                    if appState.selectedElevenLabsVoiceIdentifier.isEmpty {
+                        Text("Choose Voice").tag("")
+                    } else if !appState.availableElevenLabsVoices.contains(where: { $0.id == appState.selectedElevenLabsVoiceIdentifier }) {
+                        Text("Saved Voice").tag(appState.selectedElevenLabsVoiceIdentifier)
+                    }
+                    ForEach(appState.availableElevenLabsVoices) { voice in
                         Text(voice.displayName).tag(voice.id)
                     }
                 }
                 .frame(maxWidth: 360)
 
                 Button {
+                    appState.refreshElevenLabsVoicesFromUI()
+                } label: {
+                    if appState.isRefreshingElevenLabsVoices {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Refreshing...")
+                        }
+                    } else {
+                        Label("Refresh Voices", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(!appState.hasElevenLabsAPIKey || appState.isRefreshingElevenLabsVoices)
+
+                Button {
                     appState.previewWordPressAgentVoice()
                 } label: {
                     Label("Preview", systemImage: "speaker.wave.2.fill")
                 }
+                .disabled(!appState.hasElevenLabsAPIKey || appState.selectedElevenLabsVoiceIdentifier.isEmpty)
             }
-            .disabled(
-                !appState.isWordPressComSignedIn
-                || !appState.isWordPressAgentEnabled
-            )
 
-            if !appState.isWordPressComSignedIn {
-                Text("Sign in to WordPress.com before enabling the WordPress Agent.")
+            if let message = appState.elevenLabsStatusMessage {
+                Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

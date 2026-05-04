@@ -28,6 +28,20 @@ struct SpeechVoiceOption: Identifiable, Equatable {
     }
 }
 
+enum WordPressAgentSpeechProvider: String, CaseIterable, Hashable, Identifiable {
+    case system
+    case elevenLabs
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "macOS"
+        case .elevenLabs: return "ElevenLabs"
+        }
+    }
+}
+
 struct WordPressAgentConversationKey: Hashable, Identifiable {
     let siteID: Int
     let agentID: String
@@ -230,7 +244,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
     private let wordpressAgentEnabledStorageKey = "wordpress_agent_enabled"
     private let wordpressAgentSpeakRepliesStorageKey = "wordpress_agent_speak_replies"
+    private let wordpressAgentSpeechProviderStorageKey = "wordpress_agent_speech_provider"
     private let wordpressAgentVoiceIdentifierStorageKey = "wordpress_agent_voice_identifier"
+    private let elevenLabsAPIKeyStorageAccount = "elevenlabs_api_key"
+    private let elevenLabsVoiceIdentifierStorageKey = "elevenlabs_voice_identifier"
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
     private let transcribingIndicatorDelay: TimeInterval = 0.25
@@ -351,11 +368,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var wordpressAgentSpeechProvider: WordPressAgentSpeechProvider {
+        didSet {
+            UserDefaults.standard.set(wordpressAgentSpeechProvider.rawValue, forKey: wordpressAgentSpeechProviderStorageKey)
+            stopCurrentWordPressAgentSpeech()
+            if wordpressAgentSpeechProvider == .elevenLabs,
+               hasElevenLabsAPIKey,
+               availableElevenLabsVoices.isEmpty {
+                refreshElevenLabsVoicesFromUI()
+            }
+        }
+    }
+
     @Published var selectedWordPressAgentVoiceIdentifier: String {
         didSet {
             UserDefaults.standard.set(selectedWordPressAgentVoiceIdentifier, forKey: wordpressAgentVoiceIdentifierStorageKey)
         }
     }
+
+    @Published var selectedElevenLabsVoiceIdentifier: String {
+        didSet {
+            UserDefaults.standard.set(selectedElevenLabsVoiceIdentifier, forKey: elevenLabsVoiceIdentifierStorageKey)
+        }
+    }
+
+    @Published private(set) var hasElevenLabsAPIKey = false
+    @Published private(set) var isRefreshingElevenLabsVoices = false
+    @Published private(set) var availableElevenLabsVoices: [ElevenLabsVoiceOption] = []
+    @Published var elevenLabsStatusMessage: String?
 
     @Published var selectedMicrophoneID: String {
         didSet {
@@ -414,6 +454,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     let hotkeyManager = HotkeyManager()
     let overlayManager = RecordingOverlayManager()
     private let wpcomClient = WPCOMClient()
+    private let elevenLabsClient = ElevenLabsClient()
     private var accessibilityTimer: Timer?
     private var audioLevelCancellable: AnyCancellable?
     private var debugOverlayTimer: Timer?
@@ -441,6 +482,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
     private let speechSynthesizer = AVSpeechSynthesizer()
+    private var elevenLabsSpeechTask: Task<Void, Never>?
+    private var elevenLabsAudioPlayer: AVAudioPlayer?
 
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
@@ -481,8 +524,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let shouldSpeakWordPressAgentReplies = UserDefaults.standard.object(forKey: wordpressAgentSpeakRepliesStorageKey) != nil
             ? UserDefaults.standard.bool(forKey: wordpressAgentSpeakRepliesStorageKey)
             : false
+        let wordpressAgentSpeechProvider = WordPressAgentSpeechProvider(
+            rawValue: UserDefaults.standard.string(forKey: wordpressAgentSpeechProviderStorageKey) ?? ""
+        ) ?? .system
         let selectedWordPressAgentVoiceIdentifier =
             UserDefaults.standard.string(forKey: wordpressAgentVoiceIdentifierStorageKey) ?? ""
+        let selectedElevenLabsVoiceIdentifier =
+            UserDefaults.standard.string(forKey: elevenLabsVoiceIdentifierStorageKey) ?? ""
+        let hasElevenLabsAPIKey = AppSettingsStorage.loadSecure(account: elevenLabsAPIKeyStorageAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
 
         let initialAccessibility = AXIsProcessTrusted()
 
@@ -505,7 +556,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.soundVolume = soundVolume
         self.isWordPressAgentEnabled = isWordPressAgentEnabled
         self.shouldSpeakWordPressAgentReplies = shouldSpeakWordPressAgentReplies
+        self.wordpressAgentSpeechProvider = wordpressAgentSpeechProvider
         self.selectedWordPressAgentVoiceIdentifier = selectedWordPressAgentVoiceIdentifier
+        self.selectedElevenLabsVoiceIdentifier = selectedElevenLabsVoiceIdentifier
+        self.hasElevenLabsAPIKey = hasElevenLabsAPIKey
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
@@ -544,6 +598,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     deinit {
+        elevenLabsSpeechTask?.cancel()
         removeAudioDeviceObservers()
         removeAppActivationObserver()
     }
@@ -1242,6 +1297,82 @@ final class AppState: ObservableObject, @unchecked Sendable {
             .sorted { lhs, rhs in
                 lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
+    }
+
+    private func elevenLabsAPIKey() -> String? {
+        guard let apiKey = AppSettingsStorage.loadSecure(account: elevenLabsAPIKeyStorageAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !apiKey.isEmpty else {
+            return nil
+        }
+        return apiKey
+    }
+
+    func saveElevenLabsAPIKey(_ apiKey: String) {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAPIKey.isEmpty else {
+            elevenLabsStatusMessage = "Enter an ElevenLabs API key first."
+            return
+        }
+
+        AppSettingsStorage.saveSecure(trimmedAPIKey, account: elevenLabsAPIKeyStorageAccount)
+        hasElevenLabsAPIKey = true
+        elevenLabsStatusMessage = "ElevenLabs API key saved."
+        refreshElevenLabsVoicesFromUI()
+    }
+
+    func clearElevenLabsAPIKey() {
+        if wordpressAgentSpeechProvider == .elevenLabs {
+            stopCurrentWordPressAgentSpeech()
+        }
+        AppSettingsStorage.deleteSecure(account: elevenLabsAPIKeyStorageAccount)
+        hasElevenLabsAPIKey = false
+        availableElevenLabsVoices = []
+        selectedElevenLabsVoiceIdentifier = ""
+        elevenLabsStatusMessage = "ElevenLabs API key removed."
+    }
+
+    func refreshElevenLabsVoicesFromUI() {
+        Task { await refreshElevenLabsVoices() }
+    }
+
+    func refreshElevenLabsVoices() async {
+        guard let apiKey = elevenLabsAPIKey() else {
+            await MainActor.run {
+                self.hasElevenLabsAPIKey = false
+                self.availableElevenLabsVoices = []
+                self.elevenLabsStatusMessage = "Add an ElevenLabs API key to load voices."
+            }
+            return
+        }
+
+        await MainActor.run {
+            self.isRefreshingElevenLabsVoices = true
+            self.elevenLabsStatusMessage = "Loading ElevenLabs voices..."
+        }
+
+        do {
+            let voices = try await elevenLabsClient.fetchVoices(apiKey: apiKey)
+            await MainActor.run {
+                self.availableElevenLabsVoices = voices
+                if voices.contains(where: { $0.id == self.selectedElevenLabsVoiceIdentifier }) {
+                    // Keep the user's selected voice.
+                } else {
+                    self.selectedElevenLabsVoiceIdentifier = voices.first?.id ?? ""
+                }
+                self.hasElevenLabsAPIKey = true
+                self.elevenLabsStatusMessage = voices.isEmpty
+                    ? "No ElevenLabs voices found for this account."
+                    : "ElevenLabs voices loaded."
+                self.isRefreshingElevenLabsVoices = false
+            }
+        } catch {
+            await MainActor.run {
+                self.elevenLabsStatusMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
+                self.isRefreshingElevenLabsVoices = false
+            }
+        }
     }
 
     private func refreshAvailableMicrophonesIfNeeded() {
@@ -2069,16 +2200,78 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
 
+        stopCurrentWordPressAgentSpeech()
+
+        switch wordpressAgentSpeechProvider {
+        case .system:
+            speakWordPressAgentTextWithSystemVoice(trimmedText)
+        case .elevenLabs:
+            speakWordPressAgentTextWithElevenLabs(trimmedText)
+        }
+    }
+
+    private func stopCurrentWordPressAgentSpeech() {
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
+        elevenLabsSpeechTask?.cancel()
+        elevenLabsSpeechTask = nil
+        elevenLabsAudioPlayer?.stop()
+        elevenLabsAudioPlayer = nil
+    }
 
-        let utterance = AVSpeechUtterance(string: String(trimmedText.prefix(1200)))
+    private func speakWordPressAgentTextWithSystemVoice(_ text: String) {
+        let utterance = AVSpeechUtterance(string: String(text.prefix(1200)))
         if !selectedWordPressAgentVoiceIdentifier.isEmpty,
            let voice = AVSpeechSynthesisVoice(identifier: selectedWordPressAgentVoiceIdentifier) {
             utterance.voice = voice
         }
         speechSynthesizer.speak(utterance)
+    }
+
+    private func speakWordPressAgentTextWithElevenLabs(_ text: String) {
+        guard let apiKey = elevenLabsAPIKey() else {
+            elevenLabsStatusMessage = ElevenLabsClientError.missingAPIKey.localizedDescription
+            return
+        }
+
+        let voiceID = selectedElevenLabsVoiceIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !voiceID.isEmpty else {
+            elevenLabsStatusMessage = ElevenLabsClientError.missingVoice.localizedDescription
+            return
+        }
+
+        let spokenText = String(text.prefix(1200))
+        elevenLabsSpeechTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let audioData = try await self.elevenLabsClient.synthesizeSpeech(
+                    text: spokenText,
+                    voiceID: voiceID,
+                    apiKey: apiKey
+                )
+                try Task.checkCancellation()
+                await MainActor.run {
+                    do {
+                        let player = try AVAudioPlayer(data: audioData)
+                        self.elevenLabsAudioPlayer = player
+                        player.prepareToPlay()
+                        player.play()
+                        self.elevenLabsStatusMessage = "Playing ElevenLabs voice."
+                    } catch {
+                        self.elevenLabsStatusMessage = error.localizedDescription
+                        self.errorMessage = error.localizedDescription
+                    }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    self.elevenLabsStatusMessage = error.localizedDescription
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func stopAndTranscribe() {
