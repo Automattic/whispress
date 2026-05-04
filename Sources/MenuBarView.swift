@@ -19,7 +19,7 @@ struct MenuBarView: View {
 
             if !appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil {
                 Button {
-                    appState.selectedSettingsTab = .general
+                    appState.selectedSettingsTab = .wordpressCom
                     NotificationCenter.default.post(name: .showSettings, object: nil)
                 } label: {
                     Label("WordPress.com Sign-In Needed", systemImage: "person.crop.circle.badge.exclamationmark")
@@ -102,6 +102,39 @@ struct MenuBarView: View {
                     .lineLimit(3)
             }
 
+            if !appState.lastAgentResponse.isEmpty && !appState.isRecording && !appState.isTranscribing {
+                Divider()
+                Label("WordPress Agent", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: 280, alignment: .leading)
+
+                Text(appState.lastAgentResponse.count > 160
+                    ? String(appState.lastAgentResponse.prefix(160)) + "..."
+                    : appState.lastAgentResponse)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .lineLimit(5)
+                    .frame(maxWidth: 280, alignment: .leading)
+
+                Button("Copy Reply") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(appState.lastAgentResponse, forType: .string)
+                }
+            }
+
+            if !appState.isRecording && !appState.isTranscribing {
+                Divider()
+                Button {
+                    appState.showWordPressAgentWindow()
+                } label: {
+                    Label("Open WordPress Agent", systemImage: "sparkles")
+                }
+                .disabled(!appState.isWordPressComSignedIn)
+            }
+
             if !appState.lastTranscript.isEmpty && !appState.isRecording && !appState.isTranscribing {
                 Divider()
                 Text(appState.lastTranscript.count > 35
@@ -161,7 +194,7 @@ struct MenuBarView: View {
 
                 Divider()
                 Button("Customize…") {
-                    appState.selectedSettingsTab = .general
+                    appState.selectedSettingsTab = .keyBindings
                     NotificationCenter.default.post(name: .showSettings, object: nil)
                 }
             }
@@ -206,7 +239,7 @@ struct MenuBarView: View {
 
                 Divider()
                 Button("Customize…") {
-                    appState.selectedSettingsTab = .general
+                    appState.selectedSettingsTab = .keyBindings
                     NotificationCenter.default.post(name: .showSettings, object: nil)
                 }
             }

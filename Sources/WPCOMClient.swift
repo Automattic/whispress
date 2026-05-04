@@ -112,6 +112,9 @@ struct WPCOMTranscribeResponse: Codable, Equatable {
     let skillCreated: Bool
     let skillModified: String?
     let warnings: [String]
+    let detectedIntent: String?
+    let artifactID: Int?
+    let agent: WPCOMTranscribeAgent?
 
     private enum CodingKeys: String, CodingKey {
         case rawTranscript = "raw_transcript"
@@ -122,7 +125,16 @@ struct WPCOMTranscribeResponse: Codable, Equatable {
         case skillCreated = "skill_created"
         case skillModified = "skill_modified"
         case warnings
+        case detectedIntent = "detected_intent"
+        case artifactID = "artifact_id"
+        case agent
     }
+}
+
+struct WPCOMTranscribeAgent: Codable, Equatable {
+    let id: String
+    let message: String
+    let endpoint: String?
 }
 
 struct WPCOMAppContextPayload: Encodable {
@@ -139,6 +151,34 @@ struct WPCOMAppContextPayload: Encodable {
         case selectedText = "selected_text"
         case currentActivity = "current_activity"
     }
+}
+
+struct WPCOMAgentClientContextPayload: Encodable {
+    let selectedSiteID: Int
+    let appName: String?
+    let bundleIdentifier: String?
+    let windowTitle: String?
+    let selectedText: String?
+    let currentActivity: String
+    let client: String
+    let clientVersion: String
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedSiteID = "selectedSiteId"
+        case appName
+        case bundleIdentifier
+        case windowTitle
+        case selectedText
+        case currentActivity
+        case client
+        case clientVersion
+    }
+}
+
+struct WPCOMAgentResponse: Equatable {
+    let text: String
+    let state: String
+    let sessionID: String?
 }
 
 final class WPCOMClient: NSObject {
@@ -158,6 +198,82 @@ final class WPCOMClient: NSObject {
 
     private struct SitesResponse: Decodable {
         let sites: [WPCOMSite]
+    }
+
+    private struct AgentRPCRequest: Encodable {
+        let jsonrpc: String
+        let id: String
+        let method: String
+        let params: AgentRPCParams
+    }
+
+    private struct AgentRPCParams: Encodable {
+        let id: String
+        let sessionID: String?
+        let message: AgentA2AMessage
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case sessionID = "sessionId"
+            case message
+        }
+    }
+
+    private struct AgentA2AMessage: Encodable {
+        let role: String
+        let parts: [AgentRequestPart]
+    }
+
+    private struct AgentRequestPart: Encodable {
+        let type: String
+        let text: String?
+        let data: AgentRequestPartData?
+
+        static func text(_ text: String) -> AgentRequestPart {
+            AgentRequestPart(type: "text", text: text, data: nil)
+        }
+
+        static func clientContext(_ context: WPCOMAgentClientContextPayload) -> AgentRequestPart {
+            AgentRequestPart(type: "data", text: nil, data: AgentRequestPartData(clientContext: context))
+        }
+    }
+
+    private struct AgentRequestPartData: Encodable {
+        let clientContext: WPCOMAgentClientContextPayload
+    }
+
+    private struct AgentRPCResponse: Decodable {
+        let result: AgentTaskResult?
+        let error: AgentRPCError?
+    }
+
+    private struct AgentRPCError: Decodable {
+        let code: Int?
+        let message: String
+    }
+
+    private struct AgentTaskResult: Decodable {
+        let status: AgentTaskStatus
+        let sessionID: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case status
+            case sessionID = "sessionId"
+        }
+    }
+
+    private struct AgentTaskStatus: Decodable {
+        let state: String
+        let message: AgentResponseMessage?
+    }
+
+    private struct AgentResponseMessage: Decodable {
+        let parts: [AgentResponsePart]
+    }
+
+    private struct AgentResponsePart: Decodable {
+        let type: String
+        let text: String?
     }
 
     private let apiBaseURL = URL(string: "https://public-api.wordpress.com")!
@@ -275,7 +391,8 @@ final class WPCOMClient: NSObject {
         intent: String,
         selectedText: String?,
         appContext: WPCOMAppContextPayload,
-        clientVersion: String
+        clientVersion: String,
+        saveArtifact: Bool
     ) async throws -> WPCOMTranscribeResponse {
         let boundary = UUID().uuidString
         let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/transcription")!
@@ -291,7 +408,8 @@ final class WPCOMClient: NSObject {
             "intent": intent,
             "app_context": contextString,
             "client": "whispress",
-            "client_version": clientVersion
+            "client_version": clientVersion,
+            "save_artifact": saveArtifact ? "true" : "false"
         ]
         if let selectedText, !selectedText.isEmpty {
             fields["selected_text"] = selectedText
@@ -307,6 +425,64 @@ final class WPCOMClient: NSObject {
         let (data, response) = try await session.upload(for: request, from: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(WPCOMTranscribeResponse.self, from: data)
+    }
+
+    func sendAgentMessage(
+        siteID: Int,
+        agentID: String,
+        message: String,
+        clientContext: WPCOMAgentClientContextPayload,
+        sessionID: String?
+    ) async throws -> WPCOMAgentResponse {
+        let normalizedAgentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "dolly"
+            : agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/agent/\(normalizedAgentID)")!
+        let rpcID = UUID().uuidString
+        let taskID = UUID().uuidString
+        let body = AgentRPCRequest(
+            jsonrpc: "2.0",
+            id: rpcID,
+            method: "message/send",
+            params: AgentRPCParams(
+                id: taskID,
+                sessionID: sessionID,
+                message: AgentA2AMessage(
+                    role: "user",
+                    parts: [
+                        .text(message),
+                        .clientContext(clientContext)
+                    ]
+                )
+            )
+        )
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        let decoded = try JSONDecoder().decode(AgentRPCResponse.self, from: data)
+        if let error = decoded.error {
+            throw WPCOMClientError.requestFailed(error.code ?? -32000, error.message)
+        }
+        guard let result = decoded.result else {
+            throw WPCOMClientError.invalidResponse("Missing agent result")
+        }
+        let text = result.status.message?.parts.compactMap { part in
+            part.type == "text" ? part.text : nil
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return WPCOMAgentResponse(
+            text: text,
+            state: result.status.state,
+            sessionID: result.sessionID
+        )
     }
 
     func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
