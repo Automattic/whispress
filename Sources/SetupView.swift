@@ -204,9 +204,9 @@ struct SetupView: View {
             Spacer(minLength: 0)
 
             VStack(spacing: 20) {
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.system(size: 60))
-                    .foregroundStyle(.blue)
+                WordPressComLogoMark()
+                    .frame(width: 88, height: 88)
+                    .shadow(color: Color.black.opacity(0.12), radius: 12, y: 6)
 
                 Text("WordPress.com")
                     .font(.title)

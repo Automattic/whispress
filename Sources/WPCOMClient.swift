@@ -253,6 +253,152 @@ struct WPCOMAgentResponse: Equatable {
     let sessionID: String?
 }
 
+struct WPCOMAgentMessageContext: Decodable, Equatable {
+    let selectedSiteID: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedSiteID = "selectedSiteId"
+        case selectedSiteIDSnake = "selected_site_id"
+        case clientContext
+    }
+
+    private enum ClientContextCodingKeys: String, CodingKey {
+        case selectedSiteID = "selectedSiteId"
+        case selectedSiteIDSnake = "selected_site_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let directSiteID = Self.decodeFlexibleInt(container, forKey: .selectedSiteID)
+            ?? Self.decodeFlexibleInt(container, forKey: .selectedSiteIDSnake)
+
+        if let directSiteID {
+            selectedSiteID = directSiteID
+            return
+        }
+
+        if let clientContext = try? container.nestedContainer(keyedBy: ClientContextCodingKeys.self, forKey: .clientContext) {
+            selectedSiteID = Self.decodeFlexibleInt(clientContext, forKey: .selectedSiteID)
+                ?? Self.decodeFlexibleInt(clientContext, forKey: .selectedSiteIDSnake)
+        } else {
+            selectedSiteID = nil
+        }
+    }
+
+    private static func decodeFlexibleInt<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int? {
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decode(String.self, forKey: key) {
+            return Int(value)
+        }
+        return nil
+    }
+}
+
+struct WPCOMAgentHistoryMessage: Decodable, Equatable {
+    let messageID: Int?
+    let content: String
+    let role: String
+    let createdAt: String?
+    let context: WPCOMAgentMessageContext?
+
+    private enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case content
+        case role
+        case createdAt = "created_at"
+        case context
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intMessageID = try? container.decode(Int.self, forKey: .messageID) {
+            messageID = intMessageID
+        } else if let stringMessageID = try? container.decode(String.self, forKey: .messageID) {
+            messageID = Int(stringMessageID)
+        } else {
+            messageID = nil
+        }
+        content = (try? container.decode(String.self, forKey: .content)) ?? ""
+        role = (try? container.decode(String.self, forKey: .role)) ?? ""
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+        context = try? container.decode(WPCOMAgentMessageContext.self, forKey: .context)
+    }
+}
+
+struct WPCOMAgentConversationSummary: Decodable, Equatable {
+    let chatID: Int
+    let sessionID: String?
+    let createdAt: String?
+    let firstMessage: WPCOMAgentHistoryMessage?
+    let lastMessage: WPCOMAgentHistoryMessage?
+
+    private enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case sessionID = "session_id"
+        case createdAt = "created_at"
+        case firstMessage = "first_message"
+        case lastMessage = "last_message"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intChatID = try? container.decode(Int.self, forKey: .chatID) {
+            chatID = intChatID
+        } else if let stringChatID = try? container.decode(String.self, forKey: .chatID),
+                  let intChatID = Int(stringChatID) {
+            chatID = intChatID
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .chatID,
+                in: container,
+                debugDescription: "Missing chat ID"
+            )
+        }
+        sessionID = try? container.decode(String.self, forKey: .sessionID)
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+        firstMessage = try? container.decode(WPCOMAgentHistoryMessage.self, forKey: .firstMessage)
+        lastMessage = try? container.decode(WPCOMAgentHistoryMessage.self, forKey: .lastMessage)
+    }
+}
+
+struct WPCOMAgentChat: Decodable, Equatable {
+    let chatID: Int
+    let sessionID: String?
+    let createdAt: String?
+    let messages: [WPCOMAgentHistoryMessage]
+
+    private enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case sessionID = "session_id"
+        case createdAt = "created_at"
+        case messages
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intChatID = try? container.decode(Int.self, forKey: .chatID) {
+            chatID = intChatID
+        } else if let stringChatID = try? container.decode(String.self, forKey: .chatID),
+                  let intChatID = Int(stringChatID) {
+            chatID = intChatID
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .chatID,
+                in: container,
+                debugDescription: "Missing chat ID"
+            )
+        }
+        sessionID = try? container.decode(String.self, forKey: .sessionID)
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+        messages = (try? container.decode([WPCOMAgentHistoryMessage].self, forKey: .messages)) ?? []
+    }
+}
+
 final class WPCOMClient: NSObject {
     private struct TokenResponse: Decodable {
         let accessToken: String
@@ -455,6 +601,31 @@ final class WPCOMClient: NSObject {
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
     }
 
+    func fetchAgentConversationSummaries(agentID: String = "dolly") async throws -> [WPCOMAgentConversationSummary] {
+        let historyBotID = Self.historyBotID(for: agentID)
+        var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chats/\(historyBotID)")!
+        components.queryItems = [
+            URLQueryItem(name: "truncation_method", value: "last_message")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
+    }
+
+    func fetchAgentChat(
+        agentID: String = "dolly",
+        chatID: Int,
+        itemsPerPage: Int = 100
+    ) async throws -> WPCOMAgentChat {
+        let historyBotID = Self.historyBotID(for: agentID)
+        var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chat/\(historyBotID)/\(chatID)")!
+        components.queryItems = [
+            URLQueryItem(name: "page_number", value: "1"),
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode(WPCOMAgentChat.self, from: data)
+    }
+
     func discoverTranscribeSkill(siteID: Int) async throws -> WPCOMGuideline? {
         var components = URLComponents(string: "https://public-api.wordpress.com/wp/v2/sites/\(siteID)/guidelines")!
         components.queryItems = [
@@ -515,9 +686,7 @@ final class WPCOMClient: NSObject {
         clientContext: WPCOMAgentClientContextPayload,
         sessionID: String?
     ) async throws -> WPCOMAgentResponse {
-        let normalizedAgentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "dolly"
-            : agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAgentID = Self.normalizedAgentID(agentID)
         let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/agent/\(normalizedAgentID)")!
         let rpcID = UUID().uuidString
         let taskID = UUID().uuidString
@@ -741,6 +910,19 @@ final class WPCOMClient: NSObject {
             }
             .joined(separator: "&")
         return Data(encoded.utf8)
+    }
+
+    private static func normalizedAgentID(_ agentID: String) -> String {
+        let trimmedAgentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAgentID.isEmpty ? "dolly" : trimmedAgentID
+    }
+
+    private static func historyBotID(for agentID: String) -> String {
+        let normalizedAgentID = normalizedAgentID(agentID)
+        if normalizedAgentID.hasPrefix("wpcom-agent-") {
+            return normalizedAgentID
+        }
+        return "wpcom-agent-\(normalizedAgentID.replacingOccurrences(of: "-", with: "_"))"
     }
 
     private static func urlEncode(_ value: String) -> String {

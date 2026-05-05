@@ -112,6 +112,9 @@ struct WordPressAgentWindowView: View {
         }
         .background(AgentPalette.workspace)
         .frame(minWidth: 900, minHeight: 620)
+        .task {
+            await appState.refreshWordPressAgentConversationsIfNeeded()
+        }
     }
 
     private var sidebar: some View {
@@ -140,7 +143,8 @@ struct WordPressAgentWindowView: View {
 
     private var sidebarTitleBar: some View {
         HStack(spacing: 10) {
-            WordPressComLogo(size: 26)
+            WordPressComLogoMark()
+                .frame(width: 26, height: 26)
 
             Text("WordPress Agent")
                 .font(.system(size: 18, weight: .semibold))
@@ -277,8 +281,17 @@ struct WordPressAgentWindowView: View {
             SidebarSectionHeader(title: "Recent")
 
             if visibleConversations.isEmpty {
-                SidebarEmptyText("No conversations")
+                if appState.isRefreshingWordPressAgentConversations {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        SidebarEmptyText("Loading conversations...")
+                    }
                     .padding(.horizontal, 8)
+                } else {
+                    SidebarEmptyText(appState.wordpressAgentHistoryStatusMessage ?? "No conversations")
+                        .padding(.horizontal, 8)
+                }
             } else {
                 LazyVStack(spacing: 2) {
                     ForEach(visibleConversations) { conversation in
@@ -457,7 +470,8 @@ struct WordPressAgentWindowView: View {
             if let activeSite {
                 RemoteSiteIcon(site: activeSite, size: 54, cornerRadius: 14)
             } else {
-                WordPressMark(size: 54)
+                WordPressComLogoMark()
+                    .frame(width: 54, height: 54)
             }
 
             Text(activeSite?.displayName ?? "WordPress Agent")
@@ -700,7 +714,8 @@ private struct ConversationSidebarRow: View {
             if let site {
                 RemoteSiteIcon(site: site, size: 22, cornerRadius: 6)
             } else {
-                WordPressMark(size: 22)
+                WordPressComLogoMark()
+                    .frame(width: 22, height: 22)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -741,7 +756,8 @@ private struct AgentHeaderPill: View {
             if let site {
                 RemoteSiteIcon(site: site, size: 28, cornerRadius: 7)
             } else {
-                WordPressMark(size: 28)
+                WordPressComLogoMark()
+                    .frame(width: 28, height: 28)
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -830,7 +846,8 @@ private struct WordPressAgentMessageRow: View {
             if let site {
                 RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
             } else {
-                WordPressMark(size: 24)
+                WordPressComLogoMark()
+                    .frame(width: 24, height: 24)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -891,7 +908,8 @@ private struct WordPressAgentTypingRow: View {
             if let site {
                 RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
             } else {
-                WordPressMark(size: 24)
+                WordPressComLogoMark()
+                    .frame(width: 24, height: 24)
             }
             ProgressView()
                 .controlSize(.small)
@@ -1087,41 +1105,6 @@ private struct RemoteRoundedImage: View {
             return String(first.prefix(2)).uppercased()
         }
         return "WP"
-    }
-}
-
-private struct WordPressMark: View {
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.black)
-            Text("W")
-                .font(.system(size: size * 0.48, weight: .semibold, design: .serif))
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct WordPressComLogo: View {
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color(red: 0.03, green: 0.42, blue: 0.76))
-
-            Circle()
-                .stroke(Color.white.opacity(0.92), lineWidth: max(1, size * 0.08))
-                .padding(size * 0.18)
-
-            Text("W")
-                .font(.system(size: size * 0.44, weight: .semibold, design: .serif))
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
     }
 }
 
