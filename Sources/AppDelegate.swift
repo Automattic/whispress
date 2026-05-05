@@ -1,14 +1,35 @@
+import Combine
 import SwiftUI
 import UserNotifications
+
+private struct StatusMenuPopoverView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        ScrollView {
+            MenuBarView()
+                .environmentObject(appState)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+        }
+        .frame(width: 320, height: 620)
+    }
+}
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var agentWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var menuBarPopover: NSPopover?
+    private var statusIconCancellable: AnyCancellable?
+    private var menuBarIconVisibilityObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        configureStatusItem()
+        installStatusItemObservers()
 
         NotificationCenter.default.addObserver(
             self,
@@ -41,6 +62,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if let menuBarIconVisibilityObserver {
+            NotificationCenter.default.removeObserver(menuBarIconVisibilityObserver)
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard appState.hasCompletedSetup else { return true }
         if !flag {
@@ -62,6 +89,97 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowWordPressAgent(_ notification: Notification) {
         showWordPressAgentWindow(conversationID: notification.userInfo?["conversationID"] as? String)
+    }
+
+    @objc private func handleStatusItemClick(_ sender: Any?) {
+        if NSApp.currentEvent?.type == .rightMouseUp || !appState.isWordPressAgentEnabled {
+            toggleMenuBarPopover()
+            return
+        }
+
+        menuBarPopover?.performClose(nil)
+        showWordPressAgentWindow()
+    }
+
+    private func configureStatusItem() {
+        guard shouldShowMenuBarIcon else {
+            if let statusItem {
+                NSStatusBar.system.removeStatusItem(statusItem)
+                self.statusItem = nil
+            }
+            return
+        }
+
+        if statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            item.button?.target = self
+            item.button?.action = #selector(handleStatusItemClick(_:))
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            statusItem = item
+        }
+
+        updateStatusItemIcon()
+    }
+
+    private func installStatusItemObservers() {
+        statusIconCancellable = appState.$isRecording
+            .combineLatest(appState.$isTranscribing)
+            .sink { [weak self] _ in
+                self?.updateStatusItemIcon()
+            }
+
+        menuBarIconVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.configureStatusItem()
+        }
+    }
+
+    private var shouldShowMenuBarIcon: Bool {
+        if UserDefaults.standard.object(forKey: "show_menu_bar_icon") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "show_menu_bar_icon")
+    }
+
+    private func updateStatusItemIcon() {
+        guard let button = statusItem?.button else { return }
+        let iconName: String
+        if appState.isRecording {
+            iconName = "record.circle"
+        } else if appState.isTranscribing {
+            iconName = "ellipsis.circle"
+        } else {
+            iconName = "waveform"
+        }
+
+        let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "WhisPress")
+        image?.isTemplate = true
+        button.image = image
+        button.toolTip = appState.isWordPressAgentEnabled
+            ? "Open WordPress Agent"
+            : "WhisPress"
+    }
+
+    private func toggleMenuBarPopover() {
+        guard let button = statusItem?.button else { return }
+
+        if menuBarPopover?.isShown == true {
+            menuBarPopover?.performClose(nil)
+            return
+        }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 320, height: 620)
+        popover.contentViewController = NSHostingController(
+            rootView: StatusMenuPopoverView()
+                .environmentObject(appState)
+        )
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        menuBarPopover = popover
     }
 
     private func showSettingsWindow() {
@@ -140,14 +258,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: agentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "WordPress Agent"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 900, height: 620)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

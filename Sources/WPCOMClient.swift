@@ -55,6 +55,7 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
     let name: String
     let url: String?
     let slug: String?
+    let icon: WPCOMSiteIcon?
 
     var displayName: String {
         if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -67,18 +68,25 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         slug ?? url?.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") ?? "\(id)"
     }
 
+    var iconURL: URL? {
+        guard let iconURLString = icon?.bestURLString else { return nil }
+        return URL(string: iconURLString)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id = "ID"
         case name
         case url = "URL"
         case slug
+        case icon
     }
 
-    init(id: Int, name: String, url: String?, slug: String?) {
+    init(id: Int, name: String, url: String?, slug: String?, icon: WPCOMSiteIcon? = nil) {
         self.id = id
         self.name = name
         self.url = url
         self.slug = slug
+        self.icon = icon
     }
 
     init(from decoder: Decoder) throws {
@@ -93,6 +101,70 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         name = (try? container.decode(String.self, forKey: .name)) ?? ""
         url = try? container.decode(String.self, forKey: .url)
         slug = try? container.decode(String.self, forKey: .slug)
+        icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+    }
+}
+
+struct WPCOMSiteIcon: Codable, Equatable {
+    let img: String?
+    let ico: String?
+
+    var bestURLString: String? {
+        [img, ico]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+}
+
+struct WPCOMUser: Codable, Equatable {
+    let id: Int
+    let displayName: String
+    let username: String
+    let email: String?
+    let avatarURLString: String?
+    let profileURLString: String?
+
+    var avatarURL: URL? {
+        guard let avatarURLString,
+              !avatarURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return URL(string: avatarURLString)
+    }
+
+    var displayLabel: String {
+        if !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return displayName
+        }
+        if !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return username
+        }
+        return email ?? "WordPress.com"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case displayName = "display_name"
+        case username
+        case email
+        case avatarURLString = "avatar_URL"
+        case profileURLString = "profile_URL"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intID = try? container.decode(Int.self, forKey: .id) {
+            id = intID
+        } else if let stringID = try? container.decode(String.self, forKey: .id), let intID = Int(stringID) {
+            id = intID
+        } else {
+            id = 0
+        }
+        displayName = (try? container.decode(String.self, forKey: .displayName)) ?? ""
+        username = (try? container.decode(String.self, forKey: .username)) ?? ""
+        email = try? container.decode(String.self, forKey: .email)
+        avatarURLString = try? container.decode(String.self, forKey: .avatarURLString)
+        profileURLString = try? container.decode(String.self, forKey: .profileURLString)
     }
 }
 
@@ -367,11 +439,20 @@ final class WPCOMClient: NSObject {
     func fetchSites() async throws -> [WPCOMSite] {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
         components.queryItems = [
-            URLQueryItem(name: "fields", value: "ID,name,URL,slug")
+            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon")
         ]
         let data = try await authenticatedData(for: components.url!)
         let response = try JSONDecoder().decode(SitesResponse.self, from: data)
         return response.sites
+    }
+
+    func fetchCurrentUser() async throws -> WPCOMUser {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "ID,display_name,username,email,avatar_URL,profile_URL")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode(WPCOMUser.self, from: data)
     }
 
     func discoverTranscribeSkill(siteID: Int) async throws -> WPCOMGuideline? {

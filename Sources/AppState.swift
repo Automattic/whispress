@@ -250,6 +250,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let elevenLabsVoiceIdentifierStorageKey = "elevenlabs_voice_identifier"
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
+    private let wordpressAgentRecentSiteIDsStorageKey = "wordpress_agent_recent_site_ids"
     private let transcribingIndicatorDelay: TimeInterval = 0.25
     private let clipboardRestoreDelay: TimeInterval = 0.15
 
@@ -408,7 +409,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var isSigningInToWordPressCom = false
     @Published private(set) var isRefreshingWordPressComSites = false
     @Published private(set) var wordpressComSites: [WPCOMSite] = []
+    @Published private(set) var wordpressComUser: WPCOMUser?
     @Published private(set) var transcribeSkill: WPCOMGuideline?
+    @Published private(set) var recentWordPressAgentSiteIDs: [Int] = [] {
+        didSet {
+            persistWordPressAgentRecentSiteIDs()
+        }
+    }
     @Published var wordpressComStatusMessage: String?
     @Published var selectedWordPressComSiteID: Int? {
         didSet {
@@ -438,7 +445,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
            let conversation = wordpressAgentConversations.first(where: { $0.id == selectedWordPressAgentConversationID }) {
             return conversation
         }
-        return sortedWordPressAgentConversations.first
+        return nil
     }
 
     var selectedWordPressComSite: WPCOMSite? {
@@ -540,6 +547,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
         let storedSiteID = UserDefaults.standard.object(forKey: selectedWPCOMSiteIDStorageKey) as? Int
         let storedAppSiteOverrides = Self.loadWordPressComAppSiteOverrides(forKey: wpcomAppSiteOverridesStorageKey)
+        let storedWordPressAgentRecentSiteIDs = Self.loadWordPressAgentRecentSiteIDs(
+            forKey: wordpressAgentRecentSiteIDsStorageKey
+        )
 
         self.contextService = AppContextService()
         self.hasCompletedSetup = hasCompletedSetup
@@ -565,6 +575,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.selectedMicrophoneID = selectedMicrophoneID
         self.selectedWordPressComSiteID = storedSiteID
         self.wordpressComAppSiteOverrides = storedAppSiteOverrides
+        self.recentWordPressAgentSiteIDs = storedWordPressAgentRecentSiteIDs
         self.isWordPressComSignedIn = wpcomClient.isSignedIn
 
         refreshAvailableMicrophones()
@@ -747,6 +758,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
         UserDefaults.standard.set(data, forKey: wpcomAppSiteOverridesStorageKey)
     }
 
+    private static func loadWordPressAgentRecentSiteIDs(forKey key: String) -> [Int] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([Int].self, from: data) else {
+            return []
+        }
+
+        var seenSiteIDs = Set<Int>()
+        return decoded.filter { siteID in
+            siteID > 0 && seenSiteIDs.insert(siteID).inserted
+        }
+    }
+
+    private func persistWordPressAgentRecentSiteIDs() {
+        guard let data = try? JSONEncoder().encode(recentWordPressAgentSiteIDs) else { return }
+        UserDefaults.standard.set(data, forKey: wordpressAgentRecentSiteIDsStorageKey)
+    }
+
     private static func sortWordPressComAppSiteOverrides(_ lhs: WPCOMAppSiteOverride, _ rhs: WPCOMAppSiteOverride) -> Bool {
         let nameComparison = lhs.appName.localizedCaseInsensitiveCompare(rhs.appName)
         if nameComparison != .orderedSame {
@@ -783,6 +811,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wpcomClient.signOut()
         isWordPressComSignedIn = false
         wordpressComSites = []
+        wordpressComUser = nil
         selectedWordPressComSiteID = nil
         wordpressComAppSiteOverrides = []
         transcribeSkill = nil
@@ -796,9 +825,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         do {
-            let sites = try await wpcomClient.fetchSites()
+            async let sitesTask = wpcomClient.fetchSites()
+            async let userTask = wpcomClient.fetchCurrentUser()
+            let sites = try await sitesTask
+            let currentUser = try? await userTask
             await MainActor.run {
                 self.wordpressComSites = sites
+                self.wordpressComUser = currentUser
                 if let selected = self.selectedWordPressComSiteID,
                    sites.contains(where: { $0.id == selected }) {
                     // Keep the user's selected site.
@@ -806,6 +839,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
                 self.pruneWordPressComAppSiteOverrides(validSiteIDs: Set(sites.map(\.id)))
+                self.pruneWordPressAgentRecentSites(validSiteIDs: Set(sites.map(\.id)))
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
                     ? "No WordPress.com sites found"
@@ -884,6 +918,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let validOverrides = wordpressComAppSiteOverrides.filter { validSiteIDs.contains($0.siteID) }
         if validOverrides.count != wordpressComAppSiteOverrides.count {
             wordpressComAppSiteOverrides = validOverrides
+        }
+    }
+
+    private func pruneWordPressAgentRecentSites(validSiteIDs: Set<Int>) {
+        let prunedSiteIDs = recentWordPressAgentSiteIDs.filter { validSiteIDs.contains($0) }
+        if prunedSiteIDs.count != recentWordPressAgentSiteIDs.count {
+            recentWordPressAgentSiteIDs = prunedSiteIDs
         }
     }
 
@@ -978,14 +1019,48 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func selectWordPressAgentConversation(_ conversationID: String?) {
-        guard let conversationID,
-              wordpressAgentConversations.contains(where: { $0.id == conversationID }) else {
-            if selectedWordPressAgentConversationID == nil {
-                selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
-            }
+        guard let conversationID else {
+            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
+            return
+        }
+
+        guard wordpressAgentConversations.contains(where: { $0.id == conversationID }) else {
+            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
             return
         }
         selectedWordPressAgentConversationID = conversationID
+    }
+
+    func selectWordPressAgentSite(_ siteID: Int) {
+        recordWordPressAgentSiteUse(siteID)
+        selectedWordPressComSiteID = siteID
+        selectedWordPressAgentConversationID = newestWordPressAgentConversation(for: siteID)?.id
+    }
+
+    func newestWordPressAgentConversation(for siteID: Int) -> WordPressAgentConversation? {
+        sortedWordPressAgentConversations.first { $0.key.siteID == siteID }
+    }
+
+    @discardableResult
+    func startWordPressAgentConversation(siteID: Int? = nil, agentID: String = "dolly") -> String? {
+        guard let siteID = siteID ?? selectedWordPressComSiteID else {
+            errorMessage = "Choose a WordPress.com site before starting an agent session."
+            return nil
+        }
+
+        let key = WordPressAgentConversationKey(siteID: siteID, agentID: normalizedWordPressAgentID(agentID))
+        ensureWordPressAgentConversation(for: key)
+        recordWordPressAgentSiteUse(siteID)
+        selectedWordPressComSiteID = siteID
+        selectedWordPressAgentConversationID = key.id
+        return key.id
+    }
+
+    func recordWordPressAgentSiteUse(_ siteID: Int) {
+        guard siteID > 0 else { return }
+        var recentSiteIDs = recentWordPressAgentSiteIDs.filter { $0 != siteID }
+        recentSiteIDs.insert(siteID, at: 0)
+        recentWordPressAgentSiteIDs = Array(recentSiteIDs.prefix(30))
     }
 
     func showWordPressAgentWindow(conversationID: String? = nil) {
@@ -1001,12 +1076,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty else { return }
 
-        let selectedConversation = conversationID.flatMap { id in
+        let existingConversation = conversationID.flatMap { id in
             wordpressAgentConversations.first(where: { $0.id == id })
         } ?? selectedWordPressAgentConversation
 
+        let selectedConversation: WordPressAgentConversation?
+        if let existingConversation {
+            selectedConversation = existingConversation
+        } else if let conversationID = startWordPressAgentConversation(),
+                  let conversation = wordpressAgentConversations.first(where: { $0.id == conversationID }) {
+            selectedConversation = conversation
+        } else {
+            selectedConversation = nil
+        }
+
         guard let selectedConversation else {
-            errorMessage = "Start a WordPress Agent session from dictation first."
             return
         }
 
@@ -1125,6 +1209,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = markSending
         wordpressAgentConversations[index].errorMessage = nil
+        recordWordPressAgentSiteUse(key.siteID)
         selectedWordPressAgentConversationID = key.id
         return key.id
     }
