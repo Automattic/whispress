@@ -193,7 +193,7 @@ struct GeneralSettingsView: View {
                             Text("Refreshing...")
                         }
                     } else {
-                        Label("Refresh Sites", systemImage: "arrow.clockwise")
+                        Label("Refresh Workspaces", systemImage: "arrow.clockwise")
                     }
                 }
                 .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
@@ -206,7 +206,7 @@ struct GeneralSettingsView: View {
 
             if !appState.wordpressComSites.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Default Site")
+                    Text("Default Workspace")
                         .font(.caption.weight(.semibold))
                     WordPressSiteSearchPicker(
                         sites: appState.wordpressComSites,
@@ -389,7 +389,7 @@ struct GeneralSettingsView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Text("App-Specific Sites")
+                Text("App-Specific Workspaces")
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Button {
@@ -453,13 +453,13 @@ struct GeneralSettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(appState.selectedWordPressComSiteID == nil)
-                .help("Pin current default site to this app")
+                .help("Pin current default workspace to this app")
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(6)
         } else {
-            Text("Switch to another app, then reopen WhisPress to assign a site.")
+            Text("Switch to another app, then reopen WhisPress to assign a workspace.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -497,7 +497,7 @@ struct GeneralSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Remove app-specific site")
+            .help("Remove app-specific workspace")
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
@@ -514,7 +514,7 @@ struct GeneralSettingsView: View {
                 Button {
                     action(nil)
                 } label: {
-                    siteMenuItem(title: "Use Default Site", isSelected: siteID == nil)
+                    siteMenuItem(title: "Use Default Workspace", isSelected: siteID == nil)
                 }
                 Divider()
             }
@@ -553,15 +553,15 @@ struct GeneralSettingsView: View {
             return siteName(siteID)
         }
 
-        guard allowsDefault else { return "Choose Site" }
+        guard allowsDefault else { return "Choose Workspace" }
         if let selectedWordPressComSiteID = appState.selectedWordPressComSiteID {
             return "Default: \(siteName(selectedWordPressComSiteID))"
         }
-        return "Use Default Site"
+        return "Use Default Workspace"
     }
 
     private func siteName(_ siteID: Int) -> String {
-        appState.wordpressComSites.first(where: { $0.id == siteID })?.displayName ?? "Site \(siteID)"
+        appState.wordpressComSites.first(where: { $0.id == siteID })?.displayName ?? "Workspace \(siteID)"
     }
 
     // MARK: Permissions

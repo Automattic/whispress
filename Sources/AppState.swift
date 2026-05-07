@@ -123,9 +123,9 @@ struct WordPressAgentConversation: Identifiable, Equatable {
             return siteName
         }
         if key.siteID <= 0 {
-            return "Unknown site"
+            return "Unknown workspace"
         }
-        return "Site \(key.siteID)"
+        return "Workspace \(key.siteID)"
     }
 
     var isEmptyLocalDraft: Bool {
@@ -937,7 +937,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func refreshWordPressComSites() async {
         await MainActor.run {
             self.isRefreshingWordPressComSites = true
-            self.wordpressComStatusMessage = "Loading WordPress.com sites..."
+            self.wordpressComStatusMessage = "Loading WordPress.com workspaces..."
         }
 
         do {
@@ -950,7 +950,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.wordpressComUser = currentUser
                 if let selected = self.selectedWordPressComSiteID,
                    sites.contains(where: { $0.id == selected }) {
-                    // Keep the user's selected site.
+                    // Keep the user's selected workspace.
                 } else {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
@@ -958,7 +958,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.pruneWordPressAgentRecentSites(validSiteIDs: Set(sites.map(\.id)))
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
-                    ? "No WordPress.com sites found"
+                    ? "No WordPress.com workspaces found"
                     : "Ready"
                 self.isRefreshingWordPressComSites = false
             }
@@ -1364,7 +1364,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @discardableResult
     func startWordPressAgentConversation(siteID: Int? = nil, agentID: String = "dolly") -> String? {
         guard let siteID = siteID ?? selectedWordPressComSiteID else {
-            errorMessage = "Choose a WordPress.com site before starting an agent session."
+            errorMessage = "Choose a WordPress.com workspace before starting an agent session."
             return nil
         }
 
@@ -1445,7 +1445,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let key = selectedConversation.key
         guard key.siteID > 0 else {
-            setWordPressAgentError("Choose a WordPress.com site before continuing this chat.", for: selectedConversation.id)
+            setWordPressAgentError("Choose a WordPress.com workspace before continuing this chat.", for: selectedConversation.id)
             return
         }
         let messageToSend = trimmedMessage.isEmpty ? Self.defaultPrompt(forAttachmentCount: attachments.count) : trimmedMessage
@@ -2458,7 +2458,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused {
             guard isWordPressComSignedIn,
                   let agentConversationKey = wordPressAgentWindowDictationKey() else {
-                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
+                errorMessage = "Sign in with WordPress.com and choose a default workspace before using agent dictation."
                 statusText = "WordPress.com sign-in required"
                 activeRecordingTriggerMode = nil
                 currentSessionIntent = .dictation
@@ -2485,7 +2485,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         guard isWordPressComSignedIn,
               let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
-            errorMessage = "Sign in with WordPress.com and choose a default site or app-specific site before dictating."
+            errorMessage = "Sign in with WordPress.com and choose a default workspace or app-specific workspace before dictating."
             statusText = "WordPress.com sign-in required"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation

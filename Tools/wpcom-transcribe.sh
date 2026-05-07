@@ -8,7 +8,7 @@ Usage:
   Tools/wpcom-transcribe.sh --site <site-id-or-domain> --file <audio-file> [--token <bearer-token>]
 
 Required:
-  --site <value>          WordPress.com site ID or domain.
+  --site <value>          Workspace's WordPress.com site ID or domain.
   --file <path>           Audio file to upload.
   --token <value>         Bearer token. You may also set WPCOM_BEARER_TOKEN.
 

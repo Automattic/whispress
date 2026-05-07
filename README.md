@@ -13,9 +13,9 @@ Monologue, but built around WordPress.com. It records audio locally, sends it to
 the WordPress.com cloud, and pastes the returned text wherever your cursor is.
 
 WhisPress comes with your WordPress.com subscription and uses Content Guidelines
-to store your transcription configuration. Pick a WordPress.com site, edit that
-site's `Transcribe` guideline, and WhisPress will use it for spelling, cleanup,
-formatting, and dictation behavior.
+to store your transcription configuration. Pick a WordPress.com workspace, edit
+that workspace's `Transcribe` guideline, and WhisPress will use it for spelling,
+cleanup, formatting, and dictation behavior.
 
 [Download WhisPress from GitHub Releases](https://github.com/Automattic/whispress/releases)
 
@@ -23,7 +23,7 @@ formatting, and dictation behavior.
 
 - All agents and apps can use a single source of truth for spelling and style.
 - You can share transcription configuration with your team by sharing the
-  WordPress.com site.
+  WordPress.com workspace.
 - WordPress.com handles the cloud AI work behind the scenes.
 
 ## How It Works
@@ -31,8 +31,8 @@ formatting, and dictation behavior.
 WhisPress is a thin client:
 
 - Sign in with WordPress.com.
-- Choose the site whose transcription guideline should be used.
-- Record with a shortcut, then WhisPress calls the site's WordPress.com
+- Choose the workspace whose transcription guideline should be used.
+- Record with a shortcut, then WhisPress calls the workspace's WordPress.com
   transcription endpoint and pastes the result.
 
 There is no local provider setup, API key entry, model picker, prompt editor, or
@@ -41,11 +41,12 @@ be shared, audited, and reused by other clients.
 
 ## WordPress.com Guidelines
 
-Each selected site can provide a native `wp_guideline` skill with the slug
-`transcribe`. The WordPress.com transcription endpoint loads that skill
-server-side and uses it as the transcription prompt.
+Each selected workspace is backed by a WordPress.com site that can provide a
+native `wp_guideline` skill with the slug `transcribe`. The WordPress.com
+transcription endpoint loads that skill server-side and uses it as the
+transcription prompt.
 
-Switching sites changes the active transcription configuration. Editing the
+Switching workspaces changes the active transcription configuration. Editing the
 guideline on WordPress.com changes what WhisPress uses the next time it
 transcribes.
 
@@ -123,7 +124,7 @@ identity is ready.
 ## Endpoint Smoke Test
 
 You can test the WordPress.com transcription endpoint directly with a bearer
-token, site, and audio file:
+token, workspace, and audio file:
 
 ```sh
 WPCOM_BEARER_TOKEN="$TOKEN" Tools/wpcom-transcribe.sh \

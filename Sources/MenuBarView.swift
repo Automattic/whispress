@@ -305,12 +305,12 @@ struct MenuBarView: View {
 
                 Divider()
 
-                Menu("Use Site for This App") {
+                Menu("Use Workspace for This App") {
                     Button {
                         appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
                     } label: {
                         checkedMenuText(
-                            "Use Default Site",
+                            "Use Default Workspace",
                             isSelected: override == nil
                         )
                     }
@@ -335,13 +335,13 @@ struct MenuBarView: View {
 
                 Divider()
 
-                Button("Pin Default Site to This App") {
+                Button("Pin Default Workspace to This App") {
                     appState.assignSelectedWordPressComSiteToLatestExternalApp()
                 }
                 .disabled(appState.selectedWordPressComSiteID == nil)
 
                 if override != nil {
-                    Button("Remove App-Specific Site") {
+                    Button("Remove App-Specific Workspace") {
                         appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
                     }
                 }
@@ -362,7 +362,7 @@ struct MenuBarView: View {
     }
 
     private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
-        let siteName = site?.displayName ?? "No site selected"
+        let siteName = site?.displayName ?? "No workspace selected"
         return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
     }
 

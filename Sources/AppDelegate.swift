@@ -354,26 +354,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addDisabledItem(configSummary(site: effectiveSite, isOverride: override != nil), to: submenu)
         submenu.addItem(.separator())
 
-        let useDefaultItem = actionItem("Use Default Site") { [weak self] in
+        let useDefaultItem = actionItem("Use Default Workspace") { [weak self] in
             self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
         }
         useDefaultItem.state = override == nil ? .on : .off
         submenu.addItem(useDefaultItem)
 
-        let pinItem = actionItem("Pin Default Site to This App") { [weak self] in
+        let pinItem = actionItem("Pin Default Workspace to This App") { [weak self] in
             self?.appState.assignSelectedWordPressComSiteToLatestExternalApp()
         }
         pinItem.isEnabled = appState.selectedWordPressComSiteID != nil
         submenu.addItem(pinItem)
 
         if override != nil {
-            submenu.addItem(actionItem("Remove App-Specific Site") { [weak self] in
+            submenu.addItem(actionItem("Remove App-Specific Workspace") { [weak self] in
                 self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
             })
         }
 
         submenu.addItem(.separator())
-        submenu.addItem(actionItem("Manage Sites in Settings...") {
+        submenu.addItem(actionItem("Manage Workspaces in Settings...") {
             NotificationCenter.default.post(name: .showSettings, object: nil)
         })
 
@@ -486,7 +486,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
-        let siteName = site?.displayName ?? "No site selected"
+        let siteName = site?.displayName ?? "No workspace selected"
         return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
     }
 

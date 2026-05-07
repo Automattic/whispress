@@ -25,7 +25,7 @@ enum WPCOMClientError: LocalizedError {
         case .missingRefreshToken:
             return "WordPress.com session expired. Sign in again."
         case .missingSelectedSite:
-            return "Choose a WordPress.com site before transcribing."
+            return "Choose a WordPress.com workspace before transcribing."
         case .requestFailed(let statusCode, let details):
             return "WordPress.com request failed with status \(statusCode): \(details)"
         case .invalidResponse(let details):
