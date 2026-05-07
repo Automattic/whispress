@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct WordPressAgentWindowView: View {
     @EnvironmentObject var appState: AppState
     @State private var draftMessage = ""
+    @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
     @State private var isAllSitesExpanded = false
     @FocusState private var isComposerFocused: Bool
@@ -15,12 +17,25 @@ struct WordPressAgentWindowView: View {
     }
 
     private var activeSiteID: Int? {
-        selectedConversation?.key.siteID ?? appState.selectedWordPressComSiteID
+        if let selectedConversation {
+            let siteID = selectedConversation.key.siteID
+            return siteID > 0 ? siteID : nil
+        }
+        return appState.selectedWordPressComSiteID
     }
 
     private var activeSite: WPCOMSite? {
-        guard let activeSiteID else { return appState.selectedWordPressComSite }
-        return appState.wordpressComSites.first { $0.id == activeSiteID } ?? appState.selectedWordPressComSite
+        guard let activeSiteID else {
+            return selectedConversation == nil ? appState.selectedWordPressComSite : nil
+        }
+        if let site = appState.wordpressComSites.first(where: { $0.id == activeSiteID }) {
+            return site
+        }
+        return selectedConversation == nil ? appState.selectedWordPressComSite : nil
+    }
+
+    private var activeWorkspaceTitle: String {
+        activeSite?.displayName ?? selectedConversation?.title ?? "WordPress Agent"
     }
 
     private var normalizedSearch: String {
@@ -91,11 +106,12 @@ struct WordPressAgentWindowView: View {
     }
 
     private var visibleConversations: [WordPressAgentConversation] {
-        guard !normalizedSearch.isEmpty else { return appState.sortedWordPressAgentConversations }
-        return appState.sortedWordPressAgentConversations.filter { conversation in
+        let conversations = appState.sortedWordPressAgentConversations.filter { !$0.isEmptyLocalDraft }
+        guard !normalizedSearch.isEmpty else { return conversations }
+        return conversations.filter { conversation in
             conversation.title.localizedCaseInsensitiveContains(normalizedSearch)
-            || conversation.key.agentID.localizedCaseInsensitiveContains(normalizedSearch)
-            || conversation.messages.contains { $0.text.localizedCaseInsensitiveContains(normalizedSearch) }
+                || conversation.key.agentID.localizedCaseInsensitiveContains(normalizedSearch)
+                || conversation.messages.contains { $0.text.localizedCaseInsensitiveContains(normalizedSearch) }
         }
     }
 
@@ -423,40 +439,46 @@ struct WordPressAgentWindowView: View {
     @ViewBuilder
     private var transcript: some View {
         if let selectedConversation {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 24) {
-                        ForEach(selectedConversation.messages) { message in
-                            WordPressAgentMessageRow(message: message, site: activeSite)
-                                .id(message.id)
-                        }
+            if selectedConversation.messages.isEmpty,
+               !selectedConversation.isSending,
+               selectedConversation.errorMessage == nil {
+                emptyWorkspace
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 24) {
+                            ForEach(selectedConversation.messages) { message in
+                                WordPressAgentMessageRow(message: message)
+                                    .id(message.id)
+                            }
 
-                        if selectedConversation.isSending {
-                            WordPressAgentTypingRow(site: activeSite)
-                        }
+                            if selectedConversation.isSending {
+                                WordPressAgentTypingRow()
+                            }
 
-                        if let errorMessage = selectedConversation.errorMessage, !errorMessage.isEmpty {
-                            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 4)
+                            if let errorMessage = selectedConversation.errorMessage, !errorMessage.isEmpty {
+                                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            }
+                        }
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 34)
+                        .padding(.top, 34)
+                        .padding(.bottom, 28)
+                    }
+                    .onAppear {
+                        if let lastMessageID = selectedConversation.messages.last?.id {
+                            proxy.scrollTo(lastMessageID, anchor: .bottom)
                         }
                     }
-                    .frame(maxWidth: 760)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 34)
-                    .padding(.top, 34)
-                    .padding(.bottom, 28)
-                }
-                .onAppear {
-                    if let lastMessageID = selectedConversation.messages.last?.id {
-                        proxy.scrollTo(lastMessageID, anchor: .bottom)
-                    }
-                }
-                .onChange(of: selectedConversation.messages.count) { _ in
-                    if let lastMessageID = selectedConversation.messages.last?.id {
-                        proxy.scrollTo(lastMessageID, anchor: .bottom)
+                    .onChange(of: selectedConversation.messages.count) { _ in
+                        if let lastMessageID = selectedConversation.messages.last?.id {
+                            proxy.scrollTo(lastMessageID, anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -474,12 +496,12 @@ struct WordPressAgentWindowView: View {
                     .frame(width: 54, height: 54)
             }
 
-            Text(activeSite?.displayName ?? "WordPress Agent")
+            Text(activeWorkspaceTitle)
                 .font(.system(size: 24, weight: .semibold))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
 
-            Text(appState.isWordPressComSignedIn ? "No conversation selected" : "WordPress.com sign-in needed")
+            Text(appState.isWordPressComSignedIn ? "New chat" : "WordPress.com sign-in needed")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
         }
@@ -490,6 +512,12 @@ struct WordPressAgentWindowView: View {
     private var composer: some View {
         VStack(spacing: 0) {
             VStack(spacing: 12) {
+                if !pendingImageURLs.isEmpty {
+                    ComposerAttachmentStrip(fileURLs: pendingImageURLs) { url in
+                        pendingImageURLs.removeAll { $0 == url }
+                    }
+                }
+
                 TextField("Ask WordPress Agent", text: $draftMessage, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
@@ -500,7 +528,7 @@ struct WordPressAgentWindowView: View {
 
                 HStack(spacing: 14) {
                     Button {
-                        _ = appState.startWordPressAgentConversation(siteID: activeSiteID)
+                        selectImages()
                         isComposerFocused = true
                     } label: {
                         Image(systemName: "plus")
@@ -510,23 +538,8 @@ struct WordPressAgentWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("Start agent session")
-                    .disabled(activeSiteID == nil)
-
-                    Button {
-                        openActiveSite()
-                    } label: {
-                        Image(systemName: "globe")
-                            .font(.system(size: 19, weight: .regular))
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(activeSite?.url == nil ? .tertiary : .secondary)
-                    .help("Open site")
-                    .disabled(activeSite?.url == nil)
-
-                    AgentModeChip(agentID: selectedConversation?.key.agentID ?? "dolly")
+                    .help("Add images")
+                    .disabled(isComposerDisabled)
 
                     Spacer()
 
@@ -578,7 +591,7 @@ struct WordPressAgentWindowView: View {
     }
 
     private var canSendMessage: Bool {
-        !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImageURLs.isEmpty)
         && !isComposerDisabled
     }
 
@@ -590,10 +603,35 @@ struct WordPressAgentWindowView: View {
 
     private func sendDraftMessage() {
         let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty else { return }
-        let conversationID = selectedConversation?.id
+        let attachments = pendingImageURLs
+        guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
+        var conversationID = selectedConversation?.id
+        if !attachments.isEmpty,
+           let selectedConversation,
+           !selectedConversation.isEmptyLocalDraft {
+            guard let newConversationID = appState.startWordPressAgentConversation(siteID: activeSiteID) else { return }
+            conversationID = newConversationID
+        }
         draftMessage = ""
-        appState.sendWordPressAgentChatMessage(trimmedMessage, conversationID: conversationID)
+        pendingImageURLs = []
+        appState.sendWordPressAgentChatMessage(trimmedMessage, attachments: attachments, conversationID: conversationID)
+    }
+
+    private func selectImages() {
+        guard !isComposerDisabled else { return }
+
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+
+        guard panel.runModal() == .OK else { return }
+
+        var existingURLs = Set(pendingImageURLs)
+        for url in panel.urls where existingURLs.insert(url).inserted {
+            pendingImageURLs.append(url)
+        }
     }
 
     private func site(for siteID: Int) -> WPCOMSite? {
@@ -761,7 +799,7 @@ private struct AgentHeaderPill: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                Text(site?.displayName ?? "WordPress Agent")
+                Text(site?.displayName ?? conversation?.title ?? "WordPress Agent")
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
 
@@ -785,30 +823,120 @@ private struct AgentHeaderPill: View {
     }
 }
 
-private struct AgentModeChip: View {
-    let agentID: String
+private struct ComposerAttachmentStrip: View {
+    let fileURLs: [URL]
+    let onRemove: (URL) -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14, weight: .semibold))
-            Text(agentID)
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(fileURLs, id: \.self) { url in
+                    ComposerAttachmentPill(fileURL: url) {
+                        onRemove(url)
+                    }
+                }
+            }
+            .padding(.vertical, 1)
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .frame(height: 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ComposerAttachmentPill: View {
+    let fileURL: URL
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 7) {
+            LocalImageThumbnail(fileURL: fileURL, width: 32, height: 32, cornerRadius: 6)
+
+            Text(fileURL.lastPathComponent)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
+            .help("Remove")
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 7)
+        .frame(height: 40)
         .background(
-            Capsule(style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.black.opacity(0.045))
         )
     }
 }
 
+private struct SentAttachmentPreviewList: View {
+    let attachments: [WordPressAgentAttachment]
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            ForEach(attachments) { attachment in
+                SentAttachmentPreview(attachment: attachment)
+            }
+        }
+    }
+}
+
+private struct SentAttachmentPreview: View {
+    let attachment: WordPressAgentAttachment
+
+    var body: some View {
+        if let image = NSImage(contentsOf: attachment.fileURL) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 260, maxHeight: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .help(attachment.displayName)
+        } else {
+            Label(attachment.displayName, systemImage: "photo")
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.14))
+                )
+        }
+    }
+}
+
+private struct LocalImageThumbnail: View {
+    let fileURL: URL
+    let width: CGFloat
+    let height: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        Group {
+            if let image = NSImage(contentsOf: fileURL) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: width, height: height)
+        .background(Color.black.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
 private struct WordPressAgentMessageRow: View {
     let message: WordPressAgentMessage
-    let site: WPCOMSite?
 
     private var isUser: Bool {
         message.role == .user
@@ -829,7 +957,16 @@ private struct WordPressAgentMessageRow: View {
         HStack {
             Spacer(minLength: 80)
 
-            MarkdownMessageText(text: message.text, foregroundStyle: .white)
+            VStack(alignment: .trailing, spacing: 10) {
+                if !message.attachments.isEmpty {
+                    SentAttachmentPreviewList(attachments: message.attachments)
+                }
+
+                if !message.text.isEmpty {
+                    MarkdownMessageText(text: message.text, foregroundStyle: .white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .background(
@@ -843,12 +980,8 @@ private struct WordPressAgentMessageRow: View {
 
     private var agentMessage: some View {
         HStack(alignment: .top, spacing: 10) {
-            if let site {
-                RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
-            } else {
-                WordPressComLogoMark()
-                    .frame(width: 24, height: 24)
-            }
+            WordPressComLogoMark()
+                .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -901,16 +1034,10 @@ private struct WordPressAgentMessageRow: View {
 }
 
 private struct WordPressAgentTypingRow: View {
-    let site: WPCOMSite?
-
     var body: some View {
         HStack(spacing: 10) {
-            if let site {
-                RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
-            } else {
-                WordPressComLogoMark()
-                    .frame(width: 24, height: 24)
-            }
+            WordPressComLogoMark()
+                .frame(width: 24, height: 24)
             ProgressView()
                 .controlSize(.small)
             Text("Thinking...")

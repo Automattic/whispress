@@ -7,6 +7,7 @@ import ApplicationServices
 import os.log
 import UserNotifications
 private let recordingLog = OSLog(subsystem: "com.automattic.whispress", category: "Recording")
+private let unknownWordPressAgentSiteID = -1
 
 struct WPCOMAppSiteOverride: Codable, Identifiable, Equatable {
     let bundleIdentifier: String
@@ -69,25 +70,40 @@ enum WordPressAgentMessageRole: String, Equatable {
     case system
 }
 
+struct WordPressAgentAttachment: Identifiable, Equatable {
+    let id: UUID
+    let fileURL: URL
+    let displayName: String
+
+    init(id: UUID = UUID(), fileURL: URL) {
+        self.id = id
+        self.fileURL = fileURL
+        displayName = fileURL.lastPathComponent
+    }
+}
+
 struct WordPressAgentMessage: Identifiable, Equatable {
     let id: UUID
     let role: WordPressAgentMessageRole
     let text: String
     let date: Date
     let state: String?
+    let attachments: [WordPressAgentAttachment]
 
     init(
         id: UUID = UUID(),
         role: WordPressAgentMessageRole,
         text: String,
         date: Date = Date(),
-        state: String? = nil
+        state: String? = nil,
+        attachments: [WordPressAgentAttachment] = []
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.date = date
         self.state = state
+        self.attachments = attachments
     }
 }
 
@@ -106,7 +122,18 @@ struct WordPressAgentConversation: Identifiable, Equatable {
         if let siteName, !siteName.isEmpty {
             return siteName
         }
+        if key.siteID <= 0 {
+            return "Unknown site"
+        }
         return "Site \(key.siteID)"
+    }
+
+    var isEmptyLocalDraft: Bool {
+        remoteChatID == nil
+            && sessionID == nil
+            && messages.isEmpty
+            && !isSending
+            && errorMessage == nil
     }
 
     init(
@@ -1168,7 +1195,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if selectedWordPressAgentConversationID == nil {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
+            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
         }
     }
 
@@ -1181,10 +1208,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let messages = sourceMessages.compactMap { wordPressAgentMessage(from: $0) }
         guard !messages.isEmpty else { return nil }
 
-        let siteID = sourceMessages.compactMap { $0.context?.selectedSiteID }.first
-            ?? selectedWordPressComSiteID
-            ?? wordpressComSites.first?.id
-        guard let siteID, siteID > 0 else { return nil }
+        let siteID = chat?.siteID
+            ?? summary.siteID
+            ?? unknownWordPressAgentSiteID
+        guard siteID != 0 else { return nil }
 
         let key = WordPressAgentConversationKey(siteID: siteID, agentID: agentID)
         let lastUpdated = messages.last?.date
@@ -1259,29 +1286,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func selectWordPressAgentConversation(_ conversationID: String?) {
         guard let conversationID else {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
+            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
             return
         }
 
         guard wordpressAgentConversations.contains(where: { $0.id == conversationID }) else {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first?.id
+            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
             return
         }
+        removeEmptyWordPressAgentDrafts(except: conversationID)
         selectedWordPressAgentConversationID = conversationID
     }
 
     func selectWordPressAgentSite(_ siteID: Int) {
-        recordWordPressAgentSiteUse(siteID)
-        selectedWordPressComSiteID = siteID
-        selectedWordPressAgentConversationID = newestWordPressAgentConversation(for: siteID)?.id
+        _ = startWordPressAgentConversation(siteID: siteID)
     }
 
     func newestWordPressAgentConversation(for siteID: Int) -> WordPressAgentConversation? {
-        sortedWordPressAgentConversations.first { $0.key.siteID == siteID }
+        sortedWordPressAgentConversations.first { $0.key.siteID == siteID && !$0.isEmptyLocalDraft }
     }
 
     private func newestWordPressAgentConversation(for key: WordPressAgentConversationKey) -> WordPressAgentConversation? {
-        sortedWordPressAgentConversations.first { $0.key == key }
+        sortedWordPressAgentConversations.first { $0.key == key && !$0.isEmptyLocalDraft }
     }
 
     @discardableResult
@@ -1292,6 +1318,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let key = WordPressAgentConversationKey(siteID: siteID, agentID: normalizedWordPressAgentID(agentID))
+        removeEmptyWordPressAgentDrafts()
         let conversationID = createWordPressAgentConversation(for: key)
         recordWordPressAgentSiteUse(siteID)
         selectedWordPressComSiteID = siteID
@@ -1307,7 +1334,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func showWordPressAgentWindow(conversationID: String? = nil) {
-        selectWordPressAgentConversation(conversationID)
         NotificationCenter.default.post(
             name: .showWordPressAgent,
             object: nil,
@@ -1315,9 +1341,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
-    func sendWordPressAgentChatMessage(_ message: String, conversationID: String? = nil) {
+    func sendWordPressAgentChatMessage(_ message: String, attachments: [URL] = [], conversationID: String? = nil) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty else { return }
+        guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
 
         let existingConversation = conversationID.flatMap { id in
             wordpressAgentConversations.first(where: { $0.id == id })
@@ -1338,15 +1364,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let key = selectedConversation.key
+        guard key.siteID > 0 else {
+            setWordPressAgentError("Choose a WordPress.com site before continuing this chat.", for: selectedConversation.id)
+            return
+        }
+        let messageToSend = trimmedMessage.isEmpty ? Self.defaultPrompt(forAttachmentCount: attachments.count) : trimmedMessage
+        let messageAttachments = attachments.map { WordPressAgentAttachment(fileURL: $0) }
 
         Task {
             let context = await self.contextService.collectContext()
             do {
                 let result = try await self.callWordPressAgentMessage(
-                    message: trimmedMessage,
+                    message: messageToSend,
                     conversationID: selectedConversation.id,
                     key: key,
-                    context: context
+                    context: context,
+                    attachments: attachments,
+                    displayAttachments: messageAttachments
                 )
                 await MainActor.run {
                     self.lastAgentResponse = result.response.text
@@ -1375,7 +1409,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         message: String,
         conversationID: String? = nil,
         key: WordPressAgentConversationKey,
-        context: AppContext
+        context: AppContext,
+        attachments: [URL] = [],
+        displayAttachments: [WordPressAgentAttachment] = []
     ) async throws -> WordPressAgentTurnResult {
         let appendResult = await MainActor.run {
             self.appendWordPressAgentMessage(
@@ -1384,7 +1420,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 role: .user,
                 text: message,
                 state: nil,
-                markSending: true
+                markSending: true,
+                attachments: displayAttachments
             )
         }
 
@@ -1394,7 +1431,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 agentID: key.agentID,
                 message: message,
                 sessionID: appendResult.sessionID,
-                context: context
+                context: context,
+                attachments: attachments
             )
             await MainActor.run {
                 self.recordWordPressAgentResponse(
@@ -1421,9 +1459,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         agentID: String,
         message: String,
         sessionID: String?,
-        context: AppContext
+        context: AppContext,
+        attachments: [URL] = []
     ) async throws -> WPCOMAgentResponse {
         let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let uploadedMedia = try await wpcomClient.uploadMedia(siteID: siteID, fileURLs: attachments)
         let clientContext = WPCOMAgentClientContextPayload(
             selectedSiteID: siteID,
             appName: context.appName,
@@ -1432,14 +1472,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             selectedText: context.selectedText,
             currentActivity: context.currentActivity,
             client: "whispress",
-            clientVersion: clientVersion
+            clientVersion: clientVersion,
+            uploadedFiles: uploadedMedia.map(WPCOMAgentUploadedFileContext.init)
         )
         return try await wpcomClient.sendAgentMessage(
             siteID: siteID,
             agentID: agentID,
             message: message,
             clientContext: clientContext,
-            sessionID: sessionID
+            sessionID: sessionID,
+            uploadedMedia: uploadedMedia
         )
     }
 
@@ -1450,7 +1492,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         role: WordPressAgentMessageRole,
         text: String,
         state: String?,
-        markSending: Bool
+        markSending: Bool,
+        attachments: [WordPressAgentAttachment] = []
     ) -> WordPressAgentAppendResult {
         let index = ensureWordPressAgentConversation(
             for: key,
@@ -1466,7 +1509,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         wordpressAgentConversations[index].messages.append(
-            WordPressAgentMessage(role: role, text: text, state: state)
+            WordPressAgentMessage(role: role, text: text, state: state, attachments: attachments)
         )
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = markSending
@@ -1501,6 +1544,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = false
         wordpressAgentConversations[index].errorMessage = nil
+        selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+    }
+
+    private func setWordPressAgentError(_ error: String, for conversationID: String) {
+        guard let index = wordpressAgentConversations.firstIndex(where: { $0.id == conversationID }) else {
+            errorMessage = error
+            return
+        }
+        wordpressAgentConversations[index].isSending = false
+        wordpressAgentConversations[index].errorMessage = error
         selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
     }
 
@@ -1551,6 +1604,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return wordpressAgentConversations.firstIndex(where: { $0.id == conversationID }) ?? 0
     }
 
+    private func removeEmptyWordPressAgentDrafts(except preservedConversationID: String? = nil) {
+        wordpressAgentConversations.removeAll { conversation in
+            conversation.id != preservedConversationID && conversation.isEmptyLocalDraft
+        }
+    }
+
     @discardableResult
     private func createWordPressAgentConversation(
         for key: WordPressAgentConversationKey,
@@ -1582,7 +1641,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func wordPressAgentWindowDictationKey() -> WordPressAgentConversationKey? {
-        if let selectedWordPressAgentConversation {
+        if let selectedWordPressAgentConversation,
+           selectedWordPressAgentConversation.key.siteID > 0 {
             return selectedWordPressAgentConversation.key
         }
 
@@ -1591,7 +1651,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func siteName(forWordPressAgentSiteID siteID: Int) -> String? {
-        wordpressComSites.first(where: { $0.id == siteID })?.displayName
+        guard siteID > 0 else { return nil }
+        return wordpressComSites.first(where: { $0.id == siteID })?.displayName
+    }
+
+    private static func defaultPrompt(forAttachmentCount attachmentCount: Int) -> String {
+        attachmentCount == 1 ? "Please look at the attached image." : "Please look at the attached images."
     }
 
     func startAccessibilityPolling() {
