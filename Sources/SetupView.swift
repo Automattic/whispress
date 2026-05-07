@@ -188,7 +188,7 @@ struct SetupView: View {
                 Text("Welcome to WhisPress")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
 
-                Text("Dictate text anywhere on your Mac using your selected WordPress.com site.")
+                Text("Dictate text anywhere on your Mac using your selected WordPress.com workspace.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -212,7 +212,7 @@ struct SetupView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
-                Text("Sign in and choose the site whose Transcribe skill should guide dictation.")
+                Text("Sign in and choose the workspace whose Transcribe skill should guide dictation.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -243,10 +243,10 @@ struct SetupView: View {
                         if appState.isRefreshingWordPressComSites {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("Loading sites...")
+                                Text("Loading workspaces...")
                             }
                         } else {
-                            Label("Refresh Sites", systemImage: "arrow.clockwise")
+                            Label("Refresh Workspaces", systemImage: "arrow.clockwise")
                         }
                     }
                     .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
