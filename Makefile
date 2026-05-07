@@ -16,6 +16,7 @@ RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
+WPCOM_LOGO = Resources/WPCOM-Blueberry-Pill-Logo.svg
 
 .PHONY: all clean run icon dmg codesign-dmg notarize
 
@@ -30,7 +31,7 @@ all: $(APP_EXECUTABLE_TARGET)
 		echo "Configured WordPress.com OAuth client secret in $(APP_BUNDLE)"; \
 	fi
 
-$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE)
+$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE) $(WPCOM_LOGO)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
 ifeq ($(ARCH),universal)
 	swiftc \
@@ -64,6 +65,7 @@ endif
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp $(ICON_SOURCE) "$(RESOURCES)/"
+	@cp $(WPCOM_LOGO) "$(RESOURCES)/"
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WhisPress.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 

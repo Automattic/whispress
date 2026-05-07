@@ -1,14 +1,47 @@
+import Combine
 import SwiftUI
 import UserNotifications
+
+private final class ActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(
+        title: String,
+        keyEquivalent: String = "",
+        imageName: String? = nil,
+        handler: @escaping () -> Void
+    ) {
+        self.handler = handler
+        super.init(title: title, action: #selector(performAction), keyEquivalent: keyEquivalent)
+        target = self
+        if let imageName {
+            image = NSImage(systemSymbolName: imageName, accessibilityDescription: nil)
+            image?.isTemplate = true
+        }
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func performAction() {
+        handler()
+    }
+}
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var agentWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var statusIconCancellable: AnyCancellable?
+    private var menuBarIconVisibilityObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        configureStatusItem()
+        installStatusItemObservers()
 
         NotificationCenter.default.addObserver(
             self,
@@ -41,6 +74,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if let menuBarIconVisibilityObserver {
+            NotificationCenter.default.removeObserver(menuBarIconVisibilityObserver)
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard appState.hasCompletedSetup else { return true }
         if !flag {
@@ -62,6 +101,348 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowWordPressAgent(_ notification: Notification) {
         showWordPressAgentWindow(conversationID: notification.userInfo?["conversationID"] as? String)
+    }
+
+    @objc private func handleStatusItemClick(_ sender: Any?) {
+        if NSApp.currentEvent?.type == .rightMouseUp || !appState.isWordPressAgentEnabled {
+            showStatusMenu()
+            return
+        }
+
+        showWordPressAgentWindow()
+    }
+
+    private func configureStatusItem() {
+        guard shouldShowMenuBarIcon else {
+            if let statusItem {
+                NSStatusBar.system.removeStatusItem(statusItem)
+                self.statusItem = nil
+            }
+            return
+        }
+
+        if statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            item.button?.target = self
+            item.button?.action = #selector(handleStatusItemClick(_:))
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            statusItem = item
+        }
+
+        updateStatusItemIcon()
+    }
+
+    private func installStatusItemObservers() {
+        statusIconCancellable = Publishers.CombineLatest3(
+            appState.$isRecording,
+            appState.$isTranscribing,
+            appState.$isWordPressAgentEnabled
+        )
+            .sink { [weak self] _, _, _ in
+                self?.updateStatusItemIcon()
+            }
+
+        menuBarIconVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.configureStatusItem()
+        }
+    }
+
+    private var shouldShowMenuBarIcon: Bool {
+        if UserDefaults.standard.object(forKey: "show_menu_bar_icon") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "show_menu_bar_icon")
+    }
+
+    private func updateStatusItemIcon() {
+        guard let button = statusItem?.button else { return }
+        let iconName: String
+        if appState.isRecording {
+            iconName = "record.circle"
+        } else if appState.isTranscribing {
+            iconName = "ellipsis.circle"
+        } else {
+            iconName = "waveform"
+        }
+
+        let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "WhisPress")
+        image?.isTemplate = true
+        button.image = image
+        button.toolTip = appState.isWordPressAgentEnabled
+            ? "Open WordPress Agent"
+            : "WhisPress"
+    }
+
+    private func showStatusMenu() {
+        guard let statusItem else { return }
+        statusItem.menu = makeStatusMenu()
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func makeStatusMenu() -> NSMenu {
+        appState.refreshLatestExternalAppSnapshot()
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        addDisabledItem("WhisPress v\(appVersion)", to: menu)
+        menu.addItem(.separator())
+
+        if !appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil {
+            menu.addItem(actionItem("WordPress.com Sign-In Needed", imageName: "person.crop.circle.badge.exclamationmark") { [weak self] in
+                self?.appState.selectedSettingsTab = .wordpressCom
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            })
+            menu.addItem(.separator())
+        }
+
+        if !appState.hasAccessibility {
+            menu.addItem(actionItem("Accessibility Required", imageName: "exclamationmark.triangle.fill") { [weak self] in
+                self?.appState.showAccessibilityAlert()
+            })
+            menu.addItem(.separator())
+        }
+
+        addDisabledItem(statusMenuTitle, to: menu)
+
+        if let appConfigItem = currentAppConfigMenuItem() {
+            menu.addItem(.separator())
+            menu.addItem(appConfigItem)
+        }
+
+        menu.addItem(.separator())
+        let dictationTitle = appState.isRecording ? "Stop Recording" : "Start Dictating"
+        let dictationItem = actionItem(dictationTitle) { [weak self] in
+            self?.appState.toggleRecording()
+        }
+        dictationItem.isEnabled = !appState.isTranscribing
+        menu.addItem(dictationItem)
+
+        if let hotkeyError = appState.hotkeyMonitoringErrorMessage, !hotkeyError.isEmpty {
+            addDisabledItem(truncateMenuText(hotkeyError), to: menu)
+        }
+
+        if let error = appState.errorMessage, !error.isEmpty {
+            addDisabledItem(truncateMenuText(error), to: menu)
+        }
+
+        if !appState.lastAgentResponse.isEmpty && !appState.isRecording && !appState.isTranscribing {
+            menu.addItem(.separator())
+            addDisabledItem("WordPress Agent: \(truncateMenuText(appState.lastAgentResponse, maxLength: 72))", to: menu)
+            menu.addItem(actionItem("Copy Reply") { [weak self] in
+                guard let response = self?.appState.lastAgentResponse else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(response, forType: .string)
+            })
+        }
+
+        if !appState.isRecording && !appState.isTranscribing {
+            menu.addItem(.separator())
+            let openAgentItem = actionItem("Open WordPress Agent", imageName: "sparkles") { [weak self] in
+                self?.showWordPressAgentWindow()
+            }
+            openAgentItem.isEnabled = appState.isWordPressComSignedIn
+            menu.addItem(openAgentItem)
+        }
+
+        if !appState.lastTranscript.isEmpty && !appState.isRecording && !appState.isTranscribing {
+            menu.addItem(.separator())
+            addDisabledItem(truncateMenuText(appState.lastTranscript, maxLength: 50), to: menu)
+            menu.addItem(actionItem("Copy Again") { [weak self] in
+                guard let transcript = self?.appState.lastTranscript else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(transcript, forType: .string)
+            })
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(submenuItem(title: "Hold Shortcut", submenu: shortcutMenu(for: .hold)))
+        menu.addItem(submenuItem(title: "Toggle Shortcut", submenu: shortcutMenu(for: .toggle)))
+        menu.addItem(submenuItem(title: "Microphone", submenu: microphoneMenu()))
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem("Re-run Setup...") {
+            NotificationCenter.default.post(name: .showSetup, object: nil)
+        })
+        menu.addItem(actionItem("Settings") {
+            NotificationCenter.default.post(name: .showSettings, object: nil)
+        })
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") { [weak self] in
+            self?.appState.toggleDebugOverlay()
+        })
+        menu.addItem(actionItem("Quit WhisPress", keyEquivalent: "q") {
+            NSApplication.shared.terminate(nil)
+        })
+
+        return menu
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+
+    private var statusMenuTitle: String {
+        if appState.isRecording {
+            return "Recording..."
+        }
+        if appState.isTranscribing {
+            return appState.debugStatusMessage
+        }
+        return appState.shortcutStatusText
+    }
+
+    private func currentAppConfigMenuItem() -> NSMenuItem? {
+        guard appState.isWordPressComSignedIn,
+              !appState.wordpressComSites.isEmpty,
+              let snapshot = appState.latestExternalAppSnapshot,
+              let bundleIdentifier = snapshot.bundleIdentifier else {
+            return nil
+        }
+
+        let override = appState.wordPressComAppSiteOverride(for: bundleIdentifier)
+        let effectiveSite = appState.effectiveWordPressComSite(for: bundleIdentifier)
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        addDisabledItem(bundleIdentifier, to: submenu)
+        addDisabledItem(configSummary(site: effectiveSite, isOverride: override != nil), to: submenu)
+        submenu.addItem(.separator())
+
+        let useDefaultItem = actionItem("Use Default Site") { [weak self] in
+            self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
+        }
+        useDefaultItem.state = override == nil ? .on : .off
+        submenu.addItem(useDefaultItem)
+
+        let pinItem = actionItem("Pin Default Site to This App") { [weak self] in
+            self?.appState.assignSelectedWordPressComSiteToLatestExternalApp()
+        }
+        pinItem.isEnabled = appState.selectedWordPressComSiteID != nil
+        submenu.addItem(pinItem)
+
+        if override != nil {
+            submenu.addItem(actionItem("Remove App-Specific Site") { [weak self] in
+                self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
+            })
+        }
+
+        submenu.addItem(.separator())
+        submenu.addItem(actionItem("Manage Sites in Settings...") {
+            NotificationCenter.default.post(name: .showSettings, object: nil)
+        })
+
+        let item = submenuItem(
+            title: "App: \(snapshot.appName ?? bundleIdentifier)",
+            submenu: submenu
+        )
+        item.image = NSImage(systemSymbolName: override == nil ? "app" : "pin.fill", accessibilityDescription: nil)
+        item.image?.isTemplate = true
+        return item
+    }
+
+    private func shortcutMenu(for role: ShortcutRole) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let currentBinding = role == .hold ? appState.holdShortcut : appState.toggleShortcut
+        let otherBinding = role == .hold ? appState.toggleShortcut : appState.holdShortcut
+
+        let disabledItem = actionItem("Disabled") { [weak self] in
+            _ = self?.appState.setShortcut(.disabled, for: role)
+        }
+        disabledItem.state = currentBinding.isDisabled ? .on : .off
+        disabledItem.isEnabled = !otherBinding.isDisabled
+        menu.addItem(disabledItem)
+
+        for preset in ShortcutPreset.allCases {
+            let item = actionItem(preset.title) { [weak self] in
+                _ = self?.appState.setShortcut(preset.binding, for: role)
+            }
+            item.state = currentBinding == preset.binding ? .on : .off
+            item.isEnabled = preset.binding != otherBinding
+            menu.addItem(item)
+        }
+
+        if let savedCustomShortcut = appState.savedCustomShortcut(for: role) {
+            menu.addItem(.separator())
+            let item = actionItem("Custom: \(savedCustomShortcut.displayName)") { [weak self] in
+                _ = self?.appState.setShortcut(savedCustomShortcut, for: role)
+            }
+            item.state = currentBinding == savedCustomShortcut ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem("Customize...") {
+            NotificationCenter.default.post(name: .showSettings, object: nil)
+        })
+        return menu
+    }
+
+    private func microphoneMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let systemDefaultItem = actionItem("System Default") { [weak self] in
+            self?.appState.selectedMicrophoneID = "default"
+        }
+        systemDefaultItem.state = appState.selectedMicrophoneID == "default" || appState.selectedMicrophoneID.isEmpty
+            ? .on
+            : .off
+        menu.addItem(systemDefaultItem)
+
+        for device in appState.availableMicrophones {
+            let item = actionItem(device.name) { [weak self] in
+                self?.appState.selectedMicrophoneID = device.uid
+            }
+            item.state = appState.selectedMicrophoneID == device.uid ? .on : .off
+            menu.addItem(item)
+        }
+
+        return menu
+    }
+
+    private func actionItem(
+        _ title: String,
+        keyEquivalent: String = "",
+        imageName: String? = nil,
+        handler: @escaping () -> Void
+    ) -> NSMenuItem {
+        ActionMenuItem(
+            title: title,
+            keyEquivalent: keyEquivalent,
+            imageName: imageName,
+            handler: handler
+        )
+    }
+
+    private func submenuItem(title: String, submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    private func addDisabledItem(_ title: String, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
+    }
+
+    private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
+        let siteName = site?.displayName ?? "No site selected"
+        return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
+    }
+
+    private func truncateMenuText(_ text: String, maxLength: Int = 90) -> String {
+        let trimmed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxLength else { return trimmed }
+        return String(trimmed.prefix(maxLength)) + "..."
     }
 
     private func showSettingsWindow() {
@@ -116,7 +497,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showWordPressAgentWindow(conversationID: String? = nil) {
         NSApp.setActivationPolicy(.regular)
 
-        appState.selectWordPressAgentConversation(conversationID)
+        if let conversationID {
+            appState.selectWordPressAgentConversation(conversationID)
+        } else {
+            _ = appState.startWordPressAgentConversation()
+        }
 
         if let agentWindow, agentWindow.isVisible {
             agentWindow.makeKeyAndOrderFront(nil)
@@ -140,14 +525,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: agentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "WordPress Agent"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 900, height: 620)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

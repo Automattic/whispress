@@ -55,6 +55,7 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
     let name: String
     let url: String?
     let slug: String?
+    let icon: WPCOMSiteIcon?
 
     var displayName: String {
         if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -67,18 +68,25 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         slug ?? url?.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "") ?? "\(id)"
     }
 
+    var iconURL: URL? {
+        guard let iconURLString = icon?.bestURLString else { return nil }
+        return URL(string: iconURLString)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id = "ID"
         case name
         case url = "URL"
         case slug
+        case icon
     }
 
-    init(id: Int, name: String, url: String?, slug: String?) {
+    init(id: Int, name: String, url: String?, slug: String?, icon: WPCOMSiteIcon? = nil) {
         self.id = id
         self.name = name
         self.url = url
         self.slug = slug
+        self.icon = icon
     }
 
     init(from decoder: Decoder) throws {
@@ -93,6 +101,70 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         name = (try? container.decode(String.self, forKey: .name)) ?? ""
         url = try? container.decode(String.self, forKey: .url)
         slug = try? container.decode(String.self, forKey: .slug)
+        icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+    }
+}
+
+struct WPCOMSiteIcon: Codable, Equatable {
+    let img: String?
+    let ico: String?
+
+    var bestURLString: String? {
+        [img, ico]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+}
+
+struct WPCOMUser: Codable, Equatable {
+    let id: Int
+    let displayName: String
+    let username: String
+    let email: String?
+    let avatarURLString: String?
+    let profileURLString: String?
+
+    var avatarURL: URL? {
+        guard let avatarURLString,
+              !avatarURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return URL(string: avatarURLString)
+    }
+
+    var displayLabel: String {
+        if !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return displayName
+        }
+        if !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return username
+        }
+        return email ?? "WordPress.com"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case displayName = "display_name"
+        case username
+        case email
+        case avatarURLString = "avatar_URL"
+        case profileURLString = "profile_URL"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intID = try? container.decode(Int.self, forKey: .id) {
+            id = intID
+        } else if let stringID = try? container.decode(String.self, forKey: .id), let intID = Int(stringID) {
+            id = intID
+        } else {
+            id = 0
+        }
+        displayName = (try? container.decode(String.self, forKey: .displayName)) ?? ""
+        username = (try? container.decode(String.self, forKey: .username)) ?? ""
+        email = try? container.decode(String.self, forKey: .email)
+        avatarURLString = try? container.decode(String.self, forKey: .avatarURLString)
+        profileURLString = try? container.decode(String.self, forKey: .profileURLString)
     }
 }
 
@@ -162,6 +234,7 @@ struct WPCOMAgentClientContextPayload: Encodable {
     let currentActivity: String
     let client: String
     let clientVersion: String
+    let uploadedFiles: [WPCOMAgentUploadedFileContext]
 
     private enum CodingKeys: String, CodingKey {
         case selectedSiteID = "selectedSiteId"
@@ -172,6 +245,7 @@ struct WPCOMAgentClientContextPayload: Encodable {
         case currentActivity
         case client
         case clientVersion
+        case uploadedFiles
     }
 }
 
@@ -179,6 +253,249 @@ struct WPCOMAgentResponse: Equatable {
     let text: String
     let state: String
     let sessionID: String?
+}
+
+struct WPCOMUploadedMedia: Decodable, Equatable {
+    let id: Int
+    let urlString: String
+    let file: String?
+    let mimeType: String?
+    let title: String?
+
+    var url: URL? {
+        URL(string: urlString)
+    }
+
+    var resolvedMimeType: String {
+        if let mimeType, !mimeType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mimeType
+        }
+        return Self.mimeType(forFileName: file ?? url?.lastPathComponent)
+    }
+
+    var displayName: String? {
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title
+        }
+        if let file, !file.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: file).lastPathComponent
+        }
+        return url?.lastPathComponent
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case lowercaseID = "id"
+        case urlString = "URL"
+        case lowercaseURL = "url"
+        case file
+        case title
+        case name
+        case mimeType = "mime_type"
+        case mimeTypeCamel = "mimeType"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = Self.decodeFlexibleInt(container, forKey: .id)
+            ?? Self.decodeFlexibleInt(container, forKey: .lowercaseID)
+            ?? 0
+        urlString = (try? container.decode(String.self, forKey: .urlString))
+            ?? (try? container.decode(String.self, forKey: .lowercaseURL))
+            ?? ""
+        file = try? container.decode(String.self, forKey: .file)
+        title = (try? container.decode(String.self, forKey: .title))
+            ?? (try? container.decode(String.self, forKey: .name))
+        mimeType = (try? container.decode(String.self, forKey: .mimeType))
+            ?? (try? container.decode(String.self, forKey: .mimeTypeCamel))
+    }
+
+    private static func decodeFlexibleInt<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int? {
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decode(String.self, forKey: key) {
+            return Int(value)
+        }
+        return nil
+    }
+
+    private static func mimeType(forFileName fileName: String?) -> String {
+        guard let fileName else { return "image/jpeg" }
+        switch URL(fileURLWithPath: fileName).pathExtension.lowercased() {
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "heif": return "image/heif"
+        case "tif", "tiff": return "image/tiff"
+        default: return "image/jpeg"
+        }
+    }
+}
+
+struct WPCOMAgentUploadedFileContext: Encodable, Equatable {
+    let id: Int
+    let url: String
+    let title: String?
+    let fileName: String?
+    let fileType: String
+    let mimeType: String
+    let name: String?
+
+    init(media: WPCOMUploadedMedia) {
+        id = media.id
+        url = media.urlString
+        title = media.title ?? media.displayName
+        fileName = media.file
+        fileType = media.resolvedMimeType
+        mimeType = media.resolvedMimeType
+        name = media.displayName
+    }
+}
+
+struct WPCOMAgentHistoryMessage: Decodable, Equatable {
+    let messageID: Int?
+    let content: String
+    let role: String
+    let createdAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case content
+        case role
+        case createdAt = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intMessageID = try? container.decode(Int.self, forKey: .messageID) {
+            messageID = intMessageID
+        } else if let stringMessageID = try? container.decode(String.self, forKey: .messageID) {
+            messageID = Int(stringMessageID)
+        } else {
+            messageID = nil
+        }
+        content = (try? container.decode(String.self, forKey: .content)) ?? ""
+        role = (try? container.decode(String.self, forKey: .role)) ?? ""
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+    }
+}
+
+struct WPCOMAgentConversationSummary: Decodable, Equatable {
+    let chatID: Int
+    let sessionID: String?
+    let createdAt: String?
+    let siteID: Int?
+    let firstMessage: WPCOMAgentHistoryMessage?
+    let lastMessage: WPCOMAgentHistoryMessage?
+
+    private enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case sessionID = "session_id"
+        case createdAt = "created_at"
+        case siteID = "site_id"
+        case blogID = "blog_id"
+        case selectedSiteID = "selected_site_id"
+        case selectedSiteIDCamel = "selectedSiteId"
+        case firstMessage = "first_message"
+        case lastMessage = "last_message"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intChatID = try? container.decode(Int.self, forKey: .chatID) {
+            chatID = intChatID
+        } else if let stringChatID = try? container.decode(String.self, forKey: .chatID),
+                  let intChatID = Int(stringChatID) {
+            chatID = intChatID
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .chatID,
+                in: container,
+                debugDescription: "Missing chat ID"
+            )
+        }
+        sessionID = try? container.decode(String.self, forKey: .sessionID)
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+        siteID = Self.decodeFlexibleInt(container, forKey: .siteID)
+            ?? Self.decodeFlexibleInt(container, forKey: .blogID)
+            ?? Self.decodeFlexibleInt(container, forKey: .selectedSiteID)
+            ?? Self.decodeFlexibleInt(container, forKey: .selectedSiteIDCamel)
+        firstMessage = try? container.decode(WPCOMAgentHistoryMessage.self, forKey: .firstMessage)
+        lastMessage = try? container.decode(WPCOMAgentHistoryMessage.self, forKey: .lastMessage)
+    }
+
+    private static func decodeFlexibleInt<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int? {
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decode(String.self, forKey: key) {
+            return Int(value)
+        }
+        return nil
+    }
+}
+
+struct WPCOMAgentChat: Decodable, Equatable {
+    let chatID: Int
+    let sessionID: String?
+    let createdAt: String?
+    let siteID: Int?
+    let messages: [WPCOMAgentHistoryMessage]
+
+    private enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case sessionID = "session_id"
+        case createdAt = "created_at"
+        case siteID = "site_id"
+        case blogID = "blog_id"
+        case selectedSiteID = "selected_site_id"
+        case selectedSiteIDCamel = "selectedSiteId"
+        case messages
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let intChatID = try? container.decode(Int.self, forKey: .chatID) {
+            chatID = intChatID
+        } else if let stringChatID = try? container.decode(String.self, forKey: .chatID),
+                  let intChatID = Int(stringChatID) {
+            chatID = intChatID
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .chatID,
+                in: container,
+                debugDescription: "Missing chat ID"
+            )
+        }
+        sessionID = try? container.decode(String.self, forKey: .sessionID)
+        createdAt = try? container.decode(String.self, forKey: .createdAt)
+        siteID = Self.decodeFlexibleInt(container, forKey: .siteID)
+            ?? Self.decodeFlexibleInt(container, forKey: .blogID)
+            ?? Self.decodeFlexibleInt(container, forKey: .selectedSiteID)
+            ?? Self.decodeFlexibleInt(container, forKey: .selectedSiteIDCamel)
+        messages = (try? container.decode([WPCOMAgentHistoryMessage].self, forKey: .messages)) ?? []
+    }
+
+    private static func decodeFlexibleInt<Key: CodingKey>(
+        _ container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int? {
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decode(String.self, forKey: key) {
+            return Int(value)
+        }
+        return nil
+    }
 }
 
 final class WPCOMClient: NSObject {
@@ -228,18 +545,59 @@ final class WPCOMClient: NSObject {
         let type: String
         let text: String?
         let data: AgentRequestPartData?
+        let file: AgentRequestFile?
+        let metadata: AgentRequestFileMetadata?
 
         static func text(_ text: String) -> AgentRequestPart {
-            AgentRequestPart(type: "text", text: text, data: nil)
+            AgentRequestPart(type: "text", text: text, data: nil, file: nil, metadata: nil)
         }
 
         static func clientContext(_ context: WPCOMAgentClientContextPayload) -> AgentRequestPart {
-            AgentRequestPart(type: "data", text: nil, data: AgentRequestPartData(clientContext: context))
+            AgentRequestPart(type: "data", text: nil, data: AgentRequestPartData(clientContext: context), file: nil, metadata: nil)
+        }
+
+        static func file(_ media: WPCOMUploadedMedia) -> AgentRequestPart {
+            let mimeType = media.resolvedMimeType
+            return AgentRequestPart(
+                type: "file",
+                text: nil,
+                data: nil,
+                file: AgentRequestFile(
+                    uri: media.urlString,
+                    mimeType: mimeType,
+                    name: media.displayName
+                ),
+                metadata: AgentRequestFileMetadata(
+                    id: media.id,
+                    url: media.urlString,
+                    mimeType: mimeType,
+                    name: media.displayName,
+                    title: media.title ?? media.displayName,
+                    fileName: media.file,
+                    fileType: mimeType
+                )
+            )
         }
     }
 
     private struct AgentRequestPartData: Encodable {
         let clientContext: WPCOMAgentClientContextPayload
+    }
+
+    private struct AgentRequestFile: Encodable {
+        let uri: String
+        let mimeType: String
+        let name: String?
+    }
+
+    private struct AgentRequestFileMetadata: Encodable {
+        let id: Int
+        let url: String
+        let mimeType: String
+        let name: String?
+        let title: String?
+        let fileName: String?
+        let fileType: String
     }
 
     private struct AgentRPCResponse: Decodable {
@@ -274,6 +632,22 @@ final class WPCOMClient: NSObject {
     private struct AgentResponsePart: Decodable {
         let type: String
         let text: String?
+    }
+
+    private struct MediaUploadResponse: Decodable {
+        let media: [WPCOMUploadedMedia]
+        let errors: [MediaUploadError]?
+    }
+
+    private struct MediaUploadError: Decodable {
+        let error: String?
+        let message: String?
+    }
+
+    private struct MultipartFilePart {
+        let fieldName: String
+        let fileURL: URL
+        let contentType: String
     }
 
     private let apiBaseURL = URL(string: "https://public-api.wordpress.com")!
@@ -367,11 +741,45 @@ final class WPCOMClient: NSObject {
     func fetchSites() async throws -> [WPCOMSite] {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
         components.queryItems = [
-            URLQueryItem(name: "fields", value: "ID,name,URL,slug")
+            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon")
         ]
         let data = try await authenticatedData(for: components.url!)
         let response = try JSONDecoder().decode(SitesResponse.self, from: data)
         return response.sites
+    }
+
+    func fetchCurrentUser() async throws -> WPCOMUser {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "ID,display_name,username,email,avatar_URL,profile_URL")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode(WPCOMUser.self, from: data)
+    }
+
+    func fetchAgentConversationSummaries(agentID: String = "dolly") async throws -> [WPCOMAgentConversationSummary] {
+        let historyBotID = Self.historyBotID(for: agentID)
+        var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chats/\(historyBotID)")!
+        components.queryItems = [
+            URLQueryItem(name: "truncation_method", value: "last_message")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
+    }
+
+    func fetchAgentChat(
+        agentID: String = "dolly",
+        chatID: Int,
+        itemsPerPage: Int = 100
+    ) async throws -> WPCOMAgentChat {
+        let historyBotID = Self.historyBotID(for: agentID)
+        var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chat/\(historyBotID)/\(chatID)")!
+        components.queryItems = [
+            URLQueryItem(name: "page_number", value: "1"),
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode(WPCOMAgentChat.self, from: data)
     }
 
     func discoverTranscribeSkill(siteID: Int) async throws -> WPCOMGuideline? {
@@ -432,14 +840,16 @@ final class WPCOMClient: NSObject {
         agentID: String,
         message: String,
         clientContext: WPCOMAgentClientContextPayload,
-        sessionID: String?
+        sessionID: String?,
+        uploadedMedia: [WPCOMUploadedMedia] = []
     ) async throws -> WPCOMAgentResponse {
-        let normalizedAgentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "dolly"
-            : agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAgentID = Self.normalizedAgentID(agentID)
         let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/agent/\(normalizedAgentID)")!
         let rpcID = UUID().uuidString
         let taskID = UUID().uuidString
+        let parts = [AgentRequestPart.text(message)]
+            + uploadedMedia.map(AgentRequestPart.file)
+            + [AgentRequestPart.clientContext(clientContext)]
         let body = AgentRPCRequest(
             jsonrpc: "2.0",
             id: rpcID,
@@ -449,10 +859,7 @@ final class WPCOMClient: NSObject {
                 sessionID: sessionID,
                 message: AgentA2AMessage(
                     role: "user",
-                    parts: [
-                        .text(message),
-                        .clientContext(clientContext)
-                    ]
+                    parts: parts
                 )
             )
         )
@@ -483,6 +890,46 @@ final class WPCOMClient: NSObject {
             state: result.status.state,
             sessionID: result.sessionID
         )
+    }
+
+    func uploadMedia(siteID: Int, fileURLs: [URL]) async throws -> [WPCOMUploadedMedia] {
+        guard !fileURLs.isEmpty else { return [] }
+
+        let url = URL(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)/media/new")!
+        let boundary = "WhisPress-\(UUID().uuidString)"
+        let files = fileURLs.map {
+            MultipartFilePart(
+                fieldName: "media[]",
+                fileURL: $0,
+                contentType: Self.mediaContentType(for: $0)
+            )
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
+
+        let body = try makeMultipartBody(fields: [:], files: files, boundary: boundary)
+        let (data, response) = try await session.upload(for: request, from: body)
+        try validate(response: response, data: data)
+
+        let decoded = try JSONDecoder().decode(MediaUploadResponse.self, from: data)
+        if let errorMessage = decoded.errors?.compactMap(\.message).first {
+            throw WPCOMClientError.invalidResponse(errorMessage)
+        }
+        guard !decoded.media.isEmpty else {
+            throw WPCOMClientError.invalidResponse("No media was uploaded.")
+        }
+        let uploadedMedia = decoded.media.filter {
+            $0.id > 0 && !$0.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard uploadedMedia.count == decoded.media.count else {
+            throw WPCOMClientError.invalidResponse("Uploaded media response was missing attachment metadata.")
+        }
+        return uploadedMedia
     }
 
     func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
@@ -611,6 +1058,24 @@ final class WPCOMClient: NSObject {
         fields: [String: String],
         boundary: String
     ) throws -> Data {
+        try makeMultipartBody(
+            fields: fields,
+            files: [
+                MultipartFilePart(
+                    fieldName: fileFieldName,
+                    fileURL: fileURL,
+                    contentType: Self.audioContentType(for: fileURL)
+                )
+            ],
+            boundary: boundary
+        )
+    }
+
+    private func makeMultipartBody(
+        fields: [String: String],
+        files: [MultipartFilePart],
+        boundary: String
+    ) throws -> Data {
         var body = Data()
 
         func append(_ value: String) {
@@ -623,13 +1088,17 @@ final class WPCOMClient: NSObject {
             append("\(value)\r\n")
         }
 
-        let fileData = try Data(contentsOf: fileURL)
-        let fileName = fileURL.lastPathComponent
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"\(fileFieldName)\"; filename=\"\(fileName)\"\r\n")
-        append("Content-Type: \(Self.audioContentType(for: fileURL))\r\n\r\n")
-        body.append(fileData)
-        append("\r\n")
+        for file in files {
+            let fileData = try Data(contentsOf: file.fileURL)
+            let fileName = Self.multipartEscaped(file.fileURL.lastPathComponent)
+            let fieldName = Self.multipartEscaped(file.fieldName)
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(fileName)\"\r\n")
+            append("Content-Type: \(file.contentType)\r\n\r\n")
+            body.append(fileData)
+            append("\r\n")
+        }
+
         append("--\(boundary)--\r\n")
 
         return body
@@ -647,6 +1116,23 @@ final class WPCOMClient: NSObject {
         }
     }
 
+    private static func mediaContentType(for fileURL: URL) -> String {
+        switch fileURL.pathExtension.lowercased() {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "heif": return "image/heif"
+        case "tif", "tiff": return "image/tiff"
+        default: return "application/octet-stream"
+        }
+    }
+
+    private static func multipartEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     private static func randomURLSafeString(byteCount: Int) -> String {
         var bytes = [UInt8](repeating: 0, count: byteCount)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
@@ -660,6 +1146,19 @@ final class WPCOMClient: NSObject {
             }
             .joined(separator: "&")
         return Data(encoded.utf8)
+    }
+
+    private static func normalizedAgentID(_ agentID: String) -> String {
+        let trimmedAgentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAgentID.isEmpty ? "dolly" : trimmedAgentID
+    }
+
+    private static func historyBotID(for agentID: String) -> String {
+        let normalizedAgentID = normalizedAgentID(agentID)
+        if normalizedAgentID.hasPrefix("wpcom-agent-") {
+            return normalizedAgentID
+        }
+        return "wpcom-agent-\(normalizedAgentID.replacingOccurrences(of: "-", with: "_"))"
     }
 
     private static func urlEncode(_ value: String) -> String {

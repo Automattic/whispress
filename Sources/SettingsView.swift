@@ -6,18 +6,35 @@ import AVFoundation
 private struct SettingsCard<Content: View>: View {
     let title: String
     let icon: String
+    let usesWordPressComLogo: Bool
     let content: Content
 
-    init(_ title: String, icon: String, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: String,
+        icon: String,
+        usesWordPressComLogo: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.icon = icon
+        self.usesWordPressComLogo = usesWordPressComLogo
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: icon)
-                .font(.headline)
+            HStack(spacing: 6) {
+                if usesWordPressComLogo {
+                    WordPressComLogoMark()
+                        .frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: icon)
+                }
+
+                Text(title)
+            }
+            .font(.headline)
+
             content
         }
         .padding(16)
@@ -43,7 +60,7 @@ struct SettingsView: View {
                     Button {
                         appState.selectedSettingsTab = tab
                     } label: {
-                        Label(tab.title, systemImage: tab.icon)
+                        settingsTabLabel(tab)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 8)
                             .padding(.horizontal, 10)
@@ -79,6 +96,20 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+
+    @ViewBuilder
+    private func settingsTabLabel(_ tab: SettingsTab) -> some View {
+        HStack(spacing: 6) {
+            if tab == .wordpressCom {
+                WordPressComLogoMark()
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: tab.icon)
+            }
+
+            Text(tab.title)
+        }
+    }
 }
 
 // MARK: - General Settings
@@ -102,7 +133,7 @@ struct GeneralSettingsView: View {
                         hotkeySection
                     }
                 case .wordpressCom:
-                    SettingsCard("WordPress.com", icon: tab.icon) {
+                    SettingsCard("WordPress.com", icon: tab.icon, usesWordPressComLogo: true) {
                         wordpressComSection
                     }
                 case .wordpressAgent:
