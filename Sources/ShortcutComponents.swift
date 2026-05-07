@@ -10,6 +10,7 @@ struct DictationShortcutEditor: View {
     @State private var activeCaptureRole: ShortcutRole?
     @State private var holdValidationMessage: String?
     @State private var toggleValidationMessage: String?
+    @State private var agentUtilityOverlayValidationMessage: String?
 
     init(showsIntroText: Bool = true, onCaptureStateChange: ((Bool) -> Void)? = nil) {
         self.showsIntroText = showsIntroText
@@ -19,7 +20,7 @@ struct DictationShortcutEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if showsIntroText {
-                Text("Hold to record, tap to start and stop, and press the toggle shortcut while holding to latch into tap mode. You can disable either workflow if you only want one.")
+                Text("Hold to record, tap to start and stop, or open the compact Agent overlay. You can disable either dictation workflow if you only want one.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -47,6 +48,19 @@ struct DictationShortcutEditor: View {
                 ),
                 onSelect: { binding in
                     toggleValidationMessage = appState.setShortcut(binding, for: .toggle)
+                }
+            )
+
+            ShortcutRoleSection(
+                role: .agentUtilityOverlay,
+                selection: appState.agentUtilityOverlayShortcut,
+                validationMessage: agentUtilityOverlayValidationMessage,
+                isCapturing: Binding(
+                    get: { activeCaptureRole == .agentUtilityOverlay },
+                    set: { activeCaptureRole = $0 ? .agentUtilityOverlay : nil }
+                ),
+                onSelect: { binding in
+                    agentUtilityOverlayValidationMessage = appState.setShortcut(binding, for: .agentUtilityOverlay)
                 }
             )
 
@@ -99,6 +113,7 @@ struct ShortcutRoleSection: View {
 
                 ShortcutCaptureRow(
                     savedBinding: appState.savedCustomShortcut(for: role),
+                    selectedBinding: selection.isCustom ? selection : nil,
                     isSelected: selection.isCustom,
                     isCapturing: $isCapturing,
                     onSelectSaved: onSelect,
@@ -143,6 +158,7 @@ private struct ShortcutPresetRow: View {
 
 private struct ShortcutCaptureRow: View {
     let savedBinding: ShortcutBinding?
+    let selectedBinding: ShortcutBinding?
     let isSelected: Bool
     @Binding var isCapturing: Bool
     let onSelectSaved: (ShortcutBinding) -> Void
@@ -301,6 +317,8 @@ private struct ShortcutCaptureRow: View {
     private var displayedBindingName: String {
         if let currentBinding {
             currentBinding.displayName
+        } else if isSelected, let selectedBinding {
+            selectedBinding.displayName
         } else if let savedBinding {
             savedBinding.displayName
         } else {
@@ -312,10 +330,13 @@ private struct ShortcutCaptureRow: View {
         if isCapturing {
             return currentBinding == nil ? "Recording shortcut…" : "Recorded shortcut"
         }
+        if isSelected, selectedBinding != nil {
+            return "Selected custom shortcut"
+        }
         return savedBinding == nil ? "Record any key combo." : "Saved custom shortcut"
     }
 
     private var displayedBindingUsesMonospace: Bool {
-        currentBinding != nil || savedBinding != nil
+        currentBinding != nil || selectedBinding != nil || savedBinding != nil
     }
 }

@@ -605,16 +605,13 @@ struct WordPressAgentWindowView: View {
         let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingImageURLs
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
-        var conversationID = selectedConversation?.id
-        if !attachments.isEmpty,
-           let selectedConversation,
-           !selectedConversation.isEmptyLocalDraft {
-            guard let newConversationID = appState.startWordPressAgentConversation(siteID: activeSiteID) else { return }
-            conversationID = newConversationID
-        }
+        guard appState.submitWordPressAgentComposerMessage(
+            trimmedMessage,
+            attachments: attachments,
+            siteID: activeSiteID
+        ) != nil else { return }
         draftMessage = ""
         pendingImageURLs = []
-        appState.sendWordPressAgentChatMessage(trimmedMessage, attachments: attachments, conversationID: conversationID)
     }
 
     private func selectImages() {

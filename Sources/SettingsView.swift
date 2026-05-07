@@ -129,7 +129,7 @@ struct GeneralSettingsView: View {
                         permissionsSection
                     }
                 case .keyBindings:
-                    SettingsCard("Dictation Shortcuts", icon: tab.icon) {
+                    SettingsCard("Shortcuts", icon: tab.icon) {
                         hotkeySection
                     }
                 case .wordpressCom:

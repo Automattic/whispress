@@ -29,11 +29,31 @@ private final class ActionMenuItem: NSMenuItem {
     }
 }
 
+private final class AgentUtilityOverlayPanel: NSPanel {
+    var onCancel: (() -> Void)?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 53 else {
+            super.keyDown(with: event)
+            return
+        }
+        onCancel?()
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var agentWindow: NSWindow?
+    private var agentUtilityOverlayWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private var statusIconCancellable: AnyCancellable?
     private var menuBarIconVisibilityObserver: NSObjectProtocol?
@@ -59,6 +79,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleShowWordPressAgent),
             name: .showWordPressAgent,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowWordPressAgentUtilityOverlay),
+            name: .showWordPressAgentUtilityOverlay,
             object: nil
         )
 
@@ -101,6 +127,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowWordPressAgent(_ notification: Notification) {
         showWordPressAgentWindow(conversationID: notification.userInfo?["conversationID"] as? String)
+    }
+
+    @objc private func handleShowWordPressAgentUtilityOverlay() {
+        showWordPressAgentUtilityOverlay()
     }
 
     @objc private func handleStatusItemClick(_ sender: Any?) {
@@ -210,6 +240,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         addDisabledItem(statusMenuTitle, to: menu)
 
+        menu.addItem(.separator())
+        let openOverlayItem = actionItem("Quick Ask WordPress Agent", imageName: "text.bubble") { [weak self] in
+            self?.showWordPressAgentUtilityOverlay()
+        }
+        openOverlayItem.isEnabled = appState.isWordPressComSignedIn
+            && !appState.isRecording
+            && !appState.isTranscribing
+        menu.addItem(openOverlayItem)
+
         if let appConfigItem = currentAppConfigMenuItem() {
             menu.addItem(.separator())
             menu.addItem(appConfigItem)
@@ -263,6 +302,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(submenuItem(title: "Hold Shortcut", submenu: shortcutMenu(for: .hold)))
         menu.addItem(submenuItem(title: "Toggle Shortcut", submenu: shortcutMenu(for: .toggle)))
+        menu.addItem(submenuItem(title: "Agent Overlay Shortcut", submenu: shortcutMenu(for: .agentUtilityOverlay)))
         menu.addItem(submenuItem(title: "Microphone", submenu: microphoneMenu()))
 
         menu.addItem(.separator())
@@ -349,14 +389,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func shortcutMenu(for role: ShortcutRole) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let currentBinding = role == .hold ? appState.holdShortcut : appState.toggleShortcut
-        let otherBinding = role == .hold ? appState.toggleShortcut : appState.holdShortcut
+        let currentBinding: ShortcutBinding
+        let otherBindings: [ShortcutBinding]
+        switch role {
+        case .hold:
+            currentBinding = appState.holdShortcut
+            otherBindings = [appState.toggleShortcut, appState.agentUtilityOverlayShortcut]
+        case .toggle:
+            currentBinding = appState.toggleShortcut
+            otherBindings = [appState.holdShortcut, appState.agentUtilityOverlayShortcut]
+        case .agentUtilityOverlay:
+            currentBinding = appState.agentUtilityOverlayShortcut
+            otherBindings = [appState.holdShortcut, appState.toggleShortcut]
+        }
 
         let disabledItem = actionItem("Disabled") { [weak self] in
             _ = self?.appState.setShortcut(.disabled, for: role)
         }
         disabledItem.state = currentBinding.isDisabled ? .on : .off
-        disabledItem.isEnabled = !otherBinding.isDisabled
+        disabledItem.isEnabled = role == .agentUtilityOverlay
+            || !(role == .hold ? appState.toggleShortcut : appState.holdShortcut).isDisabled
         menu.addItem(disabledItem)
 
         for preset in ShortcutPreset.allCases {
@@ -364,7 +416,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 _ = self?.appState.setShortcut(preset.binding, for: role)
             }
             item.state = currentBinding == preset.binding ? .on : .off
-            item.isEnabled = preset.binding != otherBinding
+            item.isEnabled = !otherBindings.contains { preset.binding.conflicts(with: $0) }
             menu.addItem(item)
         }
 
@@ -374,6 +426,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 _ = self?.appState.setShortcut(savedCustomShortcut, for: role)
             }
             item.state = currentBinding == savedCustomShortcut ? .on : .off
+            item.isEnabled = !otherBindings.contains { savedCustomShortcut.conflicts(with: $0) }
             menu.addItem(item)
         }
 
@@ -488,13 +541,137 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
-            if self?.setupWindow == nil && self?.agentWindow == nil {
+            if self?.setupWindow == nil && self?.agentWindow == nil && self?.agentUtilityOverlayWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
     }
 
+    private func showWordPressAgentUtilityOverlay() {
+        guard appState.isWordPressComSignedIn else {
+            appState.selectedSettingsTab = .wordpressCom
+            showSettingsWindow()
+            return
+        }
+
+        NSApp.setActivationPolicy(.regular)
+
+        if let agentUtilityOverlayWindow, agentUtilityOverlayWindow.isVisible {
+            agentUtilityOverlayWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow.isKeyWindow)
+            return
+        }
+
+        if agentUtilityOverlayWindow == nil {
+            presentWordPressAgentUtilityOverlay()
+        } else {
+            agentUtilityOverlayWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow?.isKeyWindow == true)
+        }
+    }
+
+    private func presentWordPressAgentUtilityOverlay() {
+        let overlayView = WordPressAgentUtilityOverlayView(
+            onSubmit: { [weak self] conversationID in
+                self?.dismissWordPressAgentUtilityOverlay(restoreActivationPolicy: false)
+                self?.showWordPressAgentWindow(conversationID: conversationID)
+            },
+            onDismiss: { [weak self] in
+                self?.dismissWordPressAgentUtilityOverlay()
+            }
+        )
+            .environmentObject(appState)
+        let hostingView = NSHostingView(rootView: overlayView)
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.layer?.isOpaque = false
+
+        let contentSize = NSSize(width: 560, height: 96)
+        hostingView.setFrameSize(contentSize)
+        let window = AgentUtilityOverlayPanel(
+            contentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Quick Ask WordPress Agent"
+        window.contentView = hostingView
+        window.onCancel = { [weak self] in
+            self?.dismissWordPressAgentUtilityOverlay()
+        }
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.level = .floating
+        window.hidesOnDeactivate = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.isMovableByWindowBackground = true
+        positionAgentUtilityOverlay(window)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+
+        agentUtilityOverlayWindow = window
+        appState.setWordPressAgentUtilityOverlayFocused(window.isKeyWindow)
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentUtilityOverlayFocused(true)
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentUtilityOverlayFocused(false)
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.setWordPressAgentUtilityOverlayFocused(false)
+            self?.agentUtilityOverlayWindow = nil
+            if self?.setupWindow == nil && self?.settingsWindow == nil && self?.agentWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
+    }
+
+    private func dismissWordPressAgentUtilityOverlay(restoreActivationPolicy: Bool = true) {
+        appState.setWordPressAgentUtilityOverlayFocused(false)
+        agentUtilityOverlayWindow?.close()
+        agentUtilityOverlayWindow = nil
+        if restoreActivationPolicy && setupWindow == nil && settingsWindow == nil && agentWindow == nil {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func positionAgentUtilityOverlay(_ window: NSWindow) {
+        let screenFrame = screenForAgentUtilityOverlay.visibleFrame
+        let size = window.frame.size
+        let origin = NSPoint(
+            x: screenFrame.midX - size.width / 2,
+            y: min(screenFrame.maxY - size.height - 72, screenFrame.midY + 120)
+        )
+        window.setFrameOrigin(origin)
+    }
+
+    private var screenForAgentUtilityOverlay: NSScreen {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { screen in
+            screen.frame.contains(mouseLocation)
+        } ?? NSScreen.main ?? NSScreen.screens[0]
+    }
+
     private func showWordPressAgentWindow(conversationID: String? = nil) {
+        dismissWordPressAgentUtilityOverlay(restoreActivationPolicy: false)
         NSApp.setActivationPolicy(.regular)
 
         if let conversationID {
@@ -565,7 +742,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.appState.setWordPressAgentWindowFocused(false)
             self?.agentWindow = nil
-            if self?.setupWindow == nil && self?.settingsWindow == nil {
+            if self?.setupWindow == nil
+                && self?.settingsWindow == nil
+                && self?.agentUtilityOverlayWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         }

@@ -289,8 +289,10 @@ private enum SessionIntent {
 final class AppState: ObservableObject, @unchecked Sendable {
     private let holdShortcutStorageKey = "hold_shortcut"
     private let toggleShortcutStorageKey = "toggle_shortcut"
+    private let agentUtilityOverlayShortcutStorageKey = "agent_utility_overlay_shortcut"
     private let savedHoldCustomShortcutStorageKey = "saved_hold_custom_shortcut"
     private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
+    private let savedAgentUtilityOverlayCustomShortcutStorageKey = "saved_agent_utility_overlay_custom_shortcut"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
@@ -332,6 +334,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var agentUtilityOverlayShortcut: ShortcutBinding {
+        didSet {
+            persistShortcut(agentUtilityOverlayShortcut, key: agentUtilityOverlayShortcutStorageKey)
+            restartHotkeyMonitoring()
+        }
+    }
+
     @Published private(set) var savedHoldCustomShortcut: ShortcutBinding? {
         didSet {
             persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
@@ -341,6 +350,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var savedToggleCustomShortcut: ShortcutBinding? {
         didSet {
             persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
+        }
+    }
+
+    @Published private(set) var savedAgentUtilityOverlayCustomShortcut: ShortcutBinding? {
+        didSet {
+            persistOptionalShortcut(
+                savedAgentUtilityOverlayCustomShortcut,
+                key: savedAgentUtilityOverlayCustomShortcutStorageKey
+            )
         }
     }
 
@@ -399,6 +417,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var hasLoadedWordPressAgentConversations = false
     @Published private(set) var wordpressAgentHistoryStatusMessage: String?
     @Published private(set) var isWordPressAgentWindowFocused = false
+    @Published private(set) var isWordPressAgentUtilityOverlayFocused = false
     @Published var errorMessage: String?
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
@@ -517,6 +536,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         isWordPressAgentWindowFocused = isFocused
     }
 
+    func setWordPressAgentUtilityOverlayFocused(_ isFocused: Bool) {
+        isWordPressAgentUtilityOverlayFocused = isFocused
+    }
+
     let audioRecorder = AudioRecorder()
     let hotkeyManager = HotkeyManager()
     let overlayManager = RecordingOverlayManager()
@@ -539,6 +562,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var currentSessionIntent: SessionIntent = .dictation
     private var currentSessionWordPressComSiteID: Int?
     private var currentSessionWordPressAgentConversationKey: WordPressAgentConversationKey?
+    private var currentSessionWordPressAgentConversationID: String?
+    private var currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
     private var pendingSelectionSnapshot: AppSelectionSnapshot?
     private var pendingManualCommandInvocation = false
     private var pendingShortcutStartTask: Task<Void, Never>?
@@ -557,7 +582,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
         let shortcuts = Self.loadShortcutConfiguration(
             holdKey: holdShortcutStorageKey,
-            toggleKey: toggleShortcutStorageKey
+            toggleKey: toggleShortcutStorageKey,
+            agentUtilityOverlayKey: agentUtilityOverlayShortcutStorageKey
         )
         let savedHoldCustomShortcut = Self.loadSavedCustomShortcut(
             forKey: savedHoldCustomShortcutStorageKey,
@@ -566,6 +592,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let savedToggleCustomShortcut = Self.loadSavedCustomShortcut(
             forKey: savedToggleCustomShortcutStorageKey,
             fallback: shortcuts.toggle.isCustom ? shortcuts.toggle : nil
+        )
+        let savedAgentUtilityOverlayCustomShortcut = Self.loadSavedCustomShortcut(
+            forKey: savedAgentUtilityOverlayCustomShortcutStorageKey,
+            fallback: shortcuts.agentUtilityOverlay.isCustom ? shortcuts.agentUtilityOverlay : nil
         )
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let isCommandModeEnabled = UserDefaults.standard.object(forKey: commandModeEnabledStorageKey) == nil
@@ -615,8 +645,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.hasCompletedSetup = hasCompletedSetup
         self.holdShortcut = shortcuts.hold
         self.toggleShortcut = shortcuts.toggle
+        self.agentUtilityOverlayShortcut = shortcuts.agentUtilityOverlay
         self.savedHoldCustomShortcut = savedHoldCustomShortcut.binding
         self.savedToggleCustomShortcut = savedToggleCustomShortcut.binding
+        self.savedAgentUtilityOverlayCustomShortcut = savedAgentUtilityOverlayCustomShortcut.binding
         self.isCommandModeEnabled = isCommandModeEnabled
         self.commandModeStyle = commandModeStyle
         self.commandModeManualModifier = commandModeManualModifier
@@ -650,11 +682,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if shortcuts.didUpdateToggleStoredValue {
             persistShortcut(shortcuts.toggle, key: toggleShortcutStorageKey)
         }
+        if shortcuts.didUpdateAgentUtilityOverlayStoredValue {
+            persistShortcut(shortcuts.agentUtilityOverlay, key: agentUtilityOverlayShortcutStorageKey)
+        }
         if savedHoldCustomShortcut.didUpdateStoredValue {
             persistOptionalShortcut(savedHoldCustomShortcut.binding, key: savedHoldCustomShortcutStorageKey)
         }
         if savedToggleCustomShortcut.didUpdateStoredValue {
             persistOptionalShortcut(savedToggleCustomShortcut.binding, key: savedToggleCustomShortcutStorageKey)
+        }
+        if savedAgentUtilityOverlayCustomShortcut.didUpdateStoredValue {
+            persistOptionalShortcut(
+                savedAgentUtilityOverlayCustomShortcut.binding,
+                key: savedAgentUtilityOverlayCustomShortcutStorageKey
+            )
         }
 
         overlayManager.onStopButtonPressed = { [weak self] in
@@ -714,8 +755,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private struct StoredShortcutConfiguration {
         let hold: ShortcutBinding
         let toggle: ShortcutBinding
+        let agentUtilityOverlay: ShortcutBinding
         let didUpdateHoldStoredValue: Bool
         let didUpdateToggleStoredValue: Bool
+        let didUpdateAgentUtilityOverlayStoredValue: Bool
     }
 
     private struct StoredOptionalShortcut {
@@ -729,7 +772,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let didNormalize: Bool
     }
 
-    private static func loadShortcutConfiguration(holdKey: String, toggleKey: String) -> StoredShortcutConfiguration {
+    private static func loadShortcutConfiguration(
+        holdKey: String,
+        toggleKey: String,
+        agentUtilityOverlayKey: String
+    ) -> StoredShortcutConfiguration {
         let legacyPreset = ShortcutPreset(
             rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? ShortcutPreset.fnKey.rawValue
         ) ?? .fnKey
@@ -737,11 +784,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let toggle = hold.withAddedModifiers(.command)
         let storedHold = loadShortcut(forKey: holdKey)
         let storedToggle = loadShortcut(forKey: toggleKey)
+        let storedAgentUtilityOverlay = loadShortcut(forKey: agentUtilityOverlayKey)
         return StoredShortcutConfiguration(
             hold: storedHold.binding ?? hold,
             toggle: storedToggle.binding ?? toggle,
+            agentUtilityOverlay: storedAgentUtilityOverlay.binding ?? .defaultAgentUtilityOverlay,
             didUpdateHoldStoredValue: storedHold.binding == nil || storedHold.didNormalize,
-            didUpdateToggleStoredValue: storedToggle.binding == nil || storedToggle.didNormalize
+            didUpdateToggleStoredValue: storedToggle.binding == nil || storedToggle.didNormalize,
+            didUpdateAgentUtilityOverlayStoredValue: storedAgentUtilityOverlay.binding == nil
+                || storedAgentUtilityOverlay.didNormalize
         )
     }
 
@@ -1341,6 +1392,35 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
+    func showWordPressAgentUtilityOverlay() {
+        NotificationCenter.default.post(name: .showWordPressAgentUtilityOverlay, object: nil)
+    }
+
+    @discardableResult
+    func submitWordPressAgentComposerMessage(
+        _ message: String,
+        attachments: [URL] = [],
+        siteID: Int? = nil
+    ) -> String? {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return nil }
+
+        let targetSiteID = siteID ?? selectedWordPressAgentConversation?.key.siteID ?? selectedWordPressComSiteID
+        var conversationID = selectedWordPressAgentConversation?.id
+        if !attachments.isEmpty,
+           let selectedWordPressAgentConversation,
+           !selectedWordPressAgentConversation.isEmptyLocalDraft {
+            guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
+            conversationID = newConversationID
+        } else if conversationID == nil {
+            guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
+            conversationID = newConversationID
+        }
+
+        sendWordPressAgentChatMessage(trimmedMessage, attachments: attachments, conversationID: conversationID)
+        return conversationID
+    }
+
     func sendWordPressAgentChatMessage(_ message: String, attachments: [URL] = [], conversationID: String? = nil) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
@@ -1874,7 +1954,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     var usesFnShortcut: Bool {
-        holdShortcut.usesFnKey || toggleShortcut.usesFnKey
+        holdShortcut.usesFnKey || toggleShortcut.usesFnKey || agentUtilityOverlayShortcut.usesFnKey
     }
 
     var hasEnabledHoldShortcut: Bool {
@@ -1883,6 +1963,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     var hasEnabledToggleShortcut: Bool {
         !toggleShortcut.isDisabled
+    }
+
+    var hasEnabledAgentUtilityOverlayShortcut: Bool {
+        !agentUtilityOverlayShortcut.isDisabled
     }
 
     var shortcutStatusText: String {
@@ -1912,6 +1996,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return savedHoldCustomShortcut
         case .toggle:
             return savedToggleCustomShortcut
+        case .agentUtilityOverlay:
+            return savedAgentUtilityOverlayCustomShortcut
         }
     }
 
@@ -1955,12 +2041,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let binding = binding.normalizedForStorageMigration()
         let nextHoldShortcut = role == .hold ? binding : holdShortcut
         let nextToggleShortcut = role == .toggle ? binding : toggleShortcut
-        let otherBinding = role == .hold ? toggleShortcut : holdShortcut
-        if binding.isDisabled && otherBinding.isDisabled {
+        let nextAgentUtilityOverlayShortcut = role == .agentUtilityOverlay ? binding : agentUtilityOverlayShortcut
+        if role != .agentUtilityOverlay && nextHoldShortcut.isDisabled && nextToggleShortcut.isDisabled {
             return "At least one shortcut must remain enabled."
         }
-        guard !binding.conflicts(with: otherBinding) else {
-            return "Hold and tap shortcuts must be distinct."
+
+        let nextShortcuts: [(role: ShortcutRole, binding: ShortcutBinding)] = [
+            (.hold, nextHoldShortcut),
+            (.toggle, nextToggleShortcut),
+            (.agentUtilityOverlay, nextAgentUtilityOverlayShortcut)
+        ]
+        for lhsIndex in nextShortcuts.indices {
+            for rhsIndex in nextShortcuts.indices where rhsIndex > lhsIndex {
+                let lhs = nextShortcuts[lhsIndex]
+                let rhs = nextShortcuts[rhsIndex]
+                if lhs.binding.conflicts(with: rhs.binding) {
+                    return "\(lhs.role.title) and \(rhs.role.title) shortcuts must be distinct."
+                }
+            }
         }
         if isCommandModeEnabled,
            commandModeStyle == .manual,
@@ -1983,6 +2081,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 savedToggleCustomShortcut = binding
             }
             toggleShortcut = binding
+        case .agentUtilityOverlay:
+            if binding.isCustom {
+                savedAgentUtilityOverlayCustomShortcut = binding
+            }
+            agentUtilityOverlayShortcut = binding
         }
 
         return nil
@@ -2049,6 +2152,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return ShortcutConfiguration(
             hold: holdShortcut,
             toggle: toggleShortcut,
+            agentUtilityOverlay: agentUtilityOverlayShortcut,
             permittedAdditionalExactMatchModifiers: permittedAdditionalExactMatchModifiers
         )
     }
@@ -2069,6 +2173,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleShortcutEvent(_ event: ShortcutEvent) {
+        if event == .agentUtilityOverlayActivated {
+            guard !isRecording else { return }
+            cancelPendingShortcutStart()
+            shortcutSessionController.reset()
+            showWordPressAgentUtilityOverlay()
+            return
+        }
+
         guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
             return
         }
@@ -2141,6 +2253,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         capturedContext = nil
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
+        currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         isRecording = false
         errorMessage = nil
         debugStatusMessage = "Cancelled"
@@ -2167,6 +2282,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
+        currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         isRecording = false
         isTranscribing = false
         errorMessage = nil
@@ -2318,12 +2436,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     ) -> Bool {
         activeRecordingTriggerMode = triggerMode
         currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = nil
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
             shortcutSessionController.reset()
             showAccessibilityAlert()
             return false
@@ -2334,7 +2455,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
 
-        if isWordPressAgentWindowFocused {
+        if isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused {
             guard isWordPressComSignedIn,
                   let agentConversationKey = wordPressAgentWindowDictationKey() else {
                 errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
@@ -2343,15 +2464,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 currentSessionIntent = .dictation
                 currentSessionWordPressComSiteID = nil
                 currentSessionWordPressAgentConversationKey = nil
+                currentSessionWordPressAgentConversationID = nil
+                currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
                 shortcutSessionController.reset()
                 NotificationCenter.default.post(name: .showSettings, object: nil)
                 return false
             }
 
-            _ = ensureWordPressAgentConversation(for: agentConversationKey)
+            let agentConversationIndex = ensureWordPressAgentConversation(for: agentConversationKey)
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = agentConversationKey.siteID
             currentSessionWordPressAgentConversationKey = agentConversationKey
+            currentSessionWordPressAgentConversationID = wordpressAgentConversations.indices.contains(agentConversationIndex)
+                ? wordpressAgentConversations[agentConversationIndex].id
+                : nil
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = isWordPressAgentUtilityOverlayFocused
             overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
             return true
         }
@@ -2364,6 +2491,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = nil
             currentSessionWordPressAgentConversationKey = nil
+            currentSessionWordPressAgentConversationID = nil
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
             shortcutSessionController.reset()
             NotificationCenter.default.post(name: .showSettings, object: nil)
             return false
@@ -2449,6 +2578,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
         currentSessionWordPressComSiteID = nil
+        currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         cancelRecordingInitializationTimer()
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
@@ -2560,6 +2692,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
+        currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         shortcutSessionController.reset()
         errorMessage = formattedRecordingStartError(error)
         statusText = "Error"
@@ -2746,9 +2881,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let sessionSiteID = currentSessionWordPressComSiteID
         let sessionWordPressAgentEnabled = isWordPressAgentEnabled
         let sessionWordPressAgentConversationKey = currentSessionWordPressAgentConversationKey
+        let sessionWordPressAgentConversationID = currentSessionWordPressAgentConversationID
+        let sessionShouldOpenWordPressAgentWindowOnCompletion =
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion
         currentSessionIntent = .dictation
         currentSessionWordPressComSiteID = nil
         currentSessionWordPressAgentConversationKey = nil
+        currentSessionWordPressAgentConversationID = nil
+        currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()
@@ -2825,6 +2965,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     try Task.checkCancellation()
 
                     var agentReply: WordPressAgentTurnResult?
+                    let shouldOpenWordPressAgentWindowBeforeAgentReply =
+                        sessionShouldOpenWordPressAgentWindowOnCompletion
+                            && sessionWordPressAgentConversationID != nil
                     if let sessionWordPressAgentConversationKey {
                         let agentMessage = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !agentMessage.isEmpty {
@@ -2833,6 +2976,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 self.statusText = "Asking WordPress Agent..."
                                 self.debugStatusMessage = "Calling WordPress Agent"
                                 self.lastAgentResponse = ""
+                            }
+                            if shouldOpenWordPressAgentWindowBeforeAgentReply,
+                               let sessionWordPressAgentConversationID {
+                                await MainActor.run { [weak self] in
+                                    self?.showWordPressAgentWindow(conversationID: sessionWordPressAgentConversationID)
+                                }
                             }
                             agentReply = try await self.callWordPressAgentMessage(
                                 message: agentMessage,
@@ -2916,6 +3065,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 reply: reply,
                                 conversationID: agentReply.conversationID
                             )
+                            if sessionShouldOpenWordPressAgentWindowOnCompletion
+                                && !shouldOpenWordPressAgentWindowBeforeAgentReply {
+                                self.showWordPressAgentWindow(conversationID: agentReply.conversationID)
+                            }
                         } else if trimmedFinalTranscript.isEmpty {
                             self.statusText = "Nothing to transcribe"
                             self.clearPendingOverlayDismissToken()

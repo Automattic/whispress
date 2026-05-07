@@ -22,7 +22,10 @@ final class DictationShortcutSessionController {
                 activeMode = .hold
                 toggleStopArmed = false
                 return .start(.hold)
-            case .holdDeactivated, .toggleDeactivated:
+            case .holdDeactivated,
+                 .toggleDeactivated,
+                 .agentUtilityOverlayActivated,
+                 .agentUtilityOverlayDeactivated:
                 return nil
             }
         }
@@ -39,7 +42,10 @@ final class DictationShortcutSessionController {
             case .holdDeactivated:
                 reset()
                 return .stop
-            case .holdActivated, .toggleDeactivated:
+            case .holdActivated,
+                 .toggleDeactivated,
+                 .agentUtilityOverlayActivated,
+                 .agentUtilityOverlayDeactivated:
                 return nil
             }
 
@@ -52,7 +58,10 @@ final class DictationShortcutSessionController {
                 guard toggleStopArmed else { return nil }
                 reset()
                 return .stop
-            case .holdActivated, .holdDeactivated:
+            case .holdActivated,
+                 .holdDeactivated,
+                 .agentUtilityOverlayActivated,
+                 .agentUtilityOverlayDeactivated:
                 return nil
             }
         }
