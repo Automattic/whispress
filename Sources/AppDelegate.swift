@@ -497,7 +497,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showWordPressAgentWindow(conversationID: String? = nil) {
         NSApp.setActivationPolicy(.regular)
 
-        appState.selectWordPressAgentConversation(conversationID)
+        if let conversationID {
+            appState.selectWordPressAgentConversation(conversationID)
+        } else {
+            _ = appState.startWordPressAgentConversation()
+        }
 
         if let agentWindow, agentWindow.isVisible {
             agentWindow.makeKeyAndOrderFront(nil)

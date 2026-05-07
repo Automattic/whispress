@@ -1056,7 +1056,7 @@ private struct MarkdownMessageText: View {
     var body: some View {
         if let attributedText = try? AttributedString(
             markdown: text,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             Text(attributedText)
                 .textSelection(.enabled)
