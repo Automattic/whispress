@@ -17,6 +17,7 @@ struct ShortcutInputState: Equatable {
     var pressedModifierKeyCodes: Set<UInt16> = []
     var holdIsActive = false
     var toggleIsActive = false
+    var agentUtilityOverlayIsActive = false
 
     var currentModifiers: ShortcutModifiers {
         ShortcutBinding.modifiers(for: pressedModifierKeyCodes)
@@ -27,25 +28,21 @@ struct ShortcutInputState: Equatable {
         let keyReferenceHeld = pressedKeyCodes.contains { keyCode in
             configuration.hold.kind == .key && configuration.hold.keyCode == keyCode
                 || configuration.toggle.kind == .key && configuration.toggle.keyCode == keyCode
+                || configuration.agentUtilityOverlay.kind == .key
+                    && configuration.agentUtilityOverlay.keyCode == keyCode
         }
         if keyReferenceHeld {
             return true
         }
 
-        if configuration.hold.referencesPressedModifiers(
-            pressedModifierKeyCodes: pressedModifierKeyCodes,
-            currentModifiers: currentModifiers,
-            permittedAdditionalExactMatchModifiers: configuration.permittedAdditionalExactMatchModifiers
-        ) {
-            return true
-        }
-
-        if configuration.toggle.referencesPressedModifiers(
-            pressedModifierKeyCodes: pressedModifierKeyCodes,
-            currentModifiers: currentModifiers,
-            permittedAdditionalExactMatchModifiers: configuration.permittedAdditionalExactMatchModifiers
-        ) {
-            return true
+        for binding in configuration.bindings {
+            if binding.referencesPressedModifiers(
+                pressedModifierKeyCodes: pressedModifierKeyCodes,
+                currentModifiers: currentModifiers,
+                permittedAdditionalExactMatchModifiers: configuration.permittedAdditionalExactMatchModifiers
+            ) {
+                return true
+            }
         }
 
         return false
@@ -162,15 +159,23 @@ enum ShortcutMatcher {
     ) -> [ShortcutEvent] {
         let previousHold = state.holdIsActive
         let previousToggle = state.toggleIsActive
+        let previousAgentUtilityOverlay = state.agentUtilityOverlayIsActive
 
         state.holdIsActive = bindingIsActive(configuration.hold, state: state, configuration: configuration)
         state.toggleIsActive = bindingIsActive(configuration.toggle, state: state, configuration: configuration)
+        state.agentUtilityOverlayIsActive = bindingIsActive(
+            configuration.agentUtilityOverlay,
+            state: state,
+            configuration: configuration
+        )
 
         return emitChanges(
             previousHold: previousHold,
             previousToggle: previousToggle,
+            previousAgentUtilityOverlay: previousAgentUtilityOverlay,
             currentHold: state.holdIsActive,
             currentToggle: state.toggleIsActive,
+            currentAgentUtilityOverlay: state.agentUtilityOverlayIsActive,
             configuration: configuration
         )
     }
@@ -178,8 +183,10 @@ enum ShortcutMatcher {
     private static func emitChanges(
         previousHold: Bool,
         previousToggle: Bool,
+        previousAgentUtilityOverlay: Bool,
         currentHold: Bool,
         currentToggle: Bool,
+        currentAgentUtilityOverlay: Bool,
         configuration: ShortcutConfiguration
     ) -> [ShortcutEvent] {
         var activations: [(ShortcutEvent, Int)] = []
@@ -191,11 +198,20 @@ enum ShortcutMatcher {
         if !previousToggle && currentToggle {
             activations.append((.toggleActivated, configuration.toggle.specificityScore))
         }
+        if !previousAgentUtilityOverlay && currentAgentUtilityOverlay {
+            activations.append((.agentUtilityOverlayActivated, configuration.agentUtilityOverlay.specificityScore))
+        }
         if previousHold && !currentHold {
             deactivations.append((.holdDeactivated, configuration.hold.specificityScore))
         }
         if previousToggle && !currentToggle {
             deactivations.append((.toggleDeactivated, configuration.toggle.specificityScore))
+        }
+        if previousAgentUtilityOverlay && !currentAgentUtilityOverlay {
+            deactivations.append((
+                .agentUtilityOverlayDeactivated,
+                configuration.agentUtilityOverlay.specificityScore
+            ))
         }
 
         let orderedActivations = activations.sorted(by: { $0.1 > $1.1 }).map(\.0)
@@ -252,7 +268,7 @@ enum ShortcutMatcher {
         for keyCode: UInt16,
         configuration: ShortcutConfiguration
     ) -> [ShortcutBinding] {
-        [configuration.hold, configuration.toggle].filter { binding in
+        configuration.bindings.filter { binding in
             binding.kind == .key && binding.keyCode == keyCode
         }
     }
@@ -261,7 +277,7 @@ enum ShortcutMatcher {
         for keyCode: UInt16,
         configuration: ShortcutConfiguration
     ) -> [ShortcutBinding] {
-        [configuration.hold, configuration.toggle].filter { binding in
+        configuration.bindings.filter { binding in
             switch binding.kind {
             case .key, .modifierKey:
                 return modifierEvent(for: keyCode, affects: binding)
