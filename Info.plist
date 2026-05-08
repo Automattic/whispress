@@ -22,6 +22,23 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Images</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -43,5 +60,7 @@
     <string>WhisPress needs speech recognition to convert your voice to text.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>WhisPress needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>WhisPress uses screenshots you capture to upload selected images to WordPress.com.</string>
 </dict>
 </plist>

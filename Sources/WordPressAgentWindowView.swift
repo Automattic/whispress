@@ -542,7 +542,8 @@ struct WordPressAgentWindowView: View {
                                 WordPressAgentTypingRow()
                             }
 
-                            if let errorMessage = selectedConversation.errorMessage, !errorMessage.isEmpty {
+                            if let errorMessage = selectedConversation.errorMessage,
+                               shouldShowErrorSummary(errorMessage, in: selectedConversation) {
                                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                                     .font(.caption)
                                     .foregroundStyle(.red)
@@ -571,6 +572,14 @@ struct WordPressAgentWindowView: View {
         } else {
             emptyWorkspace
         }
+    }
+
+    private func shouldShowErrorSummary(_ errorMessage: String, in conversation: WordPressAgentConversation) -> Bool {
+        let trimmedError = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedError.isEmpty else { return false }
+        guard let lastMessage = conversation.messages.last else { return true }
+        return lastMessage.role != .system
+            || lastMessage.text.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedError
     }
 
     private var emptyWorkspace: some View {

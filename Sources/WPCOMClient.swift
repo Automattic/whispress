@@ -398,9 +398,32 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
     let file: String?
     let mimeType: String?
     let title: String?
+    let linkString: String?
+    let slug: String?
 
     var url: URL? {
         URL(string: urlString)
+    }
+
+    var link: URL? {
+        guard let linkString,
+              !linkString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return URL(string: linkString)
+    }
+
+    var attachmentSlug: String? {
+        if let slug = Self.normalizedSlug(from: slug) {
+            return slug
+        }
+        if let slug = Self.normalizedSlug(from: file.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }) {
+            return slug
+        }
+        if let slug = Self.normalizedSlug(from: url?.deletingPathExtension().lastPathComponent) {
+            return slug
+        }
+        return Self.normalizedSlug(from: title)
     }
 
     var resolvedMimeType: String {
@@ -428,6 +451,9 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
         case file
         case title
         case name
+        case link
+        case permalink
+        case slug
         case mimeType = "mime_type"
         case mimeTypeCamel = "mimeType"
     }
@@ -443,6 +469,9 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
         file = try? container.decode(String.self, forKey: .file)
         title = (try? container.decode(String.self, forKey: .title))
             ?? (try? container.decode(String.self, forKey: .name))
+        linkString = (try? container.decode(String.self, forKey: .link))
+            ?? (try? container.decode(String.self, forKey: .permalink))
+        slug = try? container.decode(String.self, forKey: .slug)
         mimeType = (try? container.decode(String.self, forKey: .mimeType))
             ?? (try? container.decode(String.self, forKey: .mimeTypeCamel))
     }
@@ -458,6 +487,29 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
             return Int(value)
         }
         return nil
+    }
+
+    private static func normalizedSlug(from value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var slug = ""
+        var previousWasSeparator = false
+        let folded = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).lowercased()
+
+        for scalar in folded.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                slug.unicodeScalars.append(scalar)
+                previousWasSeparator = false
+            } else if !previousWasSeparator {
+                slug.append("-")
+                previousWasSeparator = true
+            }
+        }
+
+        let normalized = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return normalized.isEmpty ? nil : normalized
     }
 
     private static func mimeType(forFileName fileName: String?) -> String {
@@ -1236,11 +1288,12 @@ final class WPCOMClient: NSObject {
         return object
     }
 
-    func uploadMedia(siteID: Int, fileURLs: [URL]) async throws -> [WPCOMUploadedMedia] {
+    func uploadMedia(siteID: Int, fileURLs: [URL], uploadTitles: [String?] = []) async throws -> [WPCOMUploadedMedia] {
         guard !fileURLs.isEmpty else { return [] }
 
         let url = URL(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)/media/new")!
         let boundary = "WhisPress-\(UUID().uuidString)"
+        let fields = Self.mediaUploadFields(uploadTitles: uploadTitles)
         let files = fileURLs.map {
             MultipartFilePart(
                 fieldName: "media[]",
@@ -1256,7 +1309,7 @@ final class WPCOMClient: NSObject {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
 
-        let body = try makeMultipartBody(fields: [:], files: files, boundary: boundary)
+        let body = try makeMultipartBody(fields: fields, files: files, boundary: boundary)
         let (data, response) = try await session.upload(for: request, from: body)
         try validate(response: response, data: data)
 
@@ -1274,6 +1327,17 @@ final class WPCOMClient: NSObject {
             throw WPCOMClientError.invalidResponse("Uploaded media response was missing attachment metadata.")
         }
         return uploadedMedia
+    }
+
+    private static func mediaUploadFields(uploadTitles: [String?]) -> [String: String] {
+        var fields: [String: String] = [:]
+        for (index, title) in uploadTitles.enumerated() {
+            guard let title else { continue }
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            fields["attrs[\(index)][title]"] = trimmed
+        }
+        return fields
     }
 
     func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
