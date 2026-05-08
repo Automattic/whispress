@@ -11,7 +11,7 @@ Builds and packages a local WP Workspace release zip.
 
 Options:
   --publish                    Push the version tag and create a GitHub Release.
-  --repo <owner/name>           GitHub repository. Default: Automattic/workspace-osx.
+  --repo <owner/name>           GitHub repository. Default: Automattic/workspace.
   --version <version>           Version to release. Default: Info.plist CFBundleShortVersionString.
   --notes <text>                Release notes used with --publish.
   --notes-file <path>           Release notes file used with --publish.
@@ -41,7 +41,7 @@ need_value() {
 }
 
 PUBLISH=0
-REPO="${GITHUB_REPOSITORY:-Automattic/workspace-osx}"
+REPO="${GITHUB_REPOSITORY:-Automattic/workspace}"
 VERSION=""
 NOTES="First WordPress Workspace preview release."
 NOTES_FILE=""

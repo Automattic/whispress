@@ -12,7 +12,7 @@ WordPress Workspace brings your WordPress.com site to the macOS menu bar. Ask
 the WordPress Agent, capture screenshots, upload images, transform selected text,
 and dictate when voice is the fastest way to get words down.
 
-[Download WordPress Workspace from GitHub Releases](https://github.com/Automattic/workspace-osx/releases)
+[Download WordPress Workspace from GitHub Releases](https://github.com/Automattic/workspace/releases)
 
 ## Why
 
@@ -101,7 +101,7 @@ That builds a universal `WP Workspace.app`, verifies that the WordPress.com
 OAuth client secret was injected, and creates:
 
 ```text
-build/WPWorkspace-0.2.1.zip
+build/WPWorkspace-0.3.0.zip
 ```
 
 Inspect the zip before publishing. When it is ready, publish the GitHub Release:
@@ -114,7 +114,7 @@ Tools/manual-release.sh --secret-file .wpcom-oauth-client-secret \
 
 The script uses the version from `Info.plist`, creates or reuses the matching
 `vX.Y.Z` tag, pushes the tag, and uploads the zip to
-[GitHub Releases](https://github.com/Automattic/workspace-osx/releases). By
+[GitHub Releases](https://github.com/Automattic/workspace/releases). By
 default it uses ad-hoc signing; pass `--codesign-identity` when a Developer ID
 signing identity is ready.
 
