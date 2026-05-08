@@ -95,7 +95,7 @@ enum ImageImportProcessor {
         options: ImageImportProcessingOptions
     ) throws -> [PreparedImageImport] {
         let processingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisPressImageImport-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("WPWorkspaceImageImport-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
 
         return try fileURLs.enumerated().map { index, url in

@@ -20,7 +20,7 @@ struct DictationShortcutEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if showsIntroText {
-                Text("Hold to record, tap to start and stop, or open the compact Agent overlay. You can disable either dictation workflow if you only want one.")
+                Text("Hold to record, tap to start and stop, or open Quick Ask. You can disable either dictation workflow if you only want one.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

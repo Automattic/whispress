@@ -221,7 +221,7 @@ struct WordPressAgentWindowView: View {
             SidebarSectionHeader(title: "Last")
 
             if visibleRecentSites.isEmpty {
-                SidebarEmptyText(appState.isWordPressComSignedIn ? "No recent matching workspaces" : "Sign in to WordPress.com")
+                SidebarEmptyText(appState.isWordPressComSignedIn ? "No recent matching sites" : "Sign in to WordPress.com")
                     .padding(.horizontal, 8)
             } else {
                 LazyVStack(spacing: 2) {
@@ -260,7 +260,7 @@ struct WordPressAgentWindowView: View {
                         .font(.system(size: 10, weight: .bold))
                         .frame(width: 12)
 
-                    Text(normalizedSearch.isEmpty ? "All Workspaces" : "Matching Workspaces")
+                    Text(normalizedSearch.isEmpty ? "All Sites" : "Matching Sites")
                         .font(.system(size: 13, weight: .semibold))
 
                     Spacer()
@@ -277,7 +277,7 @@ struct WordPressAgentWindowView: View {
 
             if shouldShowDropdownSites {
                 if dropdownSites.isEmpty {
-                    SidebarEmptyText("No matching workspaces")
+                    SidebarEmptyText("No matching sites")
                         .padding(.horizontal, 8)
                 } else {
                     LazyVStack(spacing: 2) {
@@ -513,7 +513,7 @@ struct WordPressAgentWindowView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(activeSite?.url == nil ? .tertiary : .secondary)
-            .help("Open workspace")
+            .help("Open site")
             .disabled(activeSite?.url == nil)
         }
         .padding(.leading, 24)
@@ -1104,7 +1104,7 @@ private struct SiteSidebarRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text(site.slug ?? readableHost(from: site.url) ?? "Workspace \(site.id)")
+                Text(site.slug ?? readableHost(from: site.url) ?? "Site \(site.id)")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

@@ -3,7 +3,7 @@ import CoreMedia
 import Foundation
 import os.log
 
-private let recordingLog = OSLog(subsystem: "com.automattic.whispress", category: "Recording")
+private let recordingLog = OSLog(subsystem: "com.automattic.wpworkspace", category: "Recording")
 
 struct AudioDevice: Identifiable {
     let id: String
@@ -79,8 +79,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
     private let _bufferCount = OSAllocatedUnfairLock(initialState: 0)
     private let fileWriteErrorLock = OSAllocatedUnfairLock(initialState: ())
     private var watchdogTimer: DispatchSourceTimer?
-    private let sessionQueue = DispatchQueue(label: "com.automattic.whispress.capture.session")
-    private let sampleBufferQueue = DispatchQueue(label: "com.automattic.whispress.capture.samples")
+    private let sessionQueue = DispatchQueue(label: "com.automattic.wpworkspace.capture.session")
+    private let sampleBufferQueue = DispatchQueue(label: "com.automattic.wpworkspace.capture.samples")
     private var activeAudioFile: AVAudioFile?
     private var activeAudioFormat: AVAudioFormat?
     private var recordedFrameCount: AVAudioFramePosition = 0

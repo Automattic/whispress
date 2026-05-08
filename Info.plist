@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>WhisPress</string>
+    <string>WP Workspace</string>
     <key>CFBundleDisplayName</key>
-    <string>WhisPress</string>
+    <string>WP Workspace</string>
     <key>CFBundleIdentifier</key>
-    <string>com.automattic.whispress</string>
+    <string>com.automattic.wpworkspace</string>
     <key>CFBundleVersion</key>
     <string>0.2.1</string>
     <key>CFBundleShortVersionString</key>
@@ -15,9 +15,11 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>WhisPress</string>
+    <string>WP Workspace</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>ATSApplicationFontsPath</key>
+    <string>Fonts</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -43,10 +45,10 @@
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>WhisPress OAuth Callback</string>
+            <string>WP Workspace OAuth Callback</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>whispress</string>
+                <string>wpworkspace</string>
             </array>
         </dict>
     </array>
@@ -55,12 +57,12 @@
     <key>WPCOMOAuthClientSecret</key>
     <string></string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>WhisPress needs microphone access to transcribe your speech.</string>
+    <string>WP Workspace needs microphone access when you dictate to your site.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>WhisPress needs speech recognition to convert your voice to text.</string>
+    <string>WP Workspace needs speech recognition when you dictate text.</string>
     <key>NSAccessibilityUsageDescription</key>
-    <string>WhisPress needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+    <string>WP Workspace needs accessibility access to detect the text cursor position, transform selected text, and paste results.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>WhisPress uses screenshots you capture to upload selected images to WordPress.com.</string>
+    <string>WP Workspace uses screenshots you capture to upload selected images to WordPress.com.</string>
 </dict>
 </plist>

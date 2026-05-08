@@ -1,60 +1,57 @@
 <p align="center">
-  <img src="Resources/AppIcon-Source.png" alt="WhisPress app icon" width="160" height="160">
+  <img src="Resources/AppIcon-Source.png" alt="WordPress Workspace app icon" width="160" height="160">
 </p>
 
-<h1 align="center">WhisPress</h1>
+<h1 align="center">WordPress Workspace</h1>
 
 <p align="center">
-  <strong>macOS dictation, powered by WordPress.com.</strong>
+  <strong>Turn your WordPress.com site into a workspace on your Mac.</strong>
 </p>
 
-WhisPress is a macOS menu bar dictation app in the spirit of SuperWhisper and
-Monologue, but built around WordPress.com. It records audio locally, sends it to
-the WordPress.com cloud, and pastes the returned text wherever your cursor is.
+WordPress Workspace brings your WordPress.com site to the macOS menu bar. Ask
+the WordPress Agent, capture screenshots, upload images, transform selected text,
+and dictate when voice is the fastest way to get words down.
 
-WhisPress comes with your WordPress.com subscription and uses Content Guidelines
-to store your transcription configuration. Pick a WordPress.com workspace, edit
-that workspace's `Transcribe` guideline, and WhisPress will use it for spelling,
-cleanup, formatting, and dictation behavior.
-
-[Download WhisPress from GitHub Releases](https://github.com/Automattic/whispress/releases)
+[Download WordPress Workspace from GitHub Releases](https://github.com/Automattic/workspace-osx/releases)
 
 ## Why
 
-- All agents and apps can use a single source of truth for spelling and style.
-- You can share transcription configuration with your team by sharing the
-  WordPress.com workspace.
+- Your WordPress.com site becomes the place your Mac work can land.
+- Screenshots, uploads, selected text, and voice input can all flow into the
+  same WordPress Agent context.
+- Content Guidelines give your site a shared source of truth for transcription
+  cleanup, spelling, formatting, and style.
 - WordPress.com handles the cloud AI work behind the scenes.
 
 ## How It Works
 
-WhisPress is a thin client:
+WordPress Workspace is a thin Mac client:
 
 - Sign in with WordPress.com.
-- Choose the workspace whose transcription guideline should be used.
-- Record with a shortcut, then WhisPress calls the workspace's WordPress.com
-  transcription endpoint and pastes the result.
+- Choose the site you want to work with.
+- Ask the WordPress Agent, capture a screenshot, upload images, transform
+  selected text, or dictate text from anywhere on your Mac.
 
 There is no local provider setup, API key entry, model picker, prompt editor, or
-spelling editor in the Mac app. Configuration lives on WordPress.com, where it can
-be shared, audited, and reused by other clients.
+spelling editor in the Mac app. Configuration lives on WordPress.com, where it
+can be shared, audited, and reused by other clients.
 
 ## WordPress.com Guidelines
 
-Each selected workspace is backed by a WordPress.com site that can provide a
-native `wp_guideline` skill with the slug `transcribe`. The WordPress.com
-transcription endpoint loads that skill server-side and uses it as the
-transcription prompt.
+The selected site can provide a native `wp_guideline` skill with the slug
+`transcribe`. The WordPress.com transcription endpoint loads that skill
+server-side and uses it as the transcription prompt.
 
-Switching workspaces changes the active transcription configuration. Editing the
-guideline on WordPress.com changes what WhisPress uses the next time it
-transcribes.
+Switching sites changes the active transcription configuration. Editing the
+guideline on WordPress.com changes what WordPress Workspace uses the next time
+you dictate or transform selected text.
 
 ## Open Source
 
-WhisPress is a fork of
+WordPress Workspace is a fork of
 [FreeFlow](https://github.com/zachlatta/freeflow), a great open source macOS
-dictation app. The fork reworks the app into a WordPress.com-branded thin client.
+dictation app. The fork reworks the app into a WordPress.com site workspace for
+Agent chat, screenshots, uploads, selected text, and voice input.
 
 ## Build From Source
 
@@ -62,14 +59,14 @@ dictation app. The fork reworks the app into a WordPress.com-branded thin client
 make
 ```
 
-The default development bundle is `WhisPress Dev.app` with bundle identifier
-`com.automattic.whispress.dev`.
+The default development bundle is `WP Workspace Dev.app` with bundle identifier
+`com.automattic.wpworkspace.dev`.
 
 ### WordPress.com OAuth
 
-WhisPress uses a registered native WordPress.com OAuth app with:
+WordPress Workspace uses a registered native WordPress.com OAuth app with:
 
-- Redirect URI: `whispress://oauth/callback`
+- Redirect URI: `wpworkspace://oauth/callback`
 - Authorize URL: `https://public-api.wordpress.com/oauth2/authorize`
 - Token URL: `https://public-api.wordpress.com/oauth2/token`
 
@@ -100,11 +97,11 @@ releases locally from a clean working tree:
 Tools/manual-release.sh --secret-file .wpcom-oauth-client-secret
 ```
 
-That builds a universal `WhisPress.app`, verifies that the WordPress.com OAuth
-client secret was injected, and creates:
+That builds a universal `WP Workspace.app`, verifies that the WordPress.com
+OAuth client secret was injected, and creates:
 
 ```text
-build/WhisPress-0.2.1.zip
+build/WPWorkspace-0.2.1.zip
 ```
 
 Inspect the zip before publishing. When it is ready, publish the GitHub Release:
@@ -112,19 +109,19 @@ Inspect the zip before publishing. When it is ready, publish the GitHub Release:
 ```sh
 Tools/manual-release.sh --secret-file .wpcom-oauth-client-secret \
   --publish \
-  --notes "First WhisPress preview release."
+  --notes "First WordPress Workspace preview release."
 ```
 
 The script uses the version from `Info.plist`, creates or reuses the matching
 `vX.Y.Z` tag, pushes the tag, and uploads the zip to
-[GitHub Releases](https://github.com/Automattic/whispress/releases). By default
-it uses ad-hoc signing; pass `--codesign-identity` when a Developer ID signing
-identity is ready.
+[GitHub Releases](https://github.com/Automattic/workspace-osx/releases). By
+default it uses ad-hoc signing; pass `--codesign-identity` when a Developer ID
+signing identity is ready.
 
 ## Endpoint Smoke Test
 
 You can test the WordPress.com transcription endpoint directly with a bearer
-token, workspace, and audio file:
+token, site, and audio file:
 
 ```sh
 WPCOM_BEARER_TOKEN="$TOKEN" Tools/wpcom-transcribe.sh \

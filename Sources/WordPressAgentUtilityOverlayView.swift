@@ -31,7 +31,7 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     private var siteTitle: String {
-        activeSite?.displayName ?? "Choose workspace"
+        activeSite?.displayName ?? "Choose your site"
     }
 
     var body: some View {

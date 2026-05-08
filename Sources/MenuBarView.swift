@@ -9,7 +9,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("WhisPress v\(appVersion)")
+            Text("WP Workspace v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -281,7 +281,7 @@ struct MenuBarView: View {
                 appState.toggleDebugOverlay()
             }
 
-            Button("Quit WhisPress") {
+            Button("Quit WP Workspace") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
@@ -305,12 +305,12 @@ struct MenuBarView: View {
 
                 Divider()
 
-                Menu("Use Workspace for This App") {
+                Menu("Use Site for This App") {
                     Button {
                         appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
                     } label: {
                         checkedMenuText(
-                            "Use Default Workspace",
+                            "Use Default Site",
                             isSelected: override == nil
                         )
                     }
@@ -335,13 +335,13 @@ struct MenuBarView: View {
 
                 Divider()
 
-                Button("Pin Default Workspace to This App") {
+                Button("Pin Default Site to This App") {
                     appState.assignSelectedWordPressComSiteToLatestExternalApp()
                 }
                 .disabled(appState.selectedWordPressComSiteID == nil)
 
                 if override != nil {
-                    Button("Remove App-Specific Workspace") {
+                    Button("Remove App-Specific Site") {
                         appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
                     }
                 }
@@ -362,7 +362,7 @@ struct MenuBarView: View {
     }
 
     private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
-        let siteName = site?.displayName ?? "No workspace selected"
+        let siteName = site?.displayName ?? "No site selected"
         return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
     }
 

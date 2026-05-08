@@ -6,7 +6,7 @@ import ServiceManagement
 import ApplicationServices
 import os.log
 import UserNotifications
-private let recordingLog = OSLog(subsystem: "com.automattic.whispress", category: "Recording")
+private let recordingLog = OSLog(subsystem: "com.automattic.wpworkspace", category: "Recording")
 private let unknownWordPressAgentSiteID = -1
 
 struct WPCOMAppSiteOverride: Codable, Identifiable, Equatable {
@@ -165,9 +165,9 @@ struct WordPressAgentConversation: Identifiable, Equatable {
             return siteName
         }
         if key.siteID <= 0 {
-            return "Unknown workspace"
+            return "Unknown site"
         }
-        return "Workspace \(key.siteID)"
+        return "Site \(key.siteID)"
     }
 
     var isEmptyLocalDraft: Bool {
@@ -991,7 +991,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func refreshWordPressComSites() async {
         await MainActor.run {
             self.isRefreshingWordPressComSites = true
-            self.wordpressComStatusMessage = "Loading WordPress.com workspaces..."
+            self.wordpressComStatusMessage = "Loading WordPress.com sites..."
         }
 
         do {
@@ -1004,7 +1004,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.wordpressComUser = currentUser
                 if let selected = self.selectedWordPressComSiteID,
                    sites.contains(where: { $0.id == selected }) {
-                    // Keep the user's selected workspace.
+                    // Keep the user's selected site.
                 } else {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
@@ -1012,7 +1012,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.pruneWordPressAgentRecentSites(validSiteIDs: Set(sites.map(\.id)))
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
-                    ? "No WordPress.com workspaces found"
+                    ? "No WordPress.com sites found"
                     : "Ready"
                 self.isRefreshingWordPressComSites = false
             }
@@ -1419,7 +1419,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @discardableResult
     func startWordPressAgentConversation(siteID: Int? = nil, agentID: String = "dolly") -> String? {
         guard let siteID = siteID ?? selectedWordPressComSiteID else {
-            errorMessage = "Choose a WordPress.com workspace before starting an agent session."
+            errorMessage = "Choose a WordPress.com site before starting an agent session."
             return nil
         }
 
@@ -1449,6 +1449,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func showWordPressAgentUtilityOverlay() {
         NotificationCenter.default.post(name: .showWordPressAgentUtilityOverlay, object: nil)
+    }
+
+    func showImageUploadPicker() {
+        NotificationCenter.default.post(name: .showImageUploadPicker, object: nil)
     }
 
     @MainActor
@@ -1576,7 +1580,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let key = selectedConversation.key
         guard key.siteID > 0 else {
-            setWordPressAgentError("Choose a WordPress.com workspace before continuing this chat.", for: selectedConversation.id)
+            setWordPressAgentError("Choose a WordPress.com site before continuing this chat.", for: selectedConversation.id)
             return
         }
         let pendingUploadedMedia = selectedConversation.pendingUploadedMedia
@@ -1694,7 +1698,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             windowTitle: context.windowTitle,
             selectedText: context.selectedText,
             currentActivity: context.currentActivity,
-            client: "whispress",
+            client: "wpworkspace",
             clientVersion: clientVersion,
             uploadedFiles: freshlyUploadedMedia.map(WPCOMAgentUploadedFileContext.init)
         )
@@ -1853,7 +1857,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     toolCallID: toolCall.toolCallID,
                     toolID: toolCall.toolID,
                     result: nil,
-                    error: "WhisPress does not provide a frontend ability named \(toolCall.toolID)."
+                    error: "WP Workspace does not provide a frontend ability named \(toolCall.toolID)."
                 ),
                 shouldReturnToAgent: true,
                 agentMessage: nil
@@ -1930,9 +1934,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private static func isPreviewFrontendToolID(_ toolID: String) -> Bool {
         let normalizedToolID = toolID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalizedToolID == "preview"
-            || normalizedToolID == "whispress/preview"
-            || normalizedToolID == "whispress__preview"
-            || normalizedToolID == "whispress_preview"
+            || normalizedToolID == "wpworkspace/preview"
+            || normalizedToolID == "wpworkspace__preview"
+            || normalizedToolID == "wpworkspace_preview"
     }
 
     private static func normalizedPreviewURL(from rawValue: String) -> URL? {
@@ -2950,7 +2954,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused {
             guard isWordPressComSignedIn,
                   let agentConversationKey = wordPressAgentWindowDictationKey() else {
-                errorMessage = "Sign in with WordPress.com and choose a default workspace before using agent dictation."
+                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
                 statusText = "WordPress.com sign-in required"
                 activeRecordingTriggerMode = nil
                 currentSessionIntent = .dictation
@@ -2977,7 +2981,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         guard isWordPressComSignedIn,
               let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
-            errorMessage = "Sign in with WordPress.com and choose a default workspace or app-specific workspace before dictating."
+            errorMessage = "Sign in with WordPress.com and choose a default site or app-specific site before dictating."
             statusText = "WordPress.com sign-in required"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
@@ -3215,7 +3219,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "WhisPress cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable WhisPress."
+        alert.informativeText = "WP Workspace cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable WP Workspace."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -3230,7 +3234,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showAccessibilityAlert() {
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "WhisPress cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable WhisPress."
+        alert.informativeText = "WP Workspace cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable WP Workspace."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")

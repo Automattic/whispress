@@ -162,11 +162,11 @@ struct ImageImportView: View {
 
     private var workspaceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Workspace", systemImage: "globe")
+            Label("Site", systemImage: "globe")
                 .font(.system(size: 13, weight: .semibold))
 
             if appState.isWordPressComSignedIn {
-                Picker("Workspace", selection: $selectedSiteID) {
+                Picker("Site", selection: $selectedSiteID) {
                     ForEach(appState.wordpressComSites) { site in
                         Text(site.displayName).tag(Optional(site.id))
                     }

@@ -25,7 +25,7 @@ enum WPCOMClientError: LocalizedError {
         case .missingRefreshToken:
             return "WordPress.com session expired. Sign in again."
         case .missingSelectedSite:
-            return "Choose a WordPress.com workspace before transcribing."
+            return "Choose a WordPress.com site before transcribing."
         case .requestFailed(let statusCode, let details):
             return "WordPress.com request failed with status \(statusCode): \(details)"
         case .invalidResponse(let details):
@@ -334,16 +334,16 @@ struct WPCOMAgentFrontendAbility: Encodable, Equatable {
     }
 
     static let preview = WPCOMAgentFrontendAbility(
-        name: "whispress/preview",
+        name: "wpworkspace/preview",
         label: "Preview URL",
-        description: "Open a web URL in WhisPress' side preview panel. Replaces any preview that is already open.",
+        description: "Open a web URL in the WP Workspace side preview panel. Replaces any preview that is already open.",
         category: "interface",
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
                 "url": .object([
                     "type": .string("string"),
-                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WhisPress will treat them as https URLs. WordPress wp-admin post edit links are shown as their public post URLs.")
+                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WP Workspace will treat them as https URLs. WordPress wp-admin post edit links are shown as their public post URLs.")
                 ]),
                 "title": .object([
                     "type": .string("string"),
@@ -969,8 +969,8 @@ final class WPCOMClient: NSObject {
     private let apiBaseURL = URL(string: "https://public-api.wordpress.com")!
     private let oauthAuthorizeURL = URL(string: "https://public-api.wordpress.com/oauth2/authorize")!
     private let oauthTokenURL = URL(string: "https://public-api.wordpress.com/oauth2/token")!
-    private let redirectURI = "whispress://oauth/callback"
-    private let callbackScheme = "whispress"
+    private let redirectURI = "wpworkspace://oauth/callback"
+    private let callbackScheme = "wpworkspace"
     private let tokenStorageAccount = "wpcom_oauth_state"
     private let session = URLSession(configuration: .ephemeral)
     private var authSession: ASWebAuthenticationSession?
@@ -1131,7 +1131,7 @@ final class WPCOMClient: NSObject {
         var fields: [String: String] = [
             "intent": intent,
             "app_context": contextString,
-            "client": "whispress",
+            "client": "wpworkspace",
             "client_version": clientVersion,
             "save_artifact": saveArtifact ? "true" : "false"
         ]
@@ -1292,7 +1292,7 @@ final class WPCOMClient: NSObject {
         guard !fileURLs.isEmpty else { return [] }
 
         let url = URL(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)/media/new")!
-        let boundary = "WhisPress-\(UUID().uuidString)"
+        let boundary = "WPWorkspace-\(UUID().uuidString)"
         let fields = Self.mediaUploadFields(uploadTitles: uploadTitles)
         let files = fileURLs.map {
             MultipartFilePart(

@@ -7,11 +7,11 @@ usage() {
 Usage:
   Tools/manual-release.sh [--publish]
 
-Builds and packages a local WhisPress release zip.
+Builds and packages a local WP Workspace release zip.
 
 Options:
   --publish                    Push the version tag and create a GitHub Release.
-  --repo <owner/name>           GitHub repository. Default: Automattic/whispress.
+  --repo <owner/name>           GitHub repository. Default: Automattic/workspace-osx.
   --version <version>           Version to release. Default: Info.plist CFBundleShortVersionString.
   --notes <text>                Release notes used with --publish.
   --notes-file <path>           Release notes file used with --publish.
@@ -41,9 +41,9 @@ need_value() {
 }
 
 PUBLISH=0
-REPO="${GITHUB_REPOSITORY:-Automattic/whispress}"
+REPO="${GITHUB_REPOSITORY:-Automattic/workspace-osx}"
 VERSION=""
-NOTES="First WhisPress preview release."
+NOTES="First WordPress Workspace preview release."
 NOTES_FILE=""
 SECRET_FILE=""
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -130,15 +130,15 @@ else
 fi
 
 TAG="v$VERSION"
-APP_PATH="build/WhisPress.app"
-ZIP_PATH="build/WhisPress-$VERSION.zip"
+APP_PATH="build/WP Workspace.app"
+ZIP_PATH="build/WPWorkspace-$VERSION.zip"
 
-echo "Building WhisPress $VERSION..."
+echo "Building WP Workspace $VERSION..."
 make clean
 make \
 	ARCH=universal \
-	APP_NAME=WhisPress \
-	BUNDLE_ID=com.automattic.whispress \
+	APP_NAME="WP Workspace" \
+	BUNDLE_ID=com.automattic.wpworkspace \
 	CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
 echo "Verifying app..."
@@ -177,7 +177,7 @@ if git rev-parse "$TAG^{commit}" >/dev/null 2>&1; then
 		die "Tag $TAG exists but does not point at HEAD."
 	fi
 else
-	git tag -a "$TAG" -m "WhisPress $VERSION"
+	git tag -a "$TAG" -m "WP Workspace $VERSION"
 fi
 
 git push origin "$TAG"
@@ -185,14 +185,14 @@ git push origin "$TAG"
 if [ -n "$NOTES_FILE" ]; then
 	gh release create "$TAG" "$ZIP_PATH" \
 		--repo "$REPO" \
-		--title "WhisPress $VERSION" \
+		--title "WP Workspace $VERSION" \
 		--notes-file "$NOTES_FILE"
 else
 	gh release create "$TAG" "$ZIP_PATH" \
 		--repo "$REPO" \
-		--title "WhisPress $VERSION" \
+		--title "WP Workspace $VERSION" \
 		--notes "$NOTES"
 fi
 
-echo "Published WhisPress $VERSION:"
+echo "Published WP Workspace $VERSION:"
 gh release view "$TAG" --repo "$REPO" --json url --jq '.url'

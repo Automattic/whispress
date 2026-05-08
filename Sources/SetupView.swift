@@ -10,13 +10,14 @@ struct SetupView: View {
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case account
+        case agentOverlay
+        case imageUpload
         case micPermission
         case accessibility
         case holdShortcut
         case toggleShortcut
-        case commandMode
-        case launchAtLogin
         case testTranscription
+        case launchAtLogin
         case ready
     }
 
@@ -39,21 +40,17 @@ struct SetupView: View {
     @State private var testMicPulsing = false
     @State private var holdShortcutValidationMessage: String?
     @State private var toggleShortcutValidationMessage: String?
+    @State private var agentUtilityOverlayValidationMessage: String?
     @State private var isCapturingHoldShortcut = false
     @State private var isCapturingToggleShortcut = false
+    @State private var isCapturingAgentUtilityOverlayShortcut = false
     @StateObject private var testHotkeyHarness = SetupTestHotkeyHarness()
 
     private let totalSteps: [SetupStep] = SetupStep.allCases
     private var isCapturingShortcut: Bool {
-        isCapturingHoldShortcut || isCapturingToggleShortcut
-    }
-
-    private static func welcomeIconImage() -> NSImage {
-        if let url = Bundle.main.url(forResource: "AppIcon-Source", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        return NSApp.applicationIconImage
+        isCapturingHoldShortcut
+            || isCapturingToggleShortcut
+            || isCapturingAgentUtilityOverlayShortcut
     }
 
     var body: some View {
@@ -105,7 +102,7 @@ struct SetupView: View {
                                     .disabled(testPhase != .done || testTranscript.isEmpty || testError != nil)
                                 }
                             } else {
-                                Button("Continue") {
+                                Button(continueButtonTitle) {
                                     withAnimation {
                                         currentStep = nextStep(currentStep)
                                     }
@@ -126,6 +123,8 @@ struct SetupView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(width: 520, height: 680)
+        .font(WordPressWorkspaceBrand.bodyFont(size: 14))
+        .tint(WordPressWorkspaceBrand.blue)
         .onAppear {
             checkMicPermission()
             checkAccessibility()
@@ -162,10 +161,12 @@ struct SetupView: View {
             holdShortcutStep
         case .toggleShortcut:
             toggleShortcutStep
-        case .commandMode:
-            commandModeStep
         case .launchAtLogin:
             launchAtLoginStep
+        case .imageUpload:
+            imageUploadStep
+        case .agentOverlay:
+            agentOverlayStep
         case .testTranscription:
             testTranscriptionStep
         case .ready:
@@ -176,19 +177,21 @@ struct SetupView: View {
     // MARK: - Steps
 
     var welcomeStep: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 26) {
             Spacer(minLength: 0)
 
-            Image(nsImage: Self.welcomeIconImage())
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 256, height: 256)
+            WordPressWorkspaceWelcomeMark()
 
-            VStack(spacing: 6) {
-                Text("Welcome to WhisPress")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+            VStack(spacing: 10) {
+                Text("Welcome to\nWordPress Workspace")
+                    .font(WordPressWorkspaceBrand.displayFont(size: 39))
+                    .lineSpacing(1)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(WordPressWorkspaceBrand.ink)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Text("Dictate text anywhere on your Mac using your selected WordPress.com workspace.")
+                Text("Turn your WordPress.com site into a workspace on your Mac.")
+                    .font(WordPressWorkspaceBrand.bodyFont(size: 14))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -209,10 +212,9 @@ struct SetupView: View {
                     .shadow(color: Color.black.opacity(0.12), radius: 12, y: 6)
 
                 Text("WordPress.com")
-                    .font(.title)
-                    .fontWeight(.bold)
+                    .font(WordPressWorkspaceBrand.displayFont(size: 32))
 
-                Text("Sign in and choose the workspace whose Transcribe skill should guide dictation.")
+                Text("Sign in and choose the site you want to work with.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -243,10 +245,10 @@ struct SetupView: View {
                         if appState.isRefreshingWordPressComSites {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("Loading workspaces...")
+                                Text("Loading sites...")
                             }
                         } else {
-                            Label("Refresh Workspaces", systemImage: "arrow.clockwise")
+                            Label("Refresh Sites", systemImage: "arrow.clockwise")
                         }
                     }
                     .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
@@ -281,13 +283,12 @@ struct SetupView: View {
         VStack(spacing: 20) {
             Image(systemName: "mic.fill")
                 .font(.system(size: 60))
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
 
             Text("Microphone Access")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("WhisPress needs access to your microphone to record audio for transcription.")
+            Text("Microphone access enables dictation. You can skip this and still use Quick Ask, uploads, screenshots, and site workflows.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -295,7 +296,7 @@ struct SetupView: View {
             HStack {
                 Image(systemName: "mic.fill")
                     .frame(width: 24)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(WordPressWorkspaceBrand.blue)
                 Text("Microphone")
                 Spacer()
                 if micPermissionGranted {
@@ -313,6 +314,13 @@ struct SetupView: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
 
+            if !micPermissionGranted {
+                Text("You can enable the microphone later from Settings.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
         }
     }
 
@@ -320,13 +328,12 @@ struct SetupView: View {
         VStack(spacing: 20) {
             Image(systemName: "hand.raised.fill")
                 .font(.system(size: 60))
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
 
             Text("Accessibility Access")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("WhisPress needs Accessibility access to paste transcribed text into your apps.")
+            Text("WP Workspace needs Accessibility access to transform selected text and paste results into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -334,7 +341,7 @@ struct SetupView: View {
             HStack {
                 Image(systemName: "hand.raised.fill")
                     .frame(width: 24)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(WordPressWorkspaceBrand.blue)
                 Text("Accessibility")
                 Spacer()
                 if accessibilityGranted {
@@ -371,11 +378,10 @@ struct SetupView: View {
         VStack(spacing: 20) {
             Image(systemName: "keyboard.fill")
                 .font(.system(size: 60))
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
 
             Text("Hold to Talk Shortcut")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
             Text("Choose the shortcut you want to hold while speaking.\nRelease it to stop unless you latch into tap mode later, or disable hold-to-talk entirely.")
                 .multilineTextAlignment(.center)
@@ -407,13 +413,12 @@ struct SetupView: View {
         VStack(spacing: 20) {
             Image(systemName: "switch.2")
                 .font(.system(size: 60))
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
 
             Text("Tap to Toggle Shortcut")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, WhisPress latches into tap mode. You can also disable tap-to-toggle entirely.")
+            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, Workspace latches into tap mode. You can also disable tap-to-toggle entirely.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -439,96 +444,16 @@ struct SetupView: View {
         }
     }
 
-    var commandModeStep: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "pencil")
-                .font(.system(size: 60))
-                .foregroundStyle(.blue)
-
-            Text("Edit Mode")
-                .font(.title)
-                .fontWeight(.bold)
-
-            Text("Transform selected text with a spoken instruction instead of dictating over it.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 14) {
-                Toggle("Enable Edit Mode", isOn: Binding(
-                    get: { appState.isCommandModeEnabled },
-                    set: { newValue in
-                        _ = appState.setCommandModeEnabled(newValue)
-                    }
-                ))
-
-                Picker("Invocation Style", selection: Binding(
-                    get: { appState.commandModeStyle },
-                    set: { newValue in
-                        _ = appState.setCommandModeStyle(newValue)
-                    }
-                )) {
-                    ForEach(CommandModeStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(!appState.isCommandModeEnabled)
-
-                Group {
-                    switch appState.commandModeStyle {
-                    case .automatic:
-                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, WhisPress transforms that selection instead of dictating new text.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    case .manual:
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Manual mode only triggers when you hold an extra modifier together with your normal dictation shortcut.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Picker("Extra Modifier", selection: Binding(
-                                get: { appState.commandModeManualModifier },
-                                set: { newValue in
-                                    _ = appState.setCommandModeManualModifier(newValue)
-                                }
-                            )) {
-                                ForEach(CommandModeManualModifier.allCases) { modifier in
-                                    Text(modifier.title).tag(modifier)
-                                }
-                            }
-                            .disabled(!appState.isCommandModeEnabled || appState.commandModeStyle != .manual)
-                        }
-                    }
-                }
-                .opacity(appState.isCommandModeEnabled ? 1 : 0.5)
-
-                if let validationMessage = appState.commandModeManualModifierValidationMessage {
-                    Label(validationMessage, systemImage: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(10)
-        }
-    }
-
     var launchAtLoginStep: some View {
         VStack(spacing: 20) {
             Image(systemName: "sunrise.fill")
                 .font(.system(size: 60))
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
 
             Text("Launch at Login")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("Start WhisPress automatically when you log in so it's always ready.")
+            Text("Start WP Workspace automatically when you log in so it's always ready.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -536,13 +461,93 @@ struct SetupView: View {
             HStack {
                 Image(systemName: "sunrise.fill")
                     .frame(width: 24)
-                    .foregroundStyle(.blue)
-                Toggle("Launch WhisPress at login", isOn: $appState.launchAtLogin)
+                    .foregroundStyle(WordPressWorkspaceBrand.blue)
+                Toggle("Launch WP Workspace at login", isOn: $appState.launchAtLogin)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
 
+        }
+    }
+
+    var imageUploadStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 60))
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
+
+            Text("Upload Images")
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
+
+            Text("Choose an image to upload it to your site, copy the link, or open it in a WordPress Agent chat.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                appState.showImageUploadPicker()
+            } label: {
+                Label("Choose Images", systemImage: "photo.badge.plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil)
+
+            Text("You can also drop images onto the menu bar icon later.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    var agentOverlayStep: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 14) {
+                Image(systemName: "text.bubble.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(WordPressWorkspaceBrand.blue)
+
+                Text("Quick Ask")
+                    .font(WordPressWorkspaceBrand.displayFont(size: 30))
+
+                Text("Open the floating WordPress Agent overlay to ask about your site from anywhere on your Mac.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    appState.showWordPressAgentUtilityOverlay()
+                } label: {
+                    Label("Open Quick Ask", systemImage: "text.bubble")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil)
+
+                ShortcutRoleSection(
+                    role: .agentUtilityOverlay,
+                    selection: appState.agentUtilityOverlayShortcut,
+                    validationMessage: agentUtilityOverlayValidationMessage,
+                    isCapturing: $isCapturingAgentUtilityOverlayShortcut,
+                    onSelect: { binding in
+                        agentUtilityOverlayValidationMessage = appState.setShortcut(binding, for: .agentUtilityOverlay)
+                    }
+                )
+                .frame(maxWidth: 360)
+                .padding(.top, 6)
+
+                if appState.agentUtilityOverlayShortcut.usesFnKey {
+                    Text("Tip: If Fn opens Emoji picker, go to System Settings > Keyboard and change \"Press fn key to\" to \"Do Nothing\".")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                }
+
+                Text("The overlay supports typed prompts, image attachments, and dictation.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -571,22 +576,21 @@ struct SetupView: View {
                     VStack(spacing: 20) {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 60))
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(WordPressWorkspaceBrand.blue)
                             .scaleEffect(testMicPulsing ? 1.15 : 1.0)
                             .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: testMicPulsing)
 
-                        Text("Let's Try It Out!")
-                            .font(.title)
-                            .fontWeight(.bold)
+                        Text("Try Dictation")
+                            .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
                         Text(testShortcutPrompt)
                             .font(.headline)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
-                            .background(Color.blue.opacity(0.1))
+                            .background(WordPressWorkspaceBrand.blue.opacity(0.1))
                             .cornerRadius(10)
 
-                        Text("Say anything — a sentence or two is perfect.")
+                        Text("Say anything when voice is the fastest way to get words down.")
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
@@ -595,13 +599,13 @@ struct SetupView: View {
                     VStack(spacing: 20) {
                         ZStack {
                             Circle()
-                                .fill(Color.blue.opacity(0.65))
+                                .fill(WordPressWorkspaceBrand.blue.opacity(0.65))
                                 .frame(width: 100, height: 100)
 
                             Circle()
-                                .stroke(Color.blue.opacity(0.8), lineWidth: 3)
+                                .stroke(WordPressWorkspaceBrand.blue.opacity(0.8), lineWidth: 3)
                                 .frame(width: 100, height: 100)
-                                .shadow(color: .blue.opacity(0.5), radius: 10)
+                                .shadow(color: WordPressWorkspaceBrand.blue.opacity(0.5), radius: 10)
 
                             WaveformView(audioLevel: testAudioLevel)
                         }
@@ -609,7 +613,7 @@ struct SetupView: View {
                         Text("Listening...")
                             .font(.title2)
                             .fontWeight(.semibold)
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(WordPressWorkspaceBrand.blue)
                     }
 
                 case .transcribing:
@@ -651,7 +655,7 @@ struct SetupView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Perfect — WhisPress is ready to go.")
+                            Text("Perfect — Workspace is ready to go.")
                                 .font(.title2)
                                 .fontWeight(.semibold)
 
@@ -692,33 +696,31 @@ struct SetupView: View {
                 .foregroundStyle(.green)
 
             Text("You're All Set!")
-                .font(.title)
-                .fontWeight(.bold)
+                .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("WhisPress lives in your menu bar.")
+            Text("WP Workspace lives in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
-                if appState.hasEnabledHoldShortcut {
-                    HowToRow(icon: "keyboard", text: "Hold \(appState.holdShortcut.displayName) to record")
+                if appState.hasEnabledAgentUtilityOverlayShortcut {
+                    HowToRow(icon: "text.bubble", text: "Press \(appState.agentUtilityOverlayShortcut.displayName) for Quick Ask")
+                } else {
+                    HowToRow(icon: "text.bubble", text: "Open Quick Ask from the menu bar")
                 }
-                if appState.hasEnabledToggleShortcut {
-                    HowToRow(icon: "switch.2", text: "Tap \(appState.toggleShortcut.displayName) to start and stop")
-                }
-                if appState.hasEnabledHoldShortcut && appState.hasEnabledToggleShortcut {
-                    HowToRow(icon: "arrow.triangle.branch", text: "While holding, press the toggle shortcut to latch on")
-                }
-                if appState.isCommandModeEnabled {
-                    switch appState.commandModeStyle {
-                    case .automatic:
-                        HowToRow(icon: "wand.and.stars", text: "With text selected, your normal shortcut transforms the selection")
-                    case .manual:
-                        HowToRow(
-                            icon: "wand.and.stars",
-                            text: "Hold \(appState.commandModeManualModifier.title) with your normal shortcut to transform selected text"
-                        )
+                HowToRow(icon: "camera.viewfinder", text: "Upload images or capture screenshots for your site")
+                if micPermissionGranted {
+                    if appState.hasEnabledHoldShortcut {
+                        HowToRow(icon: "keyboard", text: "Hold \(appState.holdShortcut.displayName) to dictate")
                     }
+                    if appState.hasEnabledToggleShortcut {
+                        HowToRow(icon: "switch.2", text: "Tap \(appState.toggleShortcut.displayName) to dictate hands-free")
+                    }
+                    if appState.hasEnabledHoldShortcut && appState.hasEnabledToggleShortcut {
+                        HowToRow(icon: "arrow.triangle.branch", text: "While holding, press the toggle shortcut to latch on")
+                    }
+                } else {
+                    HowToRow(icon: "mic", text: "Enable microphone access later to use dictation")
                 }
                 HowToRow(icon: "doc.on.clipboard", text: "Text is typed at your cursor & copied")
             }
@@ -731,18 +733,20 @@ struct SetupView: View {
         HStack(spacing: 8) {
             ForEach(totalSteps, id: \.rawValue) { step in
                 Circle()
-                    .fill(step == currentStep ? Color.blue : Color.gray.opacity(0.3))
+                    .fill(step == currentStep ? WordPressWorkspaceBrand.blue : Color.gray.opacity(0.3))
                     .frame(width: 8, height: 8)
             }
         }
     }
 
     private var canContinueFromCurrentStep: Bool {
+        if isCapturingShortcut {
+            return false
+        }
+
         switch currentStep {
         case .account:
             return appState.isWordPressComSignedIn && appState.selectedWordPressComSiteID != nil
-        case .micPermission:
-            return micPermissionGranted
         case .accessibility:
             return accessibilityGranted
         case .testTranscription:
@@ -750,6 +754,10 @@ struct SetupView: View {
         default:
             return true
         }
+    }
+
+    private var continueButtonTitle: String {
+        currentStep == .micPermission && !micPermissionGranted ? "Skip for Now" : "Continue"
     }
 
     private var testShortcutPrompt: String {
@@ -779,7 +787,7 @@ struct SetupView: View {
                 .frame(width: 16, alignment: .trailing)
             Text(text)
                 .font(.subheadline)
-                .tint(.blue)
+                .tint(WordPressWorkspaceBrand.blue)
         }
     }
 
@@ -987,7 +995,7 @@ private struct InlineTranscribingDots: View {
         HStack(spacing: 8) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
-                    .fill(Color.blue.opacity(activeDot == index ? 1.0 : 0.3))
+                    .fill(WordPressWorkspaceBrand.blue.opacity(activeDot == index ? 1.0 : 0.3))
                     .frame(width: 12, height: 12)
                     .scaleEffect(activeDot == index ? 1.3 : 1.0)
                     .animation(.easeInOut(duration: 0.3), value: activeDot)
@@ -1007,7 +1015,7 @@ struct HowToRow: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .frame(width: 24)
-                .foregroundStyle(.blue)
+                .foregroundStyle(WordPressWorkspaceBrand.blue)
             Text(text)
                 .foregroundStyle(.secondary)
         }
