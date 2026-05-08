@@ -8,7 +8,7 @@ Usage:
   Tools/wpcom-transcribe.sh --site <site-id-or-domain> --file <audio-file> [--token <bearer-token>]
 
 Required:
-  --site <value>          Workspace's WordPress.com site ID or domain.
+  --site <value>          WordPress.com site ID or domain.
   --file <path>           Audio file to upload.
   --token <value>         Bearer token. You may also set WPCOM_BEARER_TOKEN.
 
@@ -18,7 +18,7 @@ Optional:
   --app-context <json>    Optional JSON string for endpoint app_context.
   --base-url <url>        Default: https://public-api.wordpress.com.
   --auth-header <value>   Exact Authorization header value. Overrides --token.
-  --user-agent <value>    User-Agent header. Default: WhisPress/SmokeTest.
+  --user-agent <value>    User-Agent header. Default: WPWorkspace/SmokeTest.
   --proxy <url>           Optional curl proxy, e.g. socks5://127.0.0.1:8080.
   --envelope              Add ?_envelope=1 to match the REST proxy/debug tool.
   --verbose               Ask curl to print connection details.
@@ -63,7 +63,7 @@ SELECTED_TEXT=""
 APP_CONTEXT=""
 BASE_URL="https://public-api.wordpress.com"
 AUTH_HEADER=""
-USER_AGENT="WhisPress/SmokeTest"
+USER_AGENT="WPWorkspace/SmokeTest"
 PROXY=""
 ENVELOPE=""
 VERBOSE=""
@@ -184,7 +184,7 @@ if [ -n "$SELECTED_TEXT" ] && [ -n "$APP_CONTEXT" ]; then
 		-A "$USER_AGENT" \
 		-F "$AUDIO_FORM" \
 		--form-string "intent=$INTENT" \
-		--form-string "client=whispress-sh" \
+		--form-string "client=wpworkspace-sh" \
 		--form-string "client_version=dev" \
 		--form-string "selected_text=$SELECTED_TEXT" \
 		--form-string "app_context=$APP_CONTEXT"
@@ -194,7 +194,7 @@ elif [ -n "$SELECTED_TEXT" ]; then
 		-A "$USER_AGENT" \
 		-F "$AUDIO_FORM" \
 		--form-string "intent=$INTENT" \
-		--form-string "client=whispress-sh" \
+		--form-string "client=wpworkspace-sh" \
 		--form-string "client_version=dev" \
 		--form-string "selected_text=$SELECTED_TEXT"
 elif [ -n "$APP_CONTEXT" ]; then
@@ -203,7 +203,7 @@ elif [ -n "$APP_CONTEXT" ]; then
 		-A "$USER_AGENT" \
 		-F "$AUDIO_FORM" \
 		--form-string "intent=$INTENT" \
-		--form-string "client=whispress-sh" \
+		--form-string "client=wpworkspace-sh" \
 		--form-string "client_version=dev" \
 		--form-string "app_context=$APP_CONTEXT"
 else
@@ -212,7 +212,7 @@ else
 		-A "$USER_AGENT" \
 		-F "$AUDIO_FORM" \
 		--form-string "intent=$INTENT" \
-		--form-string "client=whispress-sh" \
+		--form-string "client=wpworkspace-sh" \
 		--form-string "client_version=dev"
 fi
 

@@ -164,7 +164,7 @@ struct GeneralSettingsView: View {
                 Label("Signed in", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
-                Text("Sign in to use WordPress.com transcription.")
+                Text("Sign in to choose the site WP Workspace should use.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -193,7 +193,7 @@ struct GeneralSettingsView: View {
                             Text("Refreshing...")
                         }
                     } else {
-                        Label("Refresh Workspaces", systemImage: "arrow.clockwise")
+                        Label("Refresh Sites", systemImage: "arrow.clockwise")
                     }
                 }
                 .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
@@ -206,7 +206,7 @@ struct GeneralSettingsView: View {
 
             if !appState.wordpressComSites.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Default Workspace")
+                    Text("Default Site")
                         .font(.caption.weight(.semibold))
                     WordPressSiteSearchPicker(
                         sites: appState.wordpressComSites,
@@ -249,10 +249,10 @@ struct GeneralSettingsView: View {
 
     private var wordpressAgentSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("Enable WordPress Agent Functionality", isOn: $appState.isWordPressAgentEnabled)
+            Toggle("Enable WordPress Agent", isOn: $appState.isWordPressAgentEnabled)
                 .disabled(!appState.isWordPressComSignedIn)
 
-            Text("When enabled, WhisPress lets WordPress.com classify speech and routes agent requests to the WordPress Agent instead of pasting them.")
+            Text("Enables Quick Ask and lets voice requests route to the WordPress Agent instead of always pasting text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -389,7 +389,7 @@ struct GeneralSettingsView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Text("App-Specific Workspaces")
+                Text("App-Specific Sites")
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Button {
@@ -453,13 +453,13 @@ struct GeneralSettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(appState.selectedWordPressComSiteID == nil)
-                .help("Pin current default workspace to this app")
+                .help("Pin current default site to this app")
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(6)
         } else {
-            Text("Switch to another app, then reopen WhisPress to assign a workspace.")
+            Text("Switch to another app, then reopen WP Workspace to assign a site.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -497,7 +497,7 @@ struct GeneralSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Remove app-specific workspace")
+            .help("Remove app-specific site")
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
@@ -514,7 +514,7 @@ struct GeneralSettingsView: View {
                 Button {
                     action(nil)
                 } label: {
-                    siteMenuItem(title: "Use Default Workspace", isSelected: siteID == nil)
+                    siteMenuItem(title: "Use Default Site", isSelected: siteID == nil)
                 }
                 Divider()
             }
@@ -553,15 +553,15 @@ struct GeneralSettingsView: View {
             return siteName(siteID)
         }
 
-        guard allowsDefault else { return "Choose Workspace" }
+        guard allowsDefault else { return "Choose Site" }
         if let selectedWordPressComSiteID = appState.selectedWordPressComSiteID {
             return "Default: \(siteName(selectedWordPressComSiteID))"
         }
-        return "Use Default Workspace"
+        return "Use Default Site"
     }
 
     private func siteName(_ siteID: Int) -> String {
-        appState.wordpressComSites.first(where: { $0.id == siteID })?.displayName ?? "Workspace \(siteID)"
+        appState.wordpressComSites.first(where: { $0.id == siteID })?.displayName ?? "Site \(siteID)"
     }
 
     // MARK: Permissions

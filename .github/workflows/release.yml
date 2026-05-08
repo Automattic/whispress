@@ -1,4 +1,4 @@
-# WhisPress releases are currently made manually with Tools/manual-release.sh.
+# WP Workspace releases are currently made manually with Tools/manual-release.sh.
 # This workflow is parked until the GitHub Actions release path is ready,
 # including Developer ID signing, notarization, and final release-channel policy.
 #
@@ -62,14 +62,14 @@ jobs:
           make clean
           make \
             ARCH=universal \
-            APP_NAME=WhisPress \
-            BUNDLE_ID=com.automattic.whispress \
+            APP_NAME="WP Workspace" \
+            BUNDLE_ID=com.automattic.wpworkspace \
             CODESIGN_IDENTITY=-
 
       - name: Verify built app
         run: |
-          codesign --verify --deep --strict "build/WhisPress.app"
-          SECRET_LENGTH=$(plutil -extract WPCOMOAuthClientSecret raw -o - "build/WhisPress.app/Contents/Info.plist" | wc -c | tr -d ' ')
+          codesign --verify --deep --strict "build/WP Workspace.app"
+          SECRET_LENGTH=$(plutil -extract WPCOMOAuthClientSecret raw -o - "build/WP Workspace.app/Contents/Info.plist" | wc -c | tr -d ' ')
           if [ "$SECRET_LENGTH" -eq 0 ]; then
             echo "Built app is missing WPCOMOAuthClientSecret." >&2
             exit 1
@@ -78,21 +78,21 @@ jobs:
       - name: Package app
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "build/WhisPress.app" \
-            "WhisPress-${{ steps.version.outputs.version }}.zip"
+            "build/WP Workspace.app" \
+            "WPWorkspace-${{ steps.version.outputs.version }}.zip"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: WhisPress ${{ steps.version.outputs.version }}
+          name: WP Workspace ${{ steps.version.outputs.version }}
           body: |
             ## Download
 
-            **WhisPress-${{ steps.version.outputs.version }}.zip** contains a universal macOS build for Apple Silicon and Intel Macs.
+            **WPWorkspace-${{ steps.version.outputs.version }}.zip** contains a universal macOS build for Apple Silicon and Intel Macs.
 
             This preview build is ad-hoc signed and is not notarized yet.
           files: |
-            WhisPress-${{ steps.version.outputs.version }}.zip
+            WPWorkspace-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
           make_latest: true

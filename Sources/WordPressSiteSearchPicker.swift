@@ -15,7 +15,7 @@ struct WordPressSiteSearchPicker: View {
             searchField
 
             if visibleSites.isEmpty {
-                Text("No matching workspaces")
+                Text("No matching sites")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
@@ -51,7 +51,7 @@ struct WordPressSiteSearchPicker: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("Search workspaces", text: $searchText)
+            TextField("Search sites", text: $searchText)
                 .textFieldStyle(.plain)
 
             if !searchText.isEmpty {

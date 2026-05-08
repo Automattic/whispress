@@ -2,6 +2,7 @@ import Combine
 import CoreGraphics
 import SwiftUI
 import UserNotifications
+import UniformTypeIdentifiers
 
 private final class ActionMenuItem: NSMenuItem {
     private let handler: () -> Void
@@ -152,7 +153,7 @@ private final class ImageDropOverlayView: NSView {
 
     private let imageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Drop images to upload")
-    private let subtitleLabel = NSTextField(labelWithString: "WhisPress will ask before uploading")
+    private let subtitleLabel = NSTextField(labelWithString: "WP Workspace will ask before uploading")
     private var isDropTargeted = false {
         didSet {
             guard oldValue != isDropTargeted else { return }
@@ -341,6 +342,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .showWordPressAgentUtilityOverlay,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowImageUploadPicker),
+            name: .showImageUploadPicker,
+            object: nil
+        )
 
         if !appState.hasCompletedSetup {
             showSetupWindow()
@@ -395,6 +402,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleShowWordPressAgentUtilityOverlay() {
         showWordPressAgentUtilityOverlay()
+    }
+
+    @objc private func handleShowImageUploadPicker() {
+        selectImagesForUpload()
     }
 
     @objc private func handleStatusItemClick(_ sender: Any?) {
@@ -616,20 +627,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItemIcon() {
-        let iconName: String
+        let image: NSImage?
         if appState.isRecording {
-            iconName = "record.circle"
+            image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "WP Workspace")
         } else if appState.isTranscribing {
-            iconName = "ellipsis.circle"
+            image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "WP Workspace")
         } else {
-            iconName = "waveform"
+            image = Self.menuBarWordPressLogoImage()
         }
 
-        let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "WhisPress")
         image?.isTemplate = true
         let toolTip = appState.isWordPressAgentEnabled
             ? "Open WordPress Agent. Drop images to upload."
-            : "WhisPress. Drop images to upload."
+            : "WP Workspace. Drop images to upload."
 
         if let statusItemView {
             statusItemView.statusImage = image
@@ -640,6 +650,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
         button.image = image
         button.toolTip = toolTip
+    }
+
+    private static func menuBarWordPressLogoImage() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "MenuBarWordPressLogo", withExtension: "svg"),
+              let image = NSImage(contentsOf: url) else {
+            return NSImage(systemSymbolName: "w.circle", accessibilityDescription: "WP Workspace")
+        }
+
+        image.size = NSSize(width: 18, height: 18)
+        return image
     }
 
     private func showStatusMenu() {
@@ -660,7 +680,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        addDisabledItem("WhisPress v\(appVersion)", to: menu)
+        addDisabledItem("WP Workspace v\(appVersion)", to: menu)
         menu.addItem(.separator())
 
         if !appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil {
@@ -694,6 +714,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         screenshotItem.isEnabled = !appState.isRecording && !appState.isTranscribing
         menu.addItem(screenshotItem)
+
+        let uploadImagesItem = actionItem("Upload Images...", imageName: "photo.on.rectangle.angled") { [weak self] in
+            self?.selectImagesForUpload()
+        }
+        uploadImagesItem.isEnabled = appState.isWordPressComSignedIn
+            && !appState.isRecording
+            && !appState.isTranscribing
+        menu.addItem(uploadImagesItem)
 
         if let appConfigItem = currentAppConfigMenuItem() {
             menu.addItem(.separator())
@@ -748,7 +776,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(submenuItem(title: "Hold Shortcut", submenu: shortcutMenu(for: .hold)))
         menu.addItem(submenuItem(title: "Toggle Shortcut", submenu: shortcutMenu(for: .toggle)))
-        menu.addItem(submenuItem(title: "Agent Overlay Shortcut", submenu: shortcutMenu(for: .agentUtilityOverlay)))
+        menu.addItem(submenuItem(title: "Quick Ask Shortcut", submenu: shortcutMenu(for: .agentUtilityOverlay)))
         menu.addItem(submenuItem(title: "Microphone", submenu: microphoneMenu()))
 
         menu.addItem(.separator())
@@ -763,7 +791,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(actionItem(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") { [weak self] in
             self?.appState.toggleDebugOverlay()
         })
-        menu.addItem(actionItem("Quit WhisPress", keyEquivalent: "q") {
+        menu.addItem(actionItem("Quit WP Workspace", keyEquivalent: "q") {
             NSApplication.shared.terminate(nil)
         })
 
@@ -800,26 +828,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         addDisabledItem(configSummary(site: effectiveSite, isOverride: override != nil), to: submenu)
         submenu.addItem(.separator())
 
-        let useDefaultItem = actionItem("Use Default Workspace") { [weak self] in
+        let useDefaultItem = actionItem("Use Default Site") { [weak self] in
             self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
         }
         useDefaultItem.state = override == nil ? .on : .off
         submenu.addItem(useDefaultItem)
 
-        let pinItem = actionItem("Pin Default Workspace to This App") { [weak self] in
+        let pinItem = actionItem("Pin Default Site to This App") { [weak self] in
             self?.appState.assignSelectedWordPressComSiteToLatestExternalApp()
         }
         pinItem.isEnabled = appState.selectedWordPressComSiteID != nil
         submenu.addItem(pinItem)
 
         if override != nil {
-            submenu.addItem(actionItem("Remove App-Specific Workspace") { [weak self] in
+            submenu.addItem(actionItem("Remove App-Specific Site") { [weak self] in
                 self?.appState.removeWordPressComAppSiteOverride(bundleIdentifier: bundleIdentifier)
             })
         }
 
         submenu.addItem(.separator())
-        submenu.addItem(actionItem("Manage Workspaces in Settings...") {
+        submenu.addItem(actionItem("Manage Sites in Settings...") {
             NotificationCenter.default.post(name: .showSettings, object: nil)
         })
 
@@ -932,7 +960,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configSummary(site: WPCOMSite?, isOverride: Bool) -> String {
-        let siteName = site?.displayName ?? "No workspace selected"
+        let siteName = site?.displayName ?? "No site selected"
         return isOverride ? "Pinned: \(siteName)" : "Default: \(siteName)"
     }
 
@@ -972,7 +1000,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "WhisPress"
+        window.title = "WP Workspace"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
@@ -1211,7 +1239,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let imageURLs = ImageImportProcessor.supportedImageFileURLs(from: fileURLs)
         guard !imageURLs.isEmpty else {
-            appState.errorMessage = "WhisPress can open image files for WordPress.com upload."
+            appState.errorMessage = "WP Workspace can open image files for WordPress.com upload."
             return
         }
 
@@ -1238,6 +1266,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func selectImagesForUpload() {
+        closeImageDropOverlay()
+
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+
+        guard panel.runModal() == .OK else { return }
+        handleOpenedImageURLs(panel.urls)
+    }
+
     private func ensureScreenCapturePermissionForScreenshot() -> Bool {
         guard !CGPreflightScreenCaptureAccess() else {
             return true
@@ -1253,7 +1294,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showScreenCapturePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "WhisPress needs Screen Recording permission to capture a selected screenshot area. Enable WhisPress in System Settings, then try Capture Screenshot again."
+        alert.informativeText = "WP Workspace needs Screen Recording permission to capture a selected screenshot area. Enable WP Workspace in System Settings, then try Capture Screenshot again."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -1302,10 +1343,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeScreenshotCaptureURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisPressScreenshots", isDirectory: true)
+            .appendingPathComponent("WPWorkspaceScreenshots", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        return directory.appendingPathComponent("whispress-screenshot-\(UUID().uuidString).png")
+        return directory.appendingPathComponent("wpworkspace-screenshot-\(UUID().uuidString).png")
     }
 
     private func isNonEmptyFile(at url: URL) -> Bool {
@@ -1411,7 +1452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "WhisPress"
+        window.title = "WP Workspace"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true

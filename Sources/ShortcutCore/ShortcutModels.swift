@@ -61,7 +61,7 @@ enum ShortcutRole {
         switch self {
         case .hold: return "Hold to Talk"
         case .toggle: return "Tap to Toggle"
-        case .agentUtilityOverlay: return "Agent Overlay"
+        case .agentUtilityOverlay: return "Quick Ask"
         }
     }
 }

@@ -5,4 +5,5 @@ extension Notification.Name {
     static let showSettings = Notification.Name("showSettings")
     static let showWordPressAgent = Notification.Name("showWordPressAgent")
     static let showWordPressAgentUtilityOverlay = Notification.Name("showWordPressAgentUtilityOverlay")
+    static let showImageUploadPicker = Notification.Name("showImageUploadPicker")
 }

@@ -1,14 +1,16 @@
-APP_NAME ?= WhisPress Dev
-BUNDLE_ID ?= com.automattic.whispress.dev
+# APP_NAME controls the .app bundle folder; PRODUCT_NAME controls the executable and plist identity.
+APP_NAME ?= WP Workspace Dev
+PRODUCT_NAME ?= WP Workspace
+BUNDLE_ID ?= com.automattic.wpworkspace.dev
 WPCOM_OAUTH_CLIENT_SECRET_FILE ?=
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
-CODESIGN_IDENTITY ?= WhisPress Dev
+CODESIGN_IDENTITY ?= -
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
 empty :=
 space := $(empty) $(empty)
-APP_EXECUTABLE = $(MACOS_DIR)/$(APP_NAME)
+APP_EXECUTABLE = $(MACOS_DIR)/$(PRODUCT_NAME)
 APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
@@ -17,6 +19,8 @@ ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 WPCOM_LOGO = Resources/WPCOM-Blueberry-Pill-Logo.svg
+MENU_BAR_LOGO = Resources/MenuBarWordPressLogo.svg
+FONT_RESOURCES = $(shell find Resources/Fonts -type f 2>/dev/null | LC_ALL=C sort)
 
 .PHONY: all clean run icon dmg codesign-dmg notarize
 
@@ -26,47 +30,50 @@ all: $(APP_EXECUTABLE_TARGET)
 		secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
 	fi; \
 	plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"; \
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WhisPress.entitlements "$(APP_BUNDLE)" >/dev/null; \
+	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)" >/dev/null; \
 	if [ -n "$$secret" ]; then \
 		echo "Configured WordPress.com OAuth client secret in $(APP_BUNDLE)"; \
 	fi
 
-$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE) $(WPCOM_LOGO)
+$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE) $(WPCOM_LOGO) $(MENU_BAR_LOGO) $(FONT_RESOURCES)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
 ifeq ($(ARCH),universal)
 	swiftc \
 		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)-arm64" \
+		-o "$(MACOS_DIR)/$(PRODUCT_NAME)-arm64" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target arm64-apple-macosx13.0 \
 		$(SOURCES)
 	swiftc \
 		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)-x86_64" \
+		-o "$(MACOS_DIR)/$(PRODUCT_NAME)-x86_64" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target x86_64-apple-macosx13.0 \
 		$(SOURCES)
-	lipo -create -output "$(MACOS_DIR)/$(APP_NAME)" \
-		"$(MACOS_DIR)/$(APP_NAME)-arm64" \
-		"$(MACOS_DIR)/$(APP_NAME)-x86_64"
-	@rm "$(MACOS_DIR)/$(APP_NAME)-arm64" "$(MACOS_DIR)/$(APP_NAME)-x86_64"
+	lipo -create -output "$(MACOS_DIR)/$(PRODUCT_NAME)" \
+		"$(MACOS_DIR)/$(PRODUCT_NAME)-arm64" \
+		"$(MACOS_DIR)/$(PRODUCT_NAME)-x86_64"
+	@rm "$(MACOS_DIR)/$(PRODUCT_NAME)-arm64" "$(MACOS_DIR)/$(PRODUCT_NAME)-x86_64"
 else
 	swiftc \
 		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)" \
+		-o "$(MACOS_DIR)/$(PRODUCT_NAME)" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target $(ARCH)-apple-macosx13.0 \
 		$(SOURCES)
 endif
 	@cp Info.plist "$(CONTENTS)/"
-	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
-	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
-	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleName -string "$(PRODUCT_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleDisplayName -string "$(PRODUCT_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleExecutable -string "$(PRODUCT_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp $(ICON_SOURCE) "$(RESOURCES)/"
 	@cp $(WPCOM_LOGO) "$(RESOURCES)/"
-	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WhisPress.entitlements "$(APP_BUNDLE)"
+	@cp $(MENU_BAR_LOGO) "$(RESOURCES)/"
+	@rm -rf "$(RESOURCES)/Fonts"
+	@cp -R Resources/Fonts "$(RESOURCES)/Fonts"
+	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)
