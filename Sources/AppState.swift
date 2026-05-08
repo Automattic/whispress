@@ -155,6 +155,7 @@ struct WordPressAgentConversation: Identifiable, Equatable {
     var siteName: String?
     var sessionID: String?
     var messages: [WordPressAgentMessage]
+    var pendingUploadedMedia: [WPCOMUploadedMedia]
     var isSending: Bool
     var errorMessage: String?
     var lastUpdated: Date
@@ -173,6 +174,7 @@ struct WordPressAgentConversation: Identifiable, Equatable {
         remoteChatID == nil
             && sessionID == nil
             && messages.isEmpty
+            && pendingUploadedMedia.isEmpty
             && !isSending
             && errorMessage == nil
     }
@@ -184,6 +186,7 @@ struct WordPressAgentConversation: Identifiable, Equatable {
         siteName: String?,
         sessionID: String?,
         messages: [WordPressAgentMessage],
+        pendingUploadedMedia: [WPCOMUploadedMedia] = [],
         isSending: Bool,
         errorMessage: String?,
         lastUpdated: Date
@@ -194,6 +197,7 @@ struct WordPressAgentConversation: Identifiable, Equatable {
         self.siteName = siteName
         self.sessionID = sessionID
         self.messages = messages
+        self.pendingUploadedMedia = pendingUploadedMedia
         self.isSending = isSending
         self.errorMessage = errorMessage
         self.lastUpdated = lastUpdated
@@ -206,6 +210,11 @@ struct WordPressAgentConversation: Identifiable, Equatable {
     static func remoteID(agentID: String, chatID: Int) -> String {
         "wpcom:\(agentID):\(chatID)"
     }
+}
+
+struct ImageImportUploadResult: Equatable {
+    let conversationID: String?
+    let attachmentPageURLs: [URL]
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
@@ -1276,6 +1285,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     siteName: conversation.siteName,
                     sessionID: conversation.sessionID,
                     messages: conversation.messages,
+                    pendingUploadedMedia: conversation.pendingUploadedMedia,
                     isSending: false,
                     errorMessage: nil,
                     lastUpdated: conversation.lastUpdated
@@ -1453,6 +1463,66 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentPreview = nil
     }
 
+    func importImagesIntoWordPressAgentChat(
+        fileURLs: [URL],
+        siteID: Int,
+        options: ImageImportProcessingOptions,
+        opensChat: Bool,
+        progress: @escaping (String) async -> Void
+    ) async throws -> ImageImportUploadResult {
+        let imageFileURLs = ImageImportProcessor.supportedImageFileURLs(from: fileURLs)
+        guard !imageFileURLs.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Choose at least one image file to upload.")
+        }
+
+        await MainActor.run {
+            self.selectedWordPressComSiteID = siteID
+        }
+
+        await progress("Preparing images...")
+        let preparedImages = try await ImageImportProcessor.prepare(fileURLs: imageFileURLs, options: options)
+        let processedCount = preparedImages.filter(\.wasProcessed).count
+        if processedCount > 0 {
+            await progress("Prepared \(processedCount) processed \(processedCount == 1 ? "copy" : "copies")...")
+        }
+
+        await progress("Uploading to WordPress.com...")
+        let uploadedMedia = try await wpcomClient.uploadMedia(
+            siteID: siteID,
+            fileURLs: preparedImages.map(\.uploadURL),
+            uploadTitles: options.anonymizesFilenames
+                ? preparedImages.map { $0.uploadURL.deletingPathExtension().lastPathComponent }
+                : []
+        )
+
+        let attachmentPageURLs = await MainActor.run {
+            self.attachmentPageURLs(for: uploadedMedia, siteID: siteID)
+        }
+
+        let conversationID: String?
+        if opensChat {
+            await progress("Opening WordPress Agent...")
+            conversationID = await MainActor.run(body: {
+                self.seedWordPressAgentImageImportConversation(
+                    siteID: siteID,
+                    preparedImages: preparedImages,
+                    uploadedMedia: uploadedMedia,
+                    attachmentPageURLs: attachmentPageURLs
+                )
+            })
+            if conversationID == nil {
+                throw WPCOMClientError.missingSelectedSite
+            }
+        } else {
+            conversationID = nil
+        }
+
+        return ImageImportUploadResult(
+            conversationID: conversationID,
+            attachmentPageURLs: attachmentPageURLs
+        )
+    }
+
     @discardableResult
     func submitWordPressAgentComposerMessage(
         _ message: String,
@@ -1509,6 +1579,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             setWordPressAgentError("Choose a WordPress.com workspace before continuing this chat.", for: selectedConversation.id)
             return
         }
+        let pendingUploadedMedia = selectedConversation.pendingUploadedMedia
         let messageToSend = trimmedMessage.isEmpty ? Self.defaultPrompt(forAttachmentCount: attachments.count) : trimmedMessage
         let messageAttachments = attachments.map { WordPressAgentAttachment(fileURL: $0) }
 
@@ -1521,6 +1592,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     key: key,
                     context: context,
                     attachments: attachments,
+                    preuploadedMedia: pendingUploadedMedia,
                     displayAttachments: messageAttachments
                 )
                 await MainActor.run {
@@ -1552,6 +1624,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         key: WordPressAgentConversationKey,
         context: AppContext,
         attachments: [URL] = [],
+        preuploadedMedia: [WPCOMUploadedMedia] = [],
         displayAttachments: [WordPressAgentAttachment] = []
     ) async throws -> WordPressAgentTurnResult {
         let appendResult = await MainActor.run {
@@ -1574,6 +1647,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 sessionID: appendResult.sessionID,
                 context: context,
                 attachments: attachments,
+                preuploadedMedia: preuploadedMedia,
                 conversationIDForPreview: appendResult.conversationID
             )
             await MainActor.run {
@@ -1603,10 +1677,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         sessionID: String?,
         context: AppContext,
         attachments: [URL] = [],
+        preuploadedMedia: [WPCOMUploadedMedia] = [],
         conversationIDForPreview: String?
     ) async throws -> WPCOMAgentResponse {
         let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-        let uploadedMedia = try await wpcomClient.uploadMedia(siteID: siteID, fileURLs: attachments)
+        let freshlyUploadedMedia = try await wpcomClient.uploadMedia(siteID: siteID, fileURLs: attachments)
+        let agentMessage = Self.agentMessage(
+            message,
+            includingImportedMediaReferences: preuploadedMedia
+        )
         let frontendAbilities = Self.wordpressAgentFrontendAbilities
         let clientContext = WPCOMAgentClientContextPayload(
             selectedSiteID: siteID,
@@ -1617,15 +1696,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             currentActivity: context.currentActivity,
             client: "whispress",
             clientVersion: clientVersion,
-            uploadedFiles: uploadedMedia.map(WPCOMAgentUploadedFileContext.init)
+            uploadedFiles: freshlyUploadedMedia.map(WPCOMAgentUploadedFileContext.init)
         )
-        let response = try await wpcomClient.sendAgentMessage(
+        let response = try await sendWordPressAgentMessageWithMediaRetry(
             siteID: siteID,
             agentID: agentID,
-            message: message,
+            message: agentMessage,
             clientContext: clientContext,
             sessionID: sessionID,
-            uploadedMedia: uploadedMedia,
+            uploadedMedia: freshlyUploadedMedia,
+            mediaReferences: freshlyUploadedMedia,
             frontendAbilities: frontendAbilities
         )
 
@@ -1638,6 +1718,59 @@ final class AppState: ObservableObject, @unchecked Sendable {
             frontendAbilities: frontendAbilities,
             conversationIDForPreview: conversationIDForPreview
         )
+    }
+
+    private func sendWordPressAgentMessageWithMediaRetry(
+        siteID: Int,
+        agentID: String,
+        message: String,
+        clientContext: WPCOMAgentClientContextPayload,
+        sessionID: String?,
+        uploadedMedia: [WPCOMUploadedMedia],
+        mediaReferences: [WPCOMUploadedMedia],
+        frontendAbilities: [WPCOMAgentFrontendAbility]
+    ) async throws -> WPCOMAgentResponse {
+        let retryDelays: [UInt64] = [
+            1_500_000_000,
+            4_000_000_000
+        ]
+
+        for attempt in 0...retryDelays.count {
+            do {
+                return try await wpcomClient.sendAgentMessage(
+                    siteID: siteID,
+                    agentID: agentID,
+                    message: message,
+                    clientContext: clientContext,
+                    sessionID: sessionID,
+                    uploadedMedia: uploadedMedia,
+                    frontendAbilities: frontendAbilities
+                )
+            } catch {
+                guard attempt < retryDelays.count,
+                      shouldRetryWordPressAgentMediaRequest(error, mediaReferences: mediaReferences) else {
+                    throw error
+                }
+
+                try await Task.sleep(nanoseconds: retryDelays[attempt])
+            }
+        }
+
+        throw WPCOMClientError.invalidResponse("WordPress Agent request did not complete.")
+    }
+
+    private func shouldRetryWordPressAgentMediaRequest(
+        _ error: Error,
+        mediaReferences: [WPCOMUploadedMedia]
+    ) -> Bool {
+        guard !mediaReferences.isEmpty else { return false }
+
+        if case WPCOMClientError.requestFailed(let code, let details) = error {
+            return code == -32000
+                && details.localizedCaseInsensitiveContains("processing the request")
+        }
+
+        return false
     }
 
     private struct WordPressAgentFrontendToolExecution {
@@ -1870,6 +2003,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 WordPressAgentMessage(role: .agent, text: response.text, state: response.state)
             )
         }
+        wordpressAgentConversations[index].pendingUploadedMedia = []
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = false
         wordpressAgentConversations[index].errorMessage = nil
@@ -1903,6 +2037,68 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         wordpressAgentConversations[index].lastUpdated = Date()
         selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+    }
+
+    @MainActor
+    private func seedWordPressAgentImageImportConversation(
+        siteID: Int,
+        preparedImages: [PreparedImageImport],
+        uploadedMedia: [WPCOMUploadedMedia],
+        attachmentPageURLs: [URL]
+    ) -> String? {
+        guard siteID > 0, !preparedImages.isEmpty, !uploadedMedia.isEmpty else { return nil }
+
+        let key = WordPressAgentConversationKey(siteID: siteID, agentID: "dolly")
+        removeEmptyWordPressAgentDrafts()
+        let conversationID = createWordPressAgentConversation(for: key)
+        guard let index = wordpressAgentConversations.firstIndex(where: { $0.id == conversationID }) else {
+            return nil
+        }
+
+        wordpressAgentConversations[index].messages.append(
+            WordPressAgentMessage(
+                role: .user,
+                text: Self.imageImportSeedMessage(uploadedMedia: uploadedMedia, attachmentPageURLs: attachmentPageURLs),
+                attachments: preparedImages.map { WordPressAgentAttachment(fileURL: $0.uploadURL) }
+            )
+        )
+        wordpressAgentConversations[index].pendingUploadedMedia = uploadedMedia
+        wordpressAgentConversations[index].lastUpdated = Date()
+        wordpressAgentConversations[index].isSending = false
+        wordpressAgentConversations[index].errorMessage = nil
+        selectedWordPressComSiteID = siteID
+        selectedWordPressAgentConversationID = conversationID
+        recordWordPressAgentSiteUse(siteID)
+        return conversationID
+    }
+
+    @MainActor
+    private func attachmentPageURLs(for uploadedMedia: [WPCOMUploadedMedia], siteID: Int) -> [URL] {
+        let site = wordpressComSites.first(where: { $0.id == siteID })
+        return uploadedMedia.compactMap { media in
+            media.link
+                ?? attachmentPageURL(for: media, site: site)
+                ?? media.url
+        }
+    }
+
+    private func attachmentPageURL(for media: WPCOMUploadedMedia, site: WPCOMSite?) -> URL? {
+        guard let siteURLString = site?.url,
+              let siteURL = URL(string: siteURLString),
+              let slug = media.attachmentSlug else {
+            return nil
+        }
+
+        var components = URLComponents(url: siteURL, resolvingAgainstBaseURL: false)
+        var path = components?.path ?? ""
+        if !path.hasSuffix("/") {
+            path += "/"
+        }
+        path += "\(slug)/"
+        components?.path = path
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url
     }
 
     private func ensureWordPressAgentConversation(
@@ -1986,6 +2182,53 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private static func defaultPrompt(forAttachmentCount attachmentCount: Int) -> String {
         attachmentCount == 1 ? "Please look at the attached image." : "Please look at the attached images."
+    }
+
+    private static func agentMessage(
+        _ message: String,
+        includingImportedMediaReferences importedMedia: [WPCOMUploadedMedia]
+    ) -> String {
+        guard !importedMedia.isEmpty else { return message }
+
+        let count = importedMedia.count
+        let noun = count == 1 ? "image" : "images"
+        let mediaLines = importedMedia.prefix(20).map { media in
+            let title = media.displayName ?? media.url?.lastPathComponent ?? "Uploaded image"
+            guard !media.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "- \(title)"
+            }
+            return "- \(title): \(media.urlString)"
+        }
+        let omittedCount = importedMedia.count - mediaLines.count
+        let omittedLine = omittedCount > 0 ? "\n- \(omittedCount) more uploaded \(omittedCount == 1 ? "image" : "images")" : ""
+
+        return """
+        Context: The user previously uploaded \(count) \(noun) to the WordPress.com media library in this chat. These are media-library URLs, not a request to inspect or analyze image contents unless the user explicitly asks.
+
+        \(mediaLines.joined(separator: "\n"))\(omittedLine)
+
+        User message:
+        \(message)
+        """
+    }
+
+    private static func imageImportSeedMessage(uploadedMedia: [WPCOMUploadedMedia], attachmentPageURLs: [URL]) -> String {
+        let count = uploadedMedia.count
+        let noun = count == 1 ? "image" : "images"
+        let mediaLines = zip(uploadedMedia, attachmentPageURLs).prefix(12).map { media, pageURL in
+            let title = media.displayName ?? media.url?.lastPathComponent ?? "Uploaded image"
+            return "- [\(title)](\(pageURL.absoluteString))"
+        }
+
+        var message = "Uploaded \(count) \(noun) to the WordPress.com media library."
+        if !mediaLines.isEmpty {
+            message += "\n\n" + mediaLines.joined(separator: "\n")
+        }
+        if uploadedMedia.count > mediaLines.count {
+            message += "\n- \(uploadedMedia.count - mediaLines.count) more"
+        }
+        message += "\n\nReady for your next instruction."
+        return message
     }
 
     func startAccessibilityPolling() {

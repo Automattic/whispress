@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import SwiftUI
 import UserNotifications
 
@@ -48,22 +49,273 @@ private final class AgentUtilityOverlayPanel: NSPanel {
     }
 }
 
+private final class StatusItemDropView: NSView {
+    static let preferredSize = NSSize(width: NSStatusBar.system.thickness, height: NSStatusBar.system.thickness)
+
+    var onPrimaryClick: (() -> Void)?
+    var onSecondaryClick: (() -> Void)?
+    var onOpenFileURLs: (([URL]) -> Void)?
+    var onImageDragEntered: (() -> Void)?
+    var onImageDragEnded: (() -> Void)?
+
+    var statusImage: NSImage? {
+        didSet {
+            imageView.image = statusImage
+        }
+    }
+
+    private let imageView = NSImageView()
+    private var isDropTargeted = false {
+        didSet {
+            guard oldValue != isDropTargeted else { return }
+            needsDisplay = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes(ImageDropPasteboardReader.readableTypes)
+
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.contentTintColor = .labelColor
+        imageView.isEditable = false
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            imageView.widthAnchor.constraint(equalToConstant: 18),
+            imageView.heightAnchor.constraint(equalToConstant: 18)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        guard isDropTargeted else { return }
+        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22).setFill()
+        bounds.insetBy(dx: 2, dy: 2).roundedRect(radius: 5).fill()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            onSecondaryClick?()
+        } else {
+            onPrimaryClick?()
+        }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        onSecondaryClick?()
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard).isEmpty else {
+            return []
+        }
+        isDropTargeted = true
+        onImageDragEntered?()
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard).isEmpty ? [] : .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isDropTargeted = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isDropTargeted = false
+        onImageDragEnded?()
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
+        isDropTargeted = false
+        onOpenFileURLs?(urls)
+        return true
+    }
+}
+
+private final class ImageDropOverlayView: NSView {
+    var onOpenFileURLs: (([URL]) -> Void)?
+    var onTargetedChange: ((Bool) -> Void)?
+    var onDragEnded: (() -> Void)?
+
+    private let imageView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "Drop images to upload")
+    private let subtitleLabel = NSTextField(labelWithString: "WhisPress will ask before uploading")
+    private var isDropTargeted = false {
+        didSet {
+            guard oldValue != isDropTargeted else { return }
+            onTargetedChange?(isDropTargeted)
+            needsDisplay = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes(ImageDropPasteboardReader.readableTypes)
+
+        imageView.image = NSImage(systemSymbolName: "arrow.down.to.line.compact", accessibilityDescription: nil)
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 24, weight: .semibold)
+        imageView.contentTintColor = .secondaryLabelColor
+        imageView.imageScaling = .scaleProportionallyDown
+        addSubview(imageView)
+
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
+        addSubview(titleLabel)
+
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.alignment = .center
+        addSubview(subtitleLabel)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let background = isDropTargeted
+            ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22)
+            : NSColor.windowBackgroundColor.withAlphaComponent(0.94)
+        background.setFill()
+        bounds.roundedRect(radius: 16).fill()
+
+        let strokeColor = isDropTargeted
+            ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.65)
+            : NSColor.separatorColor.withAlphaComponent(0.7)
+        strokeColor.setStroke()
+        let path = bounds.insetBy(dx: 0.5, dy: 0.5).roundedRect(radius: 16)
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    override func layout() {
+        super.layout()
+
+        imageView.frame = NSRect(x: (bounds.width - 30) / 2, y: bounds.height - 42, width: 30, height: 30)
+        titleLabel.frame = NSRect(x: 16, y: 34, width: bounds.width - 32, height: 20)
+        subtitleLabel.frame = NSRect(x: 16, y: 16, width: bounds.width - 32, height: 16)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard).isEmpty else {
+            return []
+        }
+        isDropTargeted = true
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard).isEmpty ? [] : .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isDropTargeted = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isDropTargeted = false
+        onDragEnded?()
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = ImageDropPasteboardReader.supportedImageFileURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
+        isDropTargeted = false
+        onOpenFileURLs?(urls)
+        return true
+    }
+}
+
+private enum ImageDropPasteboardReader {
+    static let readableTypes: [NSPasteboard.PasteboardType] = [
+        .fileURL,
+        .URL,
+        NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    ]
+
+    static func supportedImageFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) ?? []
+        let urls = objects.compactMap { object -> URL? in
+            if let url = object as? URL {
+                return url
+            }
+            if let url = object as? NSURL {
+                return url as URL
+            }
+            return nil
+        }
+
+        let legacyFileURLs = (pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] ?? [])
+            .map(URL.init(fileURLWithPath:))
+
+        let fileURLStringURLs = pasteboard.string(forType: .fileURL)
+            .flatMap(URL.init(string:))
+            .map { [$0] } ?? []
+
+        let urlStringURLs = pasteboard.string(forType: .URL)
+            .flatMap(URL.init(string:))
+            .map { [$0] } ?? []
+
+        var seenPaths = Set<String>()
+        let allURLs = urls + legacyFileURLs + fileURLStringURLs + urlStringURLs
+        let uniqueURLs = allURLs.filter { url in
+            guard url.isFileURL else { return false }
+            return seenPaths.insert(url.standardizedFileURL.path).inserted
+        }
+
+        return ImageImportProcessor.supportedImageFileURLs(from: uniqueURLs)
+    }
+}
+
+private extension NSRect {
+    func roundedRect(radius: CGFloat) -> NSBezierPath {
+        NSBezierPath(roundedRect: self, xRadius: radius, yRadius: radius)
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var agentWindow: NSWindow?
     private var agentUtilityOverlayWindow: NSWindow?
+    private var imageImportWindow: NSWindow?
+    private var imageDropOverlayWindow: NSWindow?
+    private var imageDropOverlayCloseWorkItem: DispatchWorkItem?
+    private var isImageDropOverlayTargeted = false
     private var statusItem: NSStatusItem?
+    private var statusItemView: StatusItemDropView?
     private var statusIconCancellable: AnyCancellable?
     private var agentPreviewCancellable: AnyCancellable?
     private var menuBarIconVisibilityObserver: NSObjectProtocol?
+    private var localMenuBarDragMonitor: Any?
+    private var globalMenuBarDragMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         configureStatusItem()
         installStatusItemObservers()
         installAgentPreviewObserver()
+        installMenuBarDragMonitors()
 
         NotificationCenter.default.addObserver(
             self,
@@ -106,6 +358,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let menuBarIconVisibilityObserver {
             NotificationCenter.default.removeObserver(menuBarIconVisibilityObserver)
         }
+        removeMenuBarDragMonitors()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -114,6 +367,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showSettingsWindow()
         }
         return true
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleOpenedImageURLs(urls)
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        handleOpenedImageURLs(filenames.map(URL.init(fileURLWithPath:)))
+        sender.reply(toOpenOrPrint: .success)
     }
 
     @objc func handleShowSetup() {
@@ -146,19 +408,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         guard shouldShowMenuBarIcon else {
+            closeImageDropOverlay()
             if let statusItem {
                 NSStatusBar.system.removeStatusItem(statusItem)
                 self.statusItem = nil
+                self.statusItemView = nil
             }
             return
         }
 
         if statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            item.button?.target = self
-            item.button?.action = #selector(handleStatusItemClick(_:))
-            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            item.length = StatusItemDropView.preferredSize.width
+
+            let statusView = StatusItemDropView(frame: NSRect(origin: .zero, size: StatusItemDropView.preferredSize))
+            statusView.onPrimaryClick = { [weak self] in
+                self?.handleStatusItemClick(nil)
+            }
+            statusView.onSecondaryClick = { [weak self] in
+                self?.showStatusMenu()
+            }
+            statusView.onOpenFileURLs = { [weak self] urls in
+                self?.closeImageDropOverlay()
+                self?.handleOpenedImageURLs(urls)
+            }
+            statusView.onImageDragEntered = { [weak self] in
+                self?.showImageDropOverlay()
+            }
+            statusView.onImageDragEnded = { [weak self] in
+                self?.scheduleImageDropOverlayClose(after: 0.2, force: true)
+            }
+            item.setValue(statusView, forKey: "view")
+
             statusItem = item
+            statusItemView = statusView
         }
 
         updateStatusItemIcon()
@@ -183,6 +466,148 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func installMenuBarDragMonitors() {
+        guard localMenuBarDragMonitor == nil, globalMenuBarDragMonitor == nil else { return }
+
+        let eventMask: NSEvent.EventTypeMask = [.leftMouseDragged, .leftMouseUp]
+        localMenuBarDragMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
+            self?.handleMenuBarDragMonitorEvent(event)
+            return event
+        }
+        globalMenuBarDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
+            self?.handleMenuBarDragMonitorEvent(event)
+        }
+    }
+
+    private func removeMenuBarDragMonitors() {
+        if let localMenuBarDragMonitor {
+            NSEvent.removeMonitor(localMenuBarDragMonitor)
+            self.localMenuBarDragMonitor = nil
+        }
+        if let globalMenuBarDragMonitor {
+            NSEvent.removeMonitor(globalMenuBarDragMonitor)
+            self.globalMenuBarDragMonitor = nil
+        }
+    }
+
+    private func handleMenuBarDragMonitorEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDragged:
+            guard isMouseNearStatusItemForDrop(),
+                  !ImageDropPasteboardReader.supportedImageFileURLs(from: NSPasteboard(name: .drag)).isEmpty else {
+                scheduleImageDropOverlayClose(after: 0.45)
+                return
+            }
+            showImageDropOverlay()
+        case .leftMouseUp:
+            scheduleImageDropOverlayClose(after: 0.2, force: true)
+        default:
+            break
+        }
+    }
+
+    private func isMouseNearStatusItemForDrop() -> Bool {
+        guard let statusItemView,
+              let window = statusItemView.window else {
+            return false
+        }
+
+        let viewRect = statusItemView.convert(statusItemView.bounds, to: nil)
+        let screenRect = window.convertToScreen(viewRect)
+        let sensorRect = screenRect.insetBy(dx: -130, dy: -86)
+        return sensorRect.contains(NSEvent.mouseLocation)
+    }
+
+    private func showImageDropOverlay() {
+        guard statusItemView?.window != nil else { return }
+
+        imageDropOverlayCloseWorkItem?.cancel()
+        imageDropOverlayCloseWorkItem = nil
+
+        if let imageDropOverlayWindow {
+            positionImageDropOverlay(imageDropOverlayWindow)
+            imageDropOverlayWindow.orderFrontRegardless()
+            return
+        }
+
+        let overlaySize = NSSize(width: 260, height: 92)
+        let overlayView = ImageDropOverlayView(frame: NSRect(origin: .zero, size: overlaySize))
+        overlayView.onOpenFileURLs = { [weak self] urls in
+            self?.closeImageDropOverlay()
+            self?.handleOpenedImageURLs(urls)
+        }
+        overlayView.onTargetedChange = { [weak self] isTargeted in
+            self?.isImageDropOverlayTargeted = isTargeted
+            if isTargeted {
+                self?.imageDropOverlayCloseWorkItem?.cancel()
+                self?.imageDropOverlayCloseWorkItem = nil
+            } else {
+                self?.scheduleImageDropOverlayClose(after: 0.45)
+            }
+        }
+        overlayView.onDragEnded = { [weak self] in
+            self?.scheduleImageDropOverlayClose(after: 0.2, force: true)
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: overlaySize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = overlayView
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        panel.isReleasedWhenClosed = false
+        imageDropOverlayWindow = panel
+        positionImageDropOverlay(panel)
+        panel.orderFrontRegardless()
+    }
+
+    private func positionImageDropOverlay(_ window: NSWindow) {
+        guard let statusItemView,
+              let statusWindow = statusItemView.window else {
+            return
+        }
+
+        let statusRect = statusWindow.convertToScreen(statusItemView.convert(statusItemView.bounds, to: nil))
+        let targetScreen = statusWindow.screen ?? NSScreen.screens.first { $0.frame.intersects(statusRect) } ?? NSScreen.main
+        let visibleFrame = targetScreen?.visibleFrame ?? statusRect
+        let size = window.frame.size
+        let originX = min(
+            max(statusRect.midX - size.width / 2, visibleFrame.minX + 8),
+            visibleFrame.maxX - size.width - 8
+        )
+        let originY = min(
+            statusRect.minY - size.height - 8,
+            visibleFrame.maxY - size.height - 8
+        )
+        window.setFrameOrigin(NSPoint(x: originX, y: originY))
+    }
+
+    private func scheduleImageDropOverlayClose(after delay: TimeInterval, force: Bool = false) {
+        imageDropOverlayCloseWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if force || (!self.isImageDropOverlayTargeted && !self.isMouseNearStatusItemForDrop()) {
+                self.closeImageDropOverlay()
+            }
+        }
+        imageDropOverlayCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func closeImageDropOverlay() {
+        imageDropOverlayCloseWorkItem?.cancel()
+        imageDropOverlayCloseWorkItem = nil
+        isImageDropOverlayTargeted = false
+        imageDropOverlayWindow?.close()
+        imageDropOverlayWindow = nil
+    }
+
     private var shouldShowMenuBarIcon: Bool {
         if UserDefaults.standard.object(forKey: "show_menu_bar_icon") == nil {
             return true
@@ -191,7 +616,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItemIcon() {
-        guard let button = statusItem?.button else { return }
         let iconName: String
         if appState.isRecording {
             iconName = "record.circle"
@@ -203,17 +627,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "WhisPress")
         image?.isTemplate = true
+        let toolTip = appState.isWordPressAgentEnabled
+            ? "Open WordPress Agent. Drop images to upload."
+            : "WhisPress. Drop images to upload."
+
+        if let statusItemView {
+            statusItemView.statusImage = image
+            statusItemView.toolTip = toolTip
+            return
+        }
+
+        guard let button = statusItem?.button else { return }
         button.image = image
-        button.toolTip = appState.isWordPressAgentEnabled
-            ? "Open WordPress Agent"
-            : "WhisPress"
+        button.toolTip = toolTip
     }
 
     private func showStatusMenu() {
         guard let statusItem else { return }
-        statusItem.menu = makeStatusMenu()
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
+        if let statusItemView {
+            let menu = makeStatusMenu()
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: statusItemView.bounds.minY), in: statusItemView)
+        } else {
+            statusItem.menu = makeStatusMenu()
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+        }
     }
 
     private func makeStatusMenu() -> NSMenu {
@@ -250,6 +688,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             && !appState.isRecording
             && !appState.isTranscribing
         menu.addItem(openOverlayItem)
+
+        let screenshotItem = actionItem("Capture Screenshot...", imageName: "camera.viewfinder") { [weak self] in
+            self?.captureScreenshotForUpload()
+        }
+        screenshotItem.isEnabled = !appState.isRecording && !appState.isTranscribing
+        menu.addItem(screenshotItem)
 
         if let appConfigItem = currentAppConfigMenuItem() {
             menu.addItem(.separator())
@@ -543,7 +987,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
-            if self?.setupWindow == nil && self?.agentWindow == nil && self?.agentUtilityOverlayWindow == nil {
+            if self?.setupWindow == nil
+                && self?.agentWindow == nil
+                && self?.agentUtilityOverlayWindow == nil
+                && self?.imageImportWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
@@ -640,7 +1087,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.appState.setWordPressAgentUtilityOverlayFocused(false)
             self?.agentUtilityOverlayWindow = nil
-            if self?.setupWindow == nil && self?.settingsWindow == nil && self?.agentWindow == nil {
+            if self?.setupWindow == nil
+                && self?.settingsWindow == nil
+                && self?.agentWindow == nil
+                && self?.imageImportWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
@@ -650,7 +1100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appState.setWordPressAgentUtilityOverlayFocused(false)
         agentUtilityOverlayWindow?.close()
         agentUtilityOverlayWindow = nil
-        if restoreActivationPolicy && setupWindow == nil && settingsWindow == nil && agentWindow == nil {
+        if restoreActivationPolicy && setupWindow == nil && settingsWindow == nil && agentWindow == nil && imageImportWindow == nil {
             NSApp.setActivationPolicy(.accessory)
         }
     }
@@ -748,6 +1198,168 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.agentWindow = nil
             if self?.setupWindow == nil
                 && self?.settingsWindow == nil
+                && self?.agentUtilityOverlayWindow == nil
+                && self?.imageImportWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
+    }
+
+    private func handleOpenedImageURLs(_ urls: [URL]) {
+        let fileURLs = urls.filter(\.isFileURL)
+        guard !fileURLs.isEmpty else { return }
+
+        let imageURLs = ImageImportProcessor.supportedImageFileURLs(from: fileURLs)
+        guard !imageURLs.isEmpty else {
+            appState.errorMessage = "WhisPress can open image files for WordPress.com upload."
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showImageImportWindow(fileURLs: imageURLs)
+        }
+    }
+
+    private func captureScreenshotForUpload() {
+        closeImageDropOverlay()
+
+        guard ensureScreenCapturePermissionForScreenshot() else { return }
+
+        let screenshotURL: URL
+        do {
+            screenshotURL = try makeScreenshotCaptureURL()
+        } catch {
+            appState.errorMessage = "Could not prepare a screenshot file: \(error.localizedDescription)"
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.runScreenshotCapture(to: screenshotURL)
+        }
+    }
+
+    private func ensureScreenCapturePermissionForScreenshot() -> Bool {
+        guard !CGPreflightScreenCaptureAccess() else {
+            return true
+        }
+
+        let granted = CGRequestScreenCaptureAccess()
+        if !granted {
+            showScreenCapturePermissionAlert()
+        }
+        return granted
+    }
+
+    private func showScreenCapturePermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording Permission Required"
+        alert.informativeText = "WhisPress needs Screen Recording permission to capture a selected screenshot area. Enable WhisPress in System Settings, then try Capture Screenshot again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Dismiss")
+        alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func runScreenshotCapture(to fileURL: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result: Result<Int32, Error>
+            do {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                process.arguments = ["-i", "-s", "-x", "-d", "-tpng", fileURL.path]
+                try process.run()
+                process.waitUntilExit()
+                result = .success(process.terminationStatus)
+            } catch {
+                result = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.handleScreenshotCaptureResult(result, fileURL: fileURL)
+            }
+        }
+    }
+
+    private func handleScreenshotCaptureResult(_ result: Result<Int32, Error>, fileURL: URL) {
+        switch result {
+        case .success:
+            guard isNonEmptyFile(at: fileURL) else {
+                try? FileManager.default.removeItem(at: fileURL)
+                return
+            }
+            handleOpenedImageURLs([fileURL])
+        case .failure(let error):
+            try? FileManager.default.removeItem(at: fileURL)
+            appState.errorMessage = "Screenshot capture failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func makeScreenshotCaptureURL() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisPressScreenshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        return directory.appendingPathComponent("whispress-screenshot-\(UUID().uuidString).png")
+    }
+
+    private func isNonEmptyFile(at url: URL) -> Bool {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = attributes?[.size] as? NSNumber
+        return (size?.intValue ?? 0) > 0
+    }
+
+    private func showImageImportWindow(fileURLs: [URL]) {
+        NSApp.setActivationPolicy(.regular)
+
+        if let imageImportWindow {
+            imageImportWindow.close()
+            self.imageImportWindow = nil
+        }
+
+        let importView = ImageImportView(
+            fileURLs: fileURLs,
+            onCancel: { [weak self] in
+                self?.imageImportWindow?.close()
+            },
+            onComplete: { [weak self] conversationID in
+                self?.imageImportWindow?.close()
+                self?.imageImportWindow = nil
+                if let conversationID {
+                    self?.showWordPressAgentWindow(conversationID: conversationID)
+                }
+            }
+        )
+        .environmentObject(appState)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 580),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Upload Images"
+        window.contentView = NSHostingView(rootView: importView)
+        window.isReleasedWhenClosed = false
+        window.center()
+        imageImportWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.imageImportWindow = nil
+            if self?.setupWindow == nil
+                && self?.settingsWindow == nil
+                && self?.agentWindow == nil
                 && self?.agentUtilityOverlayWindow == nil {
                 NSApp.setActivationPolicy(.accessory)
             }
