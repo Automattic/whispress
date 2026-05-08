@@ -1400,14 +1400,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func submitWordPressAgentComposerMessage(
         _ message: String,
         attachments: [URL] = [],
-        siteID: Int? = nil
+        siteID: Int? = nil,
+        startsNewConversation: Bool = false
     ) -> String? {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return nil }
 
         let targetSiteID = siteID ?? selectedWordPressAgentConversation?.key.siteID ?? selectedWordPressComSiteID
-        var conversationID = selectedWordPressAgentConversation?.id
-        if !attachments.isEmpty,
+        var conversationID = startsNewConversation ? nil : selectedWordPressAgentConversation?.id
+        if startsNewConversation {
+            guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
+            conversationID = newConversationID
+        } else if !attachments.isEmpty,
            let selectedWordPressAgentConversation,
            !selectedWordPressAgentConversation.isEmptyLocalDraft {
             guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
@@ -1582,10 +1586,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         guard wordpressAgentConversations.indices.contains(index) else {
             let newConversationID = createWordPressAgentConversation(for: key)
             let fallbackIndex = wordpressAgentConversations.firstIndex(where: { $0.id == newConversationID }) ?? 0
+            let sessionID = UUID().uuidString
+            wordpressAgentConversations[fallbackIndex].sessionID = sessionID
             return WordPressAgentAppendResult(
                 conversationID: wordpressAgentConversations[fallbackIndex].id,
-                sessionID: wordpressAgentConversations[fallbackIndex].sessionID
+                sessionID: sessionID
             )
+        }
+
+        if wordpressAgentConversations[index].remoteChatID == nil,
+           wordpressAgentConversations[index].sessionID == nil,
+           wordpressAgentConversations[index].messages.isEmpty {
+            wordpressAgentConversations[index].sessionID = UUID().uuidString
         }
 
         wordpressAgentConversations[index].messages.append(

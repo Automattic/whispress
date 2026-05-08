@@ -160,7 +160,8 @@ struct WordPressAgentUtilityOverlayView: View {
         guard let conversationID = appState.submitWordPressAgentComposerMessage(
             message,
             attachments: attachments,
-            siteID: activeSiteID
+            siteID: activeSiteID,
+            startsNewConversation: true
         ) else { return }
 
         draftMessage = ""
