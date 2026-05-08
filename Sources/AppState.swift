@@ -29,6 +29,30 @@ struct SpeechVoiceOption: Identifiable, Equatable {
     }
 }
 
+private extension Dictionary where Key == String, Value == WPCOMAgentJSONValue {
+    func stringValue(forPossibleKeys keys: [String]) -> String? {
+        for key in keys {
+            if let value = self[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+
+        var lowercasedValues: [String: WPCOMAgentJSONValue] = [:]
+        for (key, value) in self where lowercasedValues[key.lowercased()] == nil {
+            lowercasedValues[key.lowercased()] = value
+        }
+        for key in keys {
+            if let value = lowercasedValues[key.lowercased()]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+
+        return nil
+    }
+}
+
 enum WordPressAgentSpeechProvider: String, CaseIterable, Hashable, Identifiable {
     case system
     case elevenLabs
@@ -79,6 +103,23 @@ struct WordPressAgentAttachment: Identifiable, Equatable {
         self.id = id
         self.fileURL = fileURL
         displayName = fileURL.lastPathComponent
+    }
+}
+
+struct WordPressAgentPreview: Identifiable, Equatable {
+    let id: UUID
+    let url: URL
+    let title: String?
+
+    init(id: UUID = UUID(), url: URL, title: String? = nil) {
+        self.id = id
+        self.url = url
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
+    }
+
+    var displayTitle: String {
+        title ?? url.host ?? url.absoluteString
     }
 }
 
@@ -310,6 +351,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
     private let wordpressAgentRecentSiteIDsStorageKey = "wordpress_agent_recent_site_ids"
+    private static let wordpressAgentFrontendAbilities: [WPCOMAgentFrontendAbility] = [.preview]
+    private let maxWordPressAgentFrontendToolIterations = 4
     private let transcribingIndicatorDelay: TimeInterval = 0.25
     private let clipboardRestoreDelay: TimeInterval = 0.15
 
@@ -416,6 +459,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var isRefreshingWordPressAgentConversations = false
     @Published private(set) var hasLoadedWordPressAgentConversations = false
     @Published private(set) var wordpressAgentHistoryStatusMessage: String?
+    @Published private(set) var wordpressAgentPreview: WordPressAgentPreview?
     @Published private(set) var isWordPressAgentWindowFocused = false
     @Published private(set) var isWordPressAgentUtilityOverlayFocused = false
     @Published var errorMessage: String?
@@ -927,6 +971,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressComAppSiteOverrides = []
         wordpressAgentConversations = []
         selectedWordPressAgentConversationID = nil
+        wordpressAgentPreview = nil
         isRefreshingWordPressAgentConversations = false
         hasLoadedWordPressAgentConversations = false
         wordpressAgentHistoryStatusMessage = nil
@@ -1396,6 +1441,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         NotificationCenter.default.post(name: .showWordPressAgentUtilityOverlay, object: nil)
     }
 
+    @MainActor
+    func openWordPressAgentPreview(url: URL, title: String? = nil, conversationID: String? = nil) {
+        let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+        wordpressAgentPreview = WordPressAgentPreview(url: previewURL, title: title)
+        showWordPressAgentWindow(conversationID: conversationID ?? selectedWordPressAgentConversationID)
+    }
+
+    @MainActor
+    func closeWordPressAgentPreview() {
+        wordpressAgentPreview = nil
+    }
+
     @discardableResult
     func submitWordPressAgentComposerMessage(
         _ message: String,
@@ -1516,7 +1573,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 message: message,
                 sessionID: appendResult.sessionID,
                 context: context,
-                attachments: attachments
+                attachments: attachments,
+                conversationIDForPreview: appendResult.conversationID
             )
             await MainActor.run {
                 self.recordWordPressAgentResponse(
@@ -1544,10 +1602,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         message: String,
         sessionID: String?,
         context: AppContext,
-        attachments: [URL] = []
+        attachments: [URL] = [],
+        conversationIDForPreview: String?
     ) async throws -> WPCOMAgentResponse {
         let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         let uploadedMedia = try await wpcomClient.uploadMedia(siteID: siteID, fileURLs: attachments)
+        let frontendAbilities = Self.wordpressAgentFrontendAbilities
         let clientContext = WPCOMAgentClientContextPayload(
             selectedSiteID: siteID,
             appName: context.appName,
@@ -1559,14 +1619,191 @@ final class AppState: ObservableObject, @unchecked Sendable {
             clientVersion: clientVersion,
             uploadedFiles: uploadedMedia.map(WPCOMAgentUploadedFileContext.init)
         )
-        return try await wpcomClient.sendAgentMessage(
+        let response = try await wpcomClient.sendAgentMessage(
             siteID: siteID,
             agentID: agentID,
             message: message,
             clientContext: clientContext,
             sessionID: sessionID,
-            uploadedMedia: uploadedMedia
+            uploadedMedia: uploadedMedia,
+            frontendAbilities: frontendAbilities
         )
+
+        return try await resolveWordPressAgentFrontendToolCalls(
+            initialResponse: response,
+            siteID: siteID,
+            agentID: agentID,
+            clientContext: clientContext,
+            sessionID: sessionID,
+            frontendAbilities: frontendAbilities,
+            conversationIDForPreview: conversationIDForPreview
+        )
+    }
+
+    private struct WordPressAgentFrontendToolExecution {
+        let toolResult: WPCOMAgentToolResult
+        let shouldReturnToAgent: Bool
+        let agentMessage: String?
+    }
+
+    private func resolveWordPressAgentFrontendToolCalls(
+        initialResponse: WPCOMAgentResponse,
+        siteID: Int,
+        agentID: String,
+        clientContext: WPCOMAgentClientContextPayload,
+        sessionID: String?,
+        frontendAbilities: [WPCOMAgentFrontendAbility],
+        conversationIDForPreview: String?
+    ) async throws -> WPCOMAgentResponse {
+        var response = initialResponse
+        var currentSessionID = response.sessionID ?? sessionID
+        var fallbackAgentMessage: String?
+
+        for _ in 0..<maxWordPressAgentFrontendToolIterations {
+            guard !response.toolCalls.isEmpty else {
+                return responseWithFallback(response, fallbackAgentMessage: fallbackAgentMessage)
+            }
+
+            let executions = await executeWordPressAgentFrontendToolCalls(
+                response.toolCalls,
+                conversationIDForPreview: conversationIDForPreview
+            )
+            let toolResults = executions.map(\.toolResult)
+            let agentMessages = executions.compactMap(\.agentMessage)
+            if !agentMessages.isEmpty {
+                fallbackAgentMessage = agentMessages.joined(separator: "\n")
+            }
+
+            guard executions.contains(where: \.shouldReturnToAgent) else {
+                return responseWithFallback(response, fallbackAgentMessage: fallbackAgentMessage)
+            }
+
+            response = try await wpcomClient.sendAgentToolResults(
+                siteID: siteID,
+                agentID: agentID,
+                toolCalls: response.toolCalls,
+                toolResults: toolResults,
+                clientContext: clientContext,
+                sessionID: currentSessionID,
+                taskID: response.taskID,
+                frontendAbilities: frontendAbilities
+            )
+            currentSessionID = response.sessionID ?? currentSessionID
+        }
+
+        throw WPCOMClientError.invalidResponse("Agent requested too many frontend preview actions.")
+    }
+
+    private func executeWordPressAgentFrontendToolCalls(
+        _ toolCalls: [WPCOMAgentToolCall],
+        conversationIDForPreview: String?
+    ) async -> [WordPressAgentFrontendToolExecution] {
+        var executions: [WordPressAgentFrontendToolExecution] = []
+        for toolCall in toolCalls {
+            executions.append(
+                await executeWordPressAgentFrontendToolCall(
+                    toolCall,
+                    conversationIDForPreview: conversationIDForPreview
+                )
+            )
+        }
+        return executions
+    }
+
+    private func executeWordPressAgentFrontendToolCall(
+        _ toolCall: WPCOMAgentToolCall,
+        conversationIDForPreview: String?
+    ) async -> WordPressAgentFrontendToolExecution {
+        guard Self.isPreviewFrontendToolID(toolCall.toolID) else {
+            return WordPressAgentFrontendToolExecution(
+                toolResult: WPCOMAgentToolResult(
+                    toolCallID: toolCall.toolCallID,
+                    toolID: toolCall.toolID,
+                    result: nil,
+                    error: "WhisPress does not provide a frontend ability named \(toolCall.toolID)."
+                ),
+                shouldReturnToAgent: true,
+                agentMessage: nil
+            )
+        }
+
+        guard let urlString = toolCall.arguments.stringValue(forPossibleKeys: ["url", "URL", "uri"]),
+              let url = Self.normalizedPreviewURL(from: urlString) else {
+            return WordPressAgentFrontendToolExecution(
+                toolResult: WPCOMAgentToolResult(
+                    toolCallID: toolCall.toolCallID,
+                    toolID: toolCall.toolID,
+                    result: nil,
+                    error: "Preview needs a valid http or https URL."
+                ),
+                shouldReturnToAgent: true,
+                agentMessage: nil
+            )
+        }
+
+        let title = toolCall.arguments.stringValue(forPossibleKeys: ["title", "name"])
+        await MainActor.run {
+            self.openWordPressAgentPreview(
+                url: url,
+                title: title,
+                conversationID: conversationIDForPreview
+            )
+        }
+
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTitle: String
+        if let trimmedTitle, !trimmedTitle.isEmpty {
+            displayTitle = trimmedTitle
+        } else {
+            displayTitle = url.host ?? url.absoluteString
+        }
+        let message = "Opened preview: \(displayTitle)"
+
+        return WordPressAgentFrontendToolExecution(
+            toolResult: WPCOMAgentToolResult(
+                toolCallID: toolCall.toolCallID,
+                toolID: toolCall.toolID,
+                result: .object([
+                    "success": .bool(true),
+                    "url": .string(url.absoluteString),
+                    "message": .string(message)
+                ]),
+                error: nil
+            ),
+            shouldReturnToAgent: true,
+            agentMessage: message
+        )
+    }
+
+    private func responseWithFallback(
+        _ response: WPCOMAgentResponse,
+        fallbackAgentMessage: String?
+    ) -> WPCOMAgentResponse {
+        guard response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let fallbackAgentMessage,
+              !fallbackAgentMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return response
+        }
+
+        return WPCOMAgentResponse(
+            text: fallbackAgentMessage,
+            state: "completed",
+            sessionID: response.sessionID,
+            taskID: response.taskID,
+            toolCalls: response.toolCalls
+        )
+    }
+
+    private static func isPreviewFrontendToolID(_ toolID: String) -> Bool {
+        let normalizedToolID = toolID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedToolID == "preview"
+            || normalizedToolID == "whispress/preview"
+            || normalizedToolID == "whispress__preview"
+            || normalizedToolID == "whispress_preview"
+    }
+
+    private static func normalizedPreviewURL(from rawValue: String) -> URL? {
+        WordPressAgentPreviewURLResolver.normalizedURL(from: rawValue)
     }
 
     @discardableResult

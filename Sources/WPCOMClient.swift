@@ -249,10 +249,147 @@ struct WPCOMAgentClientContextPayload: Encodable {
     }
 }
 
+enum WPCOMAgentJSONValue: Codable, Equatable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: WPCOMAgentJSONValue])
+    case array([WPCOMAgentJSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .number(Double(value))
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([WPCOMAgentJSONValue].self) {
+            self = .array(value)
+        } else if let value = try? container.decode([String: WPCOMAgentJSONValue].self) {
+            self = .object(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    var stringValue: String? {
+        if case .string(let value) = self {
+            return value
+        }
+        return nil
+    }
+
+    var objectValue: [String: WPCOMAgentJSONValue]? {
+        if case .object(let value) = self {
+            return value
+        }
+        return nil
+    }
+}
+
+struct WPCOMAgentFrontendAbility: Encodable, Equatable {
+    let name: String
+    let label: String
+    let description: String
+    let category: String
+    let inputSchema: WPCOMAgentJSONValue?
+    let outputSchema: WPCOMAgentJSONValue?
+    let meta: WPCOMAgentJSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case label
+        case description
+        case category
+        case inputSchema = "input_schema"
+        case outputSchema = "output_schema"
+        case meta
+    }
+
+    static let preview = WPCOMAgentFrontendAbility(
+        name: "whispress/preview",
+        label: "Preview URL",
+        description: "Open a web URL in WhisPress' side preview panel. Replaces any preview that is already open.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "url": .object([
+                    "type": .string("string"),
+                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WhisPress will treat them as https URLs. WordPress wp-admin post edit links are shown as their public post URLs.")
+                ]),
+                "title": .object([
+                    "type": .string("string"),
+                    "description": .string("Optional short title to show in the preview header.")
+                ])
+            ]),
+            "required": .array([.string("url")])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "success": .object(["type": .string("boolean")]),
+                "url": .object(["type": .string("string")]),
+                "message": .object(["type": .string("string")])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use when the user asks to open, show, inspect, preview, or keep a URL visible beside the chat."),
+                "readonly": .bool(false),
+                "destructive": .bool(false),
+                "idempotent": .bool(true)
+            ])
+        ])
+    )
+}
+
+struct WPCOMAgentToolCall: Equatable {
+    let toolCallID: String
+    let toolID: String
+    let arguments: [String: WPCOMAgentJSONValue]
+}
+
+struct WPCOMAgentToolResult: Equatable {
+    let toolCallID: String
+    let toolID: String
+    let result: WPCOMAgentJSONValue?
+    let error: String?
+}
+
 struct WPCOMAgentResponse: Equatable {
     let text: String
     let state: String
     let sessionID: String?
+    let taskID: String
+    let toolCalls: [WPCOMAgentToolCall]
 }
 
 struct WPCOMUploadedMedia: Decodable, Equatable {
@@ -544,16 +681,52 @@ final class WPCOMClient: NSObject {
     private struct AgentRequestPart: Encodable {
         let type: String
         let text: String?
-        let data: AgentRequestPartData?
+        let data: AgentRequestData?
         let file: AgentRequestFile?
-        let metadata: AgentRequestFileMetadata?
+        let metadata: AgentRequestPartMetadata?
 
         static func text(_ text: String) -> AgentRequestPart {
             AgentRequestPart(type: "text", text: text, data: nil, file: nil, metadata: nil)
         }
 
         static func clientContext(_ context: WPCOMAgentClientContextPayload) -> AgentRequestPart {
-            AgentRequestPart(type: "data", text: nil, data: AgentRequestPartData(clientContext: context), file: nil, metadata: nil)
+            AgentRequestPart(type: "data", text: nil, data: .clientContext(context), file: nil, metadata: nil)
+        }
+
+        static func frontendAbility(_ ability: WPCOMAgentFrontendAbility) -> AgentRequestPart {
+            AgentRequestPart(type: "data", text: nil, data: .frontendAbility(ability), file: nil, metadata: nil)
+        }
+
+        static func toolCall(_ toolCall: WPCOMAgentToolCall) -> AgentRequestPart {
+            AgentRequestPart(
+                type: "data",
+                text: nil,
+                data: .toolCall(
+                    AgentToolCallData(
+                        toolCallId: toolCall.toolCallID,
+                        toolId: toolCall.toolID,
+                        arguments: toolCall.arguments
+                    )
+                ),
+                file: nil,
+                metadata: nil
+            )
+        }
+
+        static func toolResult(_ result: WPCOMAgentToolResult) -> AgentRequestPart {
+            AgentRequestPart(
+                type: "data",
+                text: nil,
+                data: .toolResult(
+                    AgentToolResultData(
+                        toolCallId: result.toolCallID,
+                        toolId: result.toolID,
+                        result: result.result
+                    )
+                ),
+                file: nil,
+                metadata: result.error.map(AgentRequestPartMetadata.toolError)
+            )
         }
 
         static func file(_ media: WPCOMUploadedMedia) -> AgentRequestPart {
@@ -567,21 +740,73 @@ final class WPCOMClient: NSObject {
                     mimeType: mimeType,
                     name: media.displayName
                 ),
-                metadata: AgentRequestFileMetadata(
-                    id: media.id,
-                    url: media.urlString,
-                    mimeType: mimeType,
-                    name: media.displayName,
-                    title: media.title ?? media.displayName,
-                    fileName: media.file,
-                    fileType: mimeType
+                metadata: .file(
+                    AgentRequestFileMetadata(
+                        id: media.id,
+                        url: media.urlString,
+                        mimeType: mimeType,
+                        name: media.displayName,
+                        title: media.title ?? media.displayName,
+                        fileName: media.file,
+                        fileType: mimeType
+                    )
                 )
             )
         }
     }
 
-    private struct AgentRequestPartData: Encodable {
+    private enum AgentRequestData: Encodable {
+        case clientContext(WPCOMAgentClientContextPayload)
+        case frontendAbility(WPCOMAgentFrontendAbility)
+        case toolCall(AgentToolCallData)
+        case toolResult(AgentToolResultData)
+
+        func encode(to encoder: Encoder) throws {
+            switch self {
+            case .clientContext(let context):
+                try AgentClientContextData(clientContext: context).encode(to: encoder)
+            case .frontendAbility(let ability):
+                try ability.encode(to: encoder)
+            case .toolCall(let toolCall):
+                try toolCall.encode(to: encoder)
+            case .toolResult(let result):
+                try result.encode(to: encoder)
+            }
+        }
+    }
+
+    private struct AgentClientContextData: Encodable {
         let clientContext: WPCOMAgentClientContextPayload
+    }
+
+    private struct AgentToolCallData: Encodable {
+        let toolCallId: String
+        let toolId: String
+        let arguments: [String: WPCOMAgentJSONValue]
+    }
+
+    private struct AgentToolResultData: Encodable {
+        let toolCallId: String
+        let toolId: String
+        let result: WPCOMAgentJSONValue?
+    }
+
+    private enum AgentRequestPartMetadata: Encodable {
+        case file(AgentRequestFileMetadata)
+        case toolError(String)
+
+        func encode(to encoder: Encoder) throws {
+            switch self {
+            case .file(let metadata):
+                try metadata.encode(to: encoder)
+            case .toolError(let error):
+                try AgentToolErrorMetadata(error: error).encode(to: encoder)
+            }
+        }
+    }
+
+    private struct AgentToolErrorMetadata: Encodable {
+        let error: String
     }
 
     private struct AgentRequestFile: Encodable {
@@ -611,10 +836,12 @@ final class WPCOMClient: NSObject {
     }
 
     private struct AgentTaskResult: Decodable {
+        let id: String?
         let status: AgentTaskStatus
         let sessionID: String?
 
         private enum CodingKeys: String, CodingKey {
+            case id
             case status
             case sessionID = "sessionId"
         }
@@ -632,6 +859,43 @@ final class WPCOMClient: NSObject {
     private struct AgentResponsePart: Decodable {
         let type: String
         let text: String?
+        let data: AgentResponsePartData?
+
+        private enum CodingKeys: String, CodingKey {
+            case type
+            case text
+            case data
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            type = (try? container.decode(String.self, forKey: .type)) ?? ""
+            text = try? container.decode(String.self, forKey: .text)
+            data = try? container.decode(AgentResponsePartData.self, forKey: .data)
+        }
+    }
+
+    private struct AgentResponsePartData: Decodable {
+        let toolCallId: String?
+        let toolId: String?
+        let arguments: WPCOMAgentJSONValue?
+
+        private enum CodingKeys: String, CodingKey {
+            case toolCallId
+            case snakeToolCallId = "tool_call_id"
+            case toolId
+            case snakeToolId = "tool_id"
+            case arguments
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            toolCallId = (try? container.decode(String.self, forKey: .toolCallId))
+                ?? (try? container.decode(String.self, forKey: .snakeToolCallId))
+            toolId = (try? container.decode(String.self, forKey: .toolId))
+                ?? (try? container.decode(String.self, forKey: .snakeToolId))
+            arguments = try? container.decode(WPCOMAgentJSONValue.self, forKey: .arguments)
+        }
     }
 
     private struct MediaUploadResponse: Decodable {
@@ -841,15 +1105,56 @@ final class WPCOMClient: NSObject {
         message: String,
         clientContext: WPCOMAgentClientContextPayload,
         sessionID: String?,
-        uploadedMedia: [WPCOMUploadedMedia] = []
+        uploadedMedia: [WPCOMUploadedMedia] = [],
+        frontendAbilities: [WPCOMAgentFrontendAbility] = []
+    ) async throws -> WPCOMAgentResponse {
+        let parts = [AgentRequestPart.text(message)]
+            + uploadedMedia.map(AgentRequestPart.file)
+            + frontendAbilities.map(AgentRequestPart.frontendAbility)
+            + [AgentRequestPart.clientContext(clientContext)]
+
+        return try await sendAgentRequest(
+            siteID: siteID,
+            agentID: agentID,
+            parts: parts,
+            sessionID: sessionID
+        )
+    }
+
+    func sendAgentToolResults(
+        siteID: Int,
+        agentID: String,
+        toolCalls: [WPCOMAgentToolCall],
+        toolResults: [WPCOMAgentToolResult],
+        clientContext: WPCOMAgentClientContextPayload,
+        sessionID: String?,
+        taskID: String,
+        frontendAbilities: [WPCOMAgentFrontendAbility] = []
+    ) async throws -> WPCOMAgentResponse {
+        let parts = toolCalls.map(AgentRequestPart.toolCall)
+            + toolResults.map(AgentRequestPart.toolResult)
+            + frontendAbilities.map(AgentRequestPart.frontendAbility)
+            + [AgentRequestPart.clientContext(clientContext)]
+
+        return try await sendAgentRequest(
+            siteID: siteID,
+            agentID: agentID,
+            parts: parts,
+            sessionID: sessionID,
+            taskID: taskID
+        )
+    }
+
+    private func sendAgentRequest(
+        siteID: Int,
+        agentID: String,
+        parts: [AgentRequestPart],
+        sessionID: String?,
+        taskID: String = UUID().uuidString
     ) async throws -> WPCOMAgentResponse {
         let normalizedAgentID = Self.normalizedAgentID(agentID)
         let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/ai/agent/\(normalizedAgentID)")!
         let rpcID = UUID().uuidString
-        let taskID = UUID().uuidString
-        let parts = [AgentRequestPart.text(message)]
-            + uploadedMedia.map(AgentRequestPart.file)
-            + [AgentRequestPart.clientContext(clientContext)]
         let body = AgentRPCRequest(
             jsonrpc: "2.0",
             id: rpcID,
@@ -881,15 +1186,54 @@ final class WPCOMClient: NSObject {
         guard let result = decoded.result else {
             throw WPCOMClientError.invalidResponse("Missing agent result")
         }
-        let text = result.status.message?.parts.compactMap { part in
-            part.type == "text" ? part.text : nil
-        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = Self.text(from: result.status.message)
+        let toolCalls = Self.toolCalls(from: result.status.message)
 
         return WPCOMAgentResponse(
             text: text,
             state: result.status.state,
-            sessionID: result.sessionID
+            sessionID: result.sessionID,
+            taskID: result.id ?? taskID,
+            toolCalls: toolCalls
         )
+    }
+
+    private static func text(from message: AgentResponseMessage?) -> String {
+        message?.parts.compactMap { part in
+            part.type == "text" ? part.text : nil
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func toolCalls(from message: AgentResponseMessage?) -> [WPCOMAgentToolCall] {
+        message?.parts.compactMap { part in
+            guard part.type == "data",
+                  let data = part.data,
+                  let toolCallId = data.toolCallId,
+                  let toolId = data.toolId else {
+                return nil
+            }
+
+            return WPCOMAgentToolCall(
+                toolCallID: toolCallId,
+                toolID: toolId,
+                arguments: toolArguments(from: data.arguments)
+            )
+        } ?? []
+    }
+
+    private static func toolArguments(from value: WPCOMAgentJSONValue?) -> [String: WPCOMAgentJSONValue] {
+        if let object = value?.objectValue {
+            return object
+        }
+
+        guard case .string(let rawArguments) = value,
+              let data = rawArguments.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(WPCOMAgentJSONValue.self, from: data),
+              let object = decoded.objectValue else {
+            return [:]
+        }
+
+        return object
     }
 
     func uploadMedia(siteID: Int, fileURLs: [URL]) async throws -> [WPCOMUploadedMedia] {
