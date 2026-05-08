@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 struct WordPressAgentWindowView: View {
     @EnvironmentObject var appState: AppState
@@ -8,9 +9,14 @@ struct WordPressAgentWindowView: View {
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
     @State private var isAllSitesExpanded = false
+    @State private var shouldRestoreComposerFocusAfterSend = false
+    @State private var previewSidebarWidth: CGFloat = 520
+    @State private var previewSidebarResizeStartWidth: CGFloat?
     @FocusState private var isComposerFocused: Bool
 
     private let recentSiteLimit = 5
+    private let workspaceMinimumWidth: CGFloat = 360
+    private let previewMinimumWidth: CGFloat = 320
 
     private var selectedConversation: WordPressAgentConversation? {
         appState.selectedWordPressAgentConversation
@@ -87,6 +93,10 @@ struct WordPressAgentWindowView: View {
         isAllSitesExpanded || !normalizedSearch.isEmpty
     }
 
+    private var isSelectedConversationSending: Bool {
+        selectedConversation?.isSending == true
+    }
+
     private var remainingSiteCount: Int {
         max(0, appState.wordpressComSites.count - recentSites.count)
     }
@@ -124,10 +134,10 @@ struct WordPressAgentWindowView: View {
                 .fill(Color.black.opacity(0.06))
                 .frame(width: 1)
 
-            workspace
+            contentArea
         }
         .background(AgentPalette.workspace)
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(minWidth: appState.wordpressAgentPreview == nil ? 900 : 1120, minHeight: 620)
         .task {
             await appState.refreshWordPressAgentConversationsIfNeeded()
         }
@@ -379,14 +389,90 @@ struct WordPressAgentWindowView: View {
         return appState.isWordPressComSignedIn ? "Connected" : "Not signed in"
     }
 
+    @ViewBuilder
+    private var contentArea: some View {
+        if let preview = appState.wordpressAgentPreview {
+            GeometryReader { geometry in
+                let maximumPreviewWidth = max(
+                    previewMinimumWidth,
+                    geometry.size.width - workspaceMinimumWidth - PreviewResizeHandle.width
+                )
+                let resolvedPreviewWidth = clampedPreviewSidebarWidth(maximumPreviewWidth: maximumPreviewWidth)
+
+                HStack(spacing: 0) {
+                    workspace
+                        .frame(
+                            width: max(
+                                workspaceMinimumWidth,
+                                geometry.size.width - resolvedPreviewWidth - PreviewResizeHandle.width
+                            )
+                        )
+
+                    PreviewResizeHandle(
+                        onDragChanged: { translationX in
+                            if previewSidebarResizeStartWidth == nil {
+                                previewSidebarResizeStartWidth = resolvedPreviewWidth
+                            }
+                            let startWidth = previewSidebarResizeStartWidth ?? resolvedPreviewWidth
+                            previewSidebarWidth = min(
+                                max(startWidth - translationX, previewMinimumWidth),
+                                maximumPreviewWidth
+                            )
+                        },
+                        onDragEnded: {
+                            previewSidebarWidth = clampedPreviewSidebarWidth(
+                                maximumPreviewWidth: maximumPreviewWidth
+                            )
+                            previewSidebarResizeStartWidth = nil
+                        }
+                    )
+
+                    WordPressAgentPreviewPanel(
+                        preview: preview,
+                        onClose: {
+                            Task { @MainActor in
+                                appState.closeWordPressAgentPreview()
+                            }
+                        }
+                    )
+                    .frame(width: resolvedPreviewWidth)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            workspace
+        }
+    }
+
+    private func clampedPreviewSidebarWidth(maximumPreviewWidth: CGFloat) -> CGFloat {
+        min(max(previewSidebarWidth, previewMinimumWidth), maximumPreviewWidth)
+    }
+
     private var workspace: some View {
         VStack(spacing: 0) {
             workspaceHeader
             transcript
             composer
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .background(AgentPalette.workspace)
+        .environment(\.openURL, OpenURLAction { url in
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                NSWorkspace.shared.open(WordPressAgentPreviewURLResolver.defaultOpenURL(forPossiblyBare: url) ?? url)
+                return .handled
+            }
+
+            guard let previewURL = WordPressAgentPreviewURLResolver.previewURL(forPossiblyBare: url) else {
+                NSWorkspace.shared.open(WordPressAgentPreviewURLResolver.defaultOpenURL(forPossiblyBare: url) ?? url)
+                return .handled
+            }
+
+            Task { @MainActor in
+                appState.openWordPressAgentPreview(url: previewURL)
+            }
+            return .handled
+        })
     }
 
     private var workspaceHeader: some View {
@@ -524,7 +610,7 @@ struct WordPressAgentWindowView: View {
                     .lineLimit(1...5)
                     .focused($isComposerFocused)
                     .onSubmit(sendDraftMessage)
-                    .disabled(isComposerDisabled)
+                    .disabled(isComposerInputDisabled)
 
                 HStack(spacing: 14) {
                     Button {
@@ -588,6 +674,14 @@ struct WordPressAgentWindowView: View {
             .padding(.bottom, 22)
             .padding(.top, 8)
         }
+        .onChange(of: isSelectedConversationSending) { isSending in
+            guard shouldRestoreComposerFocusAfterSend else { return }
+            restoreComposerFocusSoon(clearPending: !isSending)
+        }
+        .onChange(of: appState.wordpressAgentPreview?.id) { _ in
+            guard shouldRestoreComposerFocusAfterSend else { return }
+            restoreComposerFocusSoon(clearPending: false)
+        }
     }
 
     private var canSendMessage: Bool {
@@ -601,6 +695,10 @@ struct WordPressAgentWindowView: View {
         || appState.isTranscribing
     }
 
+    private var isComposerInputDisabled: Bool {
+        activeSiteID == nil || appState.isTranscribing
+    }
+
     private func sendDraftMessage() {
         let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingImageURLs
@@ -612,6 +710,23 @@ struct WordPressAgentWindowView: View {
         ) != nil else { return }
         draftMessage = ""
         pendingImageURLs = []
+        shouldRestoreComposerFocusAfterSend = true
+        restoreComposerFocusSoon(clearPending: false)
+    }
+
+    private func restoreComposerFocusSoon(clearPending: Bool) {
+        guard !isComposerInputDisabled else { return }
+
+        DispatchQueue.main.async {
+            isComposerFocused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard !isComposerInputDisabled else { return }
+            isComposerFocused = true
+            if clearPending {
+                shouldRestoreComposerFocusAfterSend = false
+            }
+        }
     }
 
     private func selectImages() {
@@ -638,7 +753,294 @@ struct WordPressAgentWindowView: View {
     private func openActiveSite() {
         guard let urlString = activeSite?.url,
               let url = URL(string: urlString) else { return }
-        NSWorkspace.shared.open(url)
+        appState.openWordPressAgentPreview(url: url, title: activeSite?.displayName)
+    }
+}
+
+private struct WordPressAgentPreviewPanel: View {
+    let preview: WordPressAgentPreview
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Close preview")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preview.displayTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+
+                    Text(preview.url.absoluteString)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 10)
+
+                Button {
+                    NSWorkspace.shared.open(preview.url)
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Open in browser")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 58)
+            .background(Color(nsColor: .windowBackgroundColor))
+
+            Rectangle()
+                .fill(Color.black.opacity(0.08))
+                .frame(height: 1)
+
+            WordPressAgentWebPreview(url: preview.url)
+                .id(preview.id)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct PreviewResizeHandle: NSViewRepresentable {
+    static let width: CGFloat = 14
+
+    let onDragChanged: (CGFloat) -> Void
+    let onDragEnded: () -> Void
+
+    func makeNSView(context: Context) -> PreviewResizeHandleView {
+        let view = PreviewResizeHandleView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 1))
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        return view
+    }
+
+    func updateNSView(_ view: PreviewResizeHandleView, context: Context) {
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+    }
+}
+
+private final class PreviewResizeHandleView: NSView {
+    var onDragChanged: ((CGFloat) -> Void)?
+    var onDragEnded: (() -> Void)?
+
+    private var dragStartX: CGFloat?
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override var mouseDownCanMoveWindow: Bool {
+        false
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: PreviewResizeHandle.width, height: NSView.noIntrinsicMetric)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let newTrackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(newTrackingArea)
+        trackingArea = newTrackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard dragStartX == nil else { return }
+        isHovered = false
+        NSCursor.arrow.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartX = event.locationInWindow.x
+        isHovered = true
+        NSCursor.resizeLeftRight.set()
+        window?.makeFirstResponder(self)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let currentX = event.locationInWindow.x
+        let startX = dragStartX ?? currentX
+        onDragChanged?(currentX - startX)
+        NSCursor.resizeLeftRight.set()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStartX = nil
+        isHovered = bounds.contains(convert(event.locationInWindow, from: nil))
+        onDragEnded?()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        if isHovered || dragStartX != nil {
+            NSColor.black.withAlphaComponent(0.045).setFill()
+            bounds.fill()
+        }
+
+        NSColor.black.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.1).setFill()
+        NSRect(x: floor(bounds.midX), y: 0, width: 1, height: bounds.height).fill()
+
+        NSColor.secondaryLabelColor
+            .withAlphaComponent(isHovered || dragStartX != nil ? 0.7 : 0.4)
+            .setFill()
+
+        let gripHeight: CGFloat = 18
+        let gripWidth: CGFloat = 3
+        let gripSpacing: CGFloat = 3
+        let totalHeight = (gripHeight * 3) + (gripSpacing * 2)
+        let firstY = bounds.midY - (totalHeight / 2)
+        for index in 0..<3 {
+            let gripRect = NSRect(
+                x: bounds.midX - (gripWidth / 2),
+                y: firstY + (CGFloat(index) * (gripHeight + gripSpacing)),
+                width: gripWidth,
+                height: gripHeight
+            )
+            NSBezierPath(
+                roundedRect: gripRect,
+                xRadius: gripWidth / 2,
+                yRadius: gripWidth / 2
+            ).fill()
+        }
+    }
+}
+
+private struct WordPressAgentWebPreview: NSViewRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        context.coordinator.load(url, in: webView)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.load(url, in: webView)
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private var loadedURL: URL?
+
+        func load(_ url: URL, in webView: WKWebView) {
+            let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+            guard loadedURL != previewURL else { return }
+            loadedURL = previewURL
+            webView.load(URLRequest(url: previewURL))
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+
+            if Self.isWebKitInternalURL(url) {
+                decisionHandler(.allow)
+                return
+            }
+
+            if let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) {
+                if previewURL.absoluteString != url.absoluteString || navigationAction.targetFrame == nil {
+                    decisionHandler(.cancel)
+                    load(previewURL, in: webView)
+                    return
+                }
+
+                decisionHandler(.allow)
+                return
+            }
+
+            if navigationAction.targetFrame?.isMainFrame != false {
+                NSWorkspace.shared.open(url)
+            }
+            decisionHandler(.cancel)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if let url = navigationAction.request.url {
+                load(url, in: webView)
+            } else {
+                webView.load(navigationAction.request)
+            }
+            return nil
+        }
+
+        private static func isWebKitInternalURL(_ url: URL) -> Bool {
+            switch url.scheme?.lowercased() {
+            case nil, "about", "data", "blob", "javascript", "applewebdata":
+                return true
+            default:
+                return false
+            }
+        }
     }
 }
 
@@ -1051,22 +1453,39 @@ private struct MarkdownMessageText: View {
     let foregroundStyle: Color
 
     var body: some View {
-        if let attributedText = try? AttributedString(
+        Text(Self.messageAttributedString(from: text))
+            .textSelection(.enabled)
+            .font(.system(size: 16))
+            .lineSpacing(4)
+            .foregroundStyle(foregroundStyle)
+    }
+
+    private static func messageAttributedString(from text: String) -> AttributedString {
+        var attributedText = (try? AttributedString(
             markdown: text,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            Text(attributedText)
-                .textSelection(.enabled)
-                .font(.system(size: 16))
-                .lineSpacing(4)
-                .foregroundStyle(foregroundStyle)
-        } else {
-            Text(text)
-                .textSelection(.enabled)
-                .font(.system(size: 16))
-                .lineSpacing(4)
-                .foregroundStyle(foregroundStyle)
+        )) ?? AttributedString(text)
+
+        let visibleText = String(attributedText.characters)
+        let matches = (try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue))?
+            .matches(
+                in: visibleText,
+                options: [],
+                range: NSRange(visibleText.startIndex..<visibleText.endIndex, in: visibleText)
+            ) ?? []
+
+        for match in matches {
+            guard let url = match.url,
+                  let textRange = Range(match.range, in: visibleText),
+                  let attributedRange = Range(textRange, in: attributedText),
+                  attributedText[attributedRange].link == nil else {
+                continue
+            }
+
+            attributedText[attributedRange].link = url
         }
+
+        return attributedText
     }
 }
 

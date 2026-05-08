@@ -56,12 +56,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentUtilityOverlayWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private var statusIconCancellable: AnyCancellable?
+    private var agentPreviewCancellable: AnyCancellable?
     private var menuBarIconVisibilityObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         configureStatusItem()
         installStatusItemObservers()
+        installAgentPreviewObserver()
 
         NotificationCenter.default.addObserver(
             self,
@@ -681,6 +683,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if let agentWindow, agentWindow.isVisible {
+            expandAgentWindowForPreviewIfNeeded()
             agentWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             appState.setWordPressAgentWindowFocused(agentWindow.isKeyWindow)
@@ -702,7 +705,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: agentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -710,15 +713,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "WordPress Agent"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = appState.wordpressAgentPreview == nil
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 900, height: 620)
         window.center()
+        agentWindow = window
+        expandAgentWindowForPreviewIfNeeded(animated: false)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        agentWindow = window
         appState.setWordPressAgentWindowFocused(window.isKeyWindow)
 
         NotificationCenter.default.addObserver(
@@ -748,6 +752,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
+    }
+
+    private func installAgentPreviewObserver() {
+        agentPreviewCancellable = appState.$wordpressAgentPreview
+            .receive(on: RunLoop.main)
+            .sink { [weak self] preview in
+                self?.updateAgentWindowMovability(hasPreview: preview != nil)
+                if preview != nil {
+                    self?.expandAgentWindowForPreviewIfNeeded()
+                }
+            }
+    }
+
+    private func updateAgentWindowMovability(hasPreview: Bool? = nil) {
+        agentWindow?.isMovableByWindowBackground = !(hasPreview ?? (appState.wordpressAgentPreview != nil))
+    }
+
+    private func expandAgentWindowForPreviewIfNeeded(animated: Bool = true) {
+        guard appState.wordpressAgentPreview != nil,
+              let agentWindow else {
+            return
+        }
+
+        let minimumPreviewWidth: CGFloat = 1120
+        guard agentWindow.frame.width < minimumPreviewWidth else { return }
+
+        var frame = agentWindow.frame
+        frame.origin.x -= (minimumPreviewWidth - frame.width) / 2
+        frame.size.width = minimumPreviewWidth
+        agentWindow.setFrame(frame, display: true, animate: animated)
     }
 
 
