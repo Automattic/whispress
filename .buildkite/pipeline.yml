@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/buildkite/pipeline-schema/main/schema.json
+---
+
+agents:
+  queue: mac
+
+env:
+  IMAGE_ID: $IMAGE_ID
+
+steps:
+  - label: ":hammer: Build"
+    key: build
+    command: .buildkite/commands/build.sh
+    plugins: [$CI_TOOLKIT_PLUGIN]
+    artifact_paths:
+      - build/*.zip
