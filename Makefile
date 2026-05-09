@@ -12,6 +12,9 @@ empty :=
 space := $(empty) $(empty)
 APP_EXECUTABLE = $(MACOS_DIR)/$(PRODUCT_NAME)
 APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
+ZIP_PATH = $(BUILD_DIR)/$(APP_NAME).zip
+DMG_PATH = $(BUILD_DIR)/$(APP_NAME).dmg
+NOTARIZE = Tools/notarize.sh
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
@@ -22,18 +25,9 @@ WPCOM_LOGO = Resources/WPCOM-Blueberry-Pill-Logo.svg
 MENU_BAR_LOGO = Resources/MenuBarWordPressLogo.svg
 FONT_RESOURCES = $(shell find Resources/Fonts -type f 2>/dev/null | LC_ALL=C sort)
 
-.PHONY: all clean run icon dmg codesign-dmg notarize
+.PHONY: all clean run icon dmg codesign-dmg notarize-app notarize-dmg zip release
 
 all: $(APP_EXECUTABLE_TARGET)
-	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
-	if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
-		secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
-	fi; \
-	plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"; \
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)" >/dev/null; \
-	if [ -n "$$secret" ]; then \
-		echo "Configured WordPress.com OAuth client secret in $(APP_BUNDLE)"; \
-	fi
 
 $(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE) $(WPCOM_LOGO) $(MENU_BAR_LOGO) $(FONT_RESOURCES)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
@@ -73,6 +67,11 @@ endif
 	@cp $(MENU_BAR_LOGO) "$(RESOURCES)/"
 	@rm -rf "$(RESOURCES)/Fonts"
 	@cp -R Resources/Fonts "$(RESOURCES)/Fonts"
+	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
+		if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
+			secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
+		fi; \
+		plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
@@ -95,7 +94,7 @@ $(ICON_ICNS): $(ICON_SOURCE)
 	@echo "Generated $@"
 
 dmg: all
-	@rm -f "$(BUILD_DIR)/$(APP_NAME).dmg"
+	@rm -f "$(DMG_PATH)"
 	@rm -rf $(BUILD_DIR)/dmg-staging
 	@mkdir -p $(BUILD_DIR)/dmg-staging
 	@cp -R "$(APP_BUNDLE)" $(BUILD_DIR)/dmg-staging/
@@ -113,18 +112,37 @@ dmg: all
 		--hide-extension "$(APP_NAME).app" \
 		--icon "Applications" 480 170 \
 		--no-internet-enable \
-		"$(BUILD_DIR)/$(APP_NAME).dmg" \
+		"$(DMG_PATH)" \
 		"$(BUILD_DIR)/dmg-staging"
 	@rm -rf $(BUILD_DIR)/dmg-staging
-	@echo "Created $(BUILD_DIR)/$(APP_NAME).dmg"
+	@echo "Created $(DMG_PATH)"
 
 codesign-dmg: dmg
-	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(BUILD_DIR)/$(APP_NAME).dmg"
+	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(DMG_PATH)"
 
-notarize:
-	xcrun notarytool submit "$(BUILD_DIR)/$(APP_NAME).dmg" \
-		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
-	xcrun stapler staple "$(BUILD_DIR)/$(APP_NAME).dmg"
+# Notarize the .app in place. Stapling rewrites the bundle, so any
+# subsequent `codesign --force` on it would strip the ticket — keep
+# this step at the very end of the build chain for the .app.
+notarize-app: $(APP_EXECUTABLE_TARGET)
+	$(NOTARIZE) "$(APP_BUNDLE)"
+
+# ZIP the (already stapled) .app for direct distribution alongside the DMG.
+zip: notarize-app
+	@rm -f "$(ZIP_PATH)"
+	@ditto -c -k --sequesterRsrc --keepParent "$(APP_BUNDLE)" "$(ZIP_PATH)"
+	@echo "Created $(ZIP_PATH)"
+
+notarize-dmg: codesign-dmg
+	$(NOTARIZE) "$(DMG_PATH)"
+
+# Full release: notarize+staple .app, ZIP it, build+sign+notarize+staple DMG.
+# Order matters: zip pulls in notarize-app; notarize-dmg pulls in dmg, which
+# stages the (already stapled) .app into the DMG before the DMG itself is
+# signed and notarized.
+release: zip notarize-dmg
+	@echo "Release artifacts:"
+	@echo "  $(ZIP_PATH)"
+	@echo "  $(DMG_PATH)"
 
 clean:
 	rm -rf $(BUILD_DIR)
