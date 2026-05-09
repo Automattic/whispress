@@ -5,40 +5,25 @@ set -euo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  Tools/notarize.sh [--team-id ID] <path>
+  Tools/notarize.sh <path>
 
 Submits <path> (an .app bundle or .dmg) to Apple's notary service with
 `xcrun notarytool`, waits for the verdict, fetches the log on failure,
 and staples the ticket to <path> on success.
 
-Auth — App Store Connect API key from env. Canonical names (preferred,
-match the Fastlane env var convention used by CI):
+Auth — App Store Connect API key from env (matches the Fastlane env var
+convention used by CI):
 
   APP_STORE_CONNECT_API_KEY_KEY_ID
   APP_STORE_CONNECT_API_KEY_ISSUER_ID
   APP_STORE_CONNECT_API_KEY_KEY            (PEM; \n escapes decoded)
-
-Fallback for shells that hold creds for multiple teams at once:
-
-  APP_STORE_CONNECT_API_KEY_<TEAM>_KEY_ID
-  APP_STORE_CONNECT_API_KEY_<TEAM>_ISSUER_ID
-  APP_STORE_CONNECT_API_KEY_<TEAM>_KEY
-
-Defaults:
-  --team-id PZYM8XX95Q
 EOF
 }
 
-team_id="PZYM8XX95Q"
 target=""
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-		--team-id)
-			[ "$#" -ge 2 ] || { echo >&2 "missing value for --team-id"; exit 1; }
-			team_id="$2"
-			shift 2
-			;;
 		-h|--help)
 			usage
 			exit 0
@@ -63,25 +48,13 @@ done
 [ -n "$target" ] || { echo >&2 "missing target path"; usage >&2; exit 1; }
 [ -e "$target" ] || { echo >&2 "target does not exist: $target"; exit 1; }
 
-# Resolve App Store Connect API key from env. Try canonical names first.
 key_id="${APP_STORE_CONNECT_API_KEY_KEY_ID-}"
 issuer_id="${APP_STORE_CONNECT_API_KEY_ISSUER_ID-}"
 key_pem="${APP_STORE_CONNECT_API_KEY_KEY-}"
 
 if [ -z "$key_id" ] || [ -z "$issuer_id" ] || [ -z "$key_pem" ]; then
-	prefix="APP_STORE_CONNECT_API_KEY_${team_id}"
-	key_id_var="${prefix}_KEY_ID"
-	issuer_id_var="${prefix}_ISSUER_ID"
-	key_pem_var="${prefix}_KEY"
-	key_id="${!key_id_var-}"
-	issuer_id="${!issuer_id_var-}"
-	key_pem="${!key_pem_var-}"
-fi
-
-if [ -z "$key_id" ] || [ -z "$issuer_id" ] || [ -z "$key_pem" ]; then
 	echo >&2 "missing App Store Connect API key env vars"
 	echo >&2 "set APP_STORE_CONNECT_API_KEY_{KEY_ID,ISSUER_ID,KEY}"
-	echo >&2 "or APP_STORE_CONNECT_API_KEY_${team_id}_{KEY_ID,ISSUER_ID,KEY}"
 	exit 1
 fi
 
