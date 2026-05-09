@@ -14,4 +14,3 @@ steps:
     plugins: [$CI_TOOLKIT_PLUGIN]
     artifact_paths:
       - build/*.zip
-      - build/*.dmg
