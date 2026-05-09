@@ -5,6 +5,7 @@ build/
 .build
 .wpcom-oauth-client-secret
 vendor/bundle/
-.bundle/
+.bundle/*
+!.bundle/config
 fastlane/report.xml
 fastlane/README.md
