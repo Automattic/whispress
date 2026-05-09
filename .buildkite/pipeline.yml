@@ -14,3 +14,6 @@ steps:
     plugins: [$CI_TOOLKIT_PLUGIN]
     artifact_paths:
       - build/*.zip
+    notify:
+      - github_commit_status:
+          context: "Build, sign, notarize"
