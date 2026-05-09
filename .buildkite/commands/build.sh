@@ -17,6 +17,6 @@ echo "--- :hammer: Build, sign, notarize, zip"
 # osascript to create an Applications alias, which times out on headless agents.
 make zip \
 	ARCH=universal \
-	APP_NAME=WPWorkspace \
+	APP_NAME=WP-Workspace \
 	BUNDLE_ID=com.automattic.wpworkspace \
 	CODESIGN_IDENTITY="Developer ID Application: Automattic, Inc. (PZYM8XX95Q)"
