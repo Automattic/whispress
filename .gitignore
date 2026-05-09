@@ -4,3 +4,7 @@ build/
 .env
 .build
 .wpcom-oauth-client-secret
+vendor/bundle/
+.bundle/
+fastlane/report.xml
+fastlane/README.md
