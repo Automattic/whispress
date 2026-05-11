@@ -1475,44 +1475,45 @@ private struct ConversationSidebarRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             if let site {
                 RemoteSiteIcon(site: site, size: 22, cornerRadius: 6)
+                    .frame(width: 22, height: 22)
             } else {
                 WordPressComLogoMark()
                     .frame(width: 22, height: 22)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
 
                 HStack(spacing: 6) {
                     Text(subtitle)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 10, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .frame(height: 16)
                         .background(
                             Capsule(style: .continuous)
-                                .fill(AgentPalette.softControl.opacity(isSelected ? 0.85 : 0.62))
+                                .fill(AgentPalette.softControl.opacity(isSelected ? 0.65 : 0.42))
                         )
 
                     Text(lastUpdatedText)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(height: 16)
+
+                    Spacer(minLength: 0)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .frame(height: 50)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? AgentPalette.sidebarSelection : Color.clear)
