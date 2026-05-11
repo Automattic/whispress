@@ -224,6 +224,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case keyBindings
     case transcription
     case wordpressCom
+    case network
     case wordpressAgent
 
     var id: String { rawValue }
@@ -234,6 +235,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyBindings: return "Key Bindings"
         case .transcription: return "Transcription"
         case .wordpressCom: return "WordPress.com"
+        case .network: return "Network"
         case .wordpressAgent: return "WordPress Agent"
         }
     }
@@ -244,6 +246,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyBindings: return "keyboard"
         case .transcription: return "waveform"
         case .wordpressCom: return "person.crop.circle.badge.checkmark"
+        case .network: return "network"
         case .wordpressAgent: return "sparkles"
         }
     }
@@ -368,6 +371,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let wordpressAgentStarredSiteIDsStorageKey = "wordpress_agent_starred_site_ids"
     private let wordpressComSitesCacheStorageKey = "wordpress_com_sites_cache"
     private let wordpressAgentConversationsCacheStorageKey = "wordpress_agent_conversations_cache"
+    private let networkRoutingSettingsStorageKey = "network_routing_settings"
     private let wordpressAgentConversationPageSize = 20
     private let wordpressAgentConversationsCacheDebounceNanoseconds: UInt64 = 350_000_000
     private static let wordpressAgentFrontendAbilities: [WPCOMAgentFrontendAbility] = [.preview]
@@ -510,6 +514,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var lastContextScreenshotStatus = "No screenshot"
     @Published var launchAtLogin: Bool {
         didSet { setLaunchAtLogin(launchAtLogin) }
+    }
+
+    @Published var networkRoutingSettings: NetworkRoutingSettings {
+        didSet {
+            persistNetworkRoutingSettings()
+            AppNetworkSessionProvider.shared.update(settings: networkRoutingSettings)
+        }
     }
 
     @Published var isWordPressAgentEnabled: Bool {
@@ -755,6 +766,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let storedWordPressAgentStarredSiteIDs = Self.loadWordPressAgentStarredSiteIDs(
             forKey: wordpressAgentStarredSiteIDsStorageKey
         )
+        let networkRoutingSettings = Self.loadNetworkRoutingSettings(forKey: networkRoutingSettingsStorageKey)
 
         self.contextService = AppContextService()
         let isInitiallyWordPressComSignedIn = wpcomClient.isSignedIn
@@ -788,6 +800,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.hasElevenLabsAPIKey = hasElevenLabsAPIKey
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
+        self.networkRoutingSettings = networkRoutingSettings
         self.selectedMicrophoneID = selectedMicrophoneID
         self.selectedWordPressComSiteID = storedSiteID
         self.wordpressComAppSiteOverrides = storedAppSiteOverrides
@@ -803,6 +816,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 / wordpressAgentConversationPageSize) + 1
         )
         self.isWordPressComSignedIn = isInitiallyWordPressComSignedIn
+        AppNetworkSessionProvider.shared.update(settings: networkRoutingSettings)
 
         refreshAvailableMicrophones()
         refreshAvailableSpeechVoices()
@@ -1021,6 +1035,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         UserDefaults.standard.set(data, forKey: wordpressAgentStarredSiteIDsStorageKey)
     }
 
+    private static func loadNetworkRoutingSettings(forKey key: String) -> NetworkRoutingSettings {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode(NetworkRoutingSettings.self, from: data) {
+            return decoded
+        }
+
+        return .default
+    }
+
+    private func persistNetworkRoutingSettings() {
+        guard let data = try? JSONEncoder().encode(networkRoutingSettings) else { return }
+        UserDefaults.standard.set(data, forKey: networkRoutingSettingsStorageKey)
+    }
+
     private static func loadCachedWordPressComSites(forKey key: String) -> [WPCOMSite] {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([WPCOMSite].self, from: data) else {
@@ -1191,6 +1219,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         UserDefaults.standard.removeObject(forKey: wordpressComSitesCacheStorageKey)
         UserDefaults.standard.removeObject(forKey: wordpressAgentConversationsCacheStorageKey)
         wordpressComStatusMessage = "Signed out"
+    }
+
+    func setNetworkBypassesSystemProxy(_ bypassesSystemProxy: Bool) {
+        networkRoutingSettings = NetworkRoutingSettings(bypassesSystemProxy: bypassesSystemProxy)
     }
 
     func refreshWordPressComSites() async {
