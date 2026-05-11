@@ -1000,21 +1000,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let sites = try await sitesTask
             let currentUser = try? await userTask
             await MainActor.run {
-                let supportedSites = sites.filter(\.isWordPressAgentSupported)
-                let supportedSiteIDs = Set(supportedSites.map(\.id))
-                self.wordpressComSites = supportedSites
+                let siteIDs = Set(sites.map(\.id))
+                self.wordpressComSites = sites
                 self.wordpressComUser = currentUser
                 if let selected = self.selectedWordPressComSiteID,
-                   supportedSiteIDs.contains(selected) {
+                   siteIDs.contains(selected) {
                     // Keep the user's selected site.
                 } else {
-                    self.selectedWordPressComSiteID = supportedSites.first?.id
+                    self.selectedWordPressComSiteID = sites.first?.id
                 }
-                self.pruneWordPressComAppSiteOverrides(validSiteIDs: supportedSiteIDs)
-                self.pruneWordPressAgentRecentSites(validSiteIDs: supportedSiteIDs)
-                self.pruneWordPressAgentConversations(validSiteIDs: supportedSiteIDs)
+                self.pruneWordPressComAppSiteOverrides(validSiteIDs: siteIDs)
+                self.pruneWordPressAgentRecentSites(validSiteIDs: siteIDs)
                 self.isWordPressComSignedIn = true
-                self.wordpressComStatusMessage = supportedSites.isEmpty
+                self.wordpressComStatusMessage = sites.isEmpty
                     ? "No WordPress.com sites found"
                     : "Ready"
                 self.isRefreshingWordPressComSites = false
@@ -1161,17 +1159,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func pruneWordPressAgentConversations(validSiteIDs: Set<Int>) {
-        wordpressAgentConversations.removeAll { !validSiteIDs.contains($0.key.siteID) }
-
-        guard let selectedWordPressAgentConversationID,
-              wordpressAgentConversations.contains(where: { $0.id == selectedWordPressAgentConversationID }) else {
-            let fallbackConversation = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }
-            self.selectedWordPressAgentConversationID = fallbackConversation?.id
-            return
-        }
-    }
-
     private func normalizedBundleIdentifier(_ bundleIdentifier: String?) -> String? {
         guard let bundleIdentifier else { return nil }
         let trimmed = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1280,8 +1267,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 agentID: agentID,
                 summary: summary,
                 chat: chat
-            ),
-            wordpressComSites.contains(where: { $0.id == conversation.key.siteID }) else {
+            ) else {
                 continue
             }
 

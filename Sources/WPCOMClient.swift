@@ -56,7 +56,6 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
     let url: String?
     let slug: String?
     let icon: WPCOMSiteIcon?
-    let capabilities: WPCOMSiteCapabilities?
 
     var displayName: String {
         if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -74,17 +73,12 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         return URL(string: iconURLString)
     }
 
-    var isWordPressAgentSupported: Bool {
-        capabilities?.ownsSite != false
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id = "ID"
         case name
         case url = "URL"
         case slug
         case icon
-        case capabilities
     }
 
     init(
@@ -92,15 +86,13 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         name: String,
         url: String?,
         slug: String?,
-        icon: WPCOMSiteIcon? = nil,
-        capabilities: WPCOMSiteCapabilities? = nil
+        icon: WPCOMSiteIcon? = nil
     ) {
         self.id = id
         self.name = name
         self.url = url
         self.slug = slug
         self.icon = icon
-        self.capabilities = capabilities
     }
 
     init(from decoder: Decoder) throws {
@@ -116,47 +108,6 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         url = try? container.decode(String.self, forKey: .url)
         slug = try? container.decode(String.self, forKey: .slug)
         icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
-        capabilities = try? container.decode(WPCOMSiteCapabilities.self, forKey: .capabilities)
-    }
-}
-
-struct WPCOMSiteCapabilities: Codable, Equatable {
-    let ownsSite: Bool?
-
-    private enum CodingKeys: String, CodingKey {
-        case ownsSite = "own_site"
-    }
-
-    init(ownsSite: Bool? = nil) {
-        self.ownsSite = ownsSite
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        ownsSite = Self.decodeFlexibleBool(from: container, forKey: .ownsSite)
-    }
-
-    private static func decodeFlexibleBool(
-        from container: KeyedDecodingContainer<CodingKeys>,
-        forKey key: CodingKeys
-    ) -> Bool? {
-        if let value = try? container.decode(Bool.self, forKey: key) {
-            return value
-        }
-        if let value = try? container.decode(Int.self, forKey: key) {
-            return value != 0
-        }
-        if let value = try? container.decode(String.self, forKey: key) {
-            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "1", "true", "yes":
-                return true
-            case "0", "false", "no":
-                return false
-            default:
-                return nil
-            }
-        }
-        return nil
     }
 }
 
@@ -1112,7 +1063,7 @@ final class WPCOMClient: NSObject {
     func fetchSites() async throws -> [WPCOMSite] {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
         components.queryItems = [
-            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon,capabilities")
+            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon")
         ]
         let data = try await authenticatedData(for: components.url!)
         let response = try JSONDecoder().decode(SitesResponse.self, from: data)
