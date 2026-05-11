@@ -356,9 +356,12 @@ struct WordPressAgentWindowView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .onAppear {
+                            loadMoreConversationsIfNeeded(after: conversation)
+                        }
                     }
 
-                    if normalizedSearch.isEmpty {
+                    if appState.isLoadingMoreWordPressAgentConversations {
                         conversationPaginationRow
                     }
                 }
@@ -368,20 +371,23 @@ struct WordPressAgentWindowView: View {
 
     @ViewBuilder
     private var conversationPaginationRow: some View {
-        if appState.isLoadingMoreWordPressAgentConversations {
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                SidebarEmptyText("Loading more...")
-            }
-            .padding(.horizontal, 8)
-        } else if appState.canLoadMoreWordPressAgentConversations {
-            Color.clear
-                .frame(height: 1)
-                .onAppear {
-                    appState.loadMoreWordPressAgentConversationsFromUI()
-                }
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            SidebarEmptyText("Loading more...")
         }
+        .padding(.horizontal, 8)
+    }
+
+    private func loadMoreConversationsIfNeeded(after conversation: WordPressAgentConversation) {
+        guard normalizedSearch.isEmpty,
+              appState.canLoadMoreWordPressAgentConversations,
+              !appState.isRefreshingWordPressAgentConversations,
+              !appState.isLoadingMoreWordPressAgentConversations,
+              visibleConversations.last?.id == conversation.id else {
+            return
+        }
+        appState.loadMoreWordPressAgentConversationsFromUI()
     }
 
     private var accountFooter: some View {
