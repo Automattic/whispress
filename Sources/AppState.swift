@@ -110,10 +110,12 @@ struct WordPressAgentPreview: Identifiable, Equatable {
     let id: UUID
     let url: URL
     let title: String?
+    let siteID: Int?
 
-    init(id: UUID = UUID(), url: URL, title: String? = nil) {
+    init(id: UUID = UUID(), url: URL, title: String? = nil, siteID: Int? = nil) {
         self.id = id
         self.url = url
+        self.siteID = siteID
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.title = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
     }
@@ -469,6 +471,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var hasLoadedWordPressAgentConversations = false
     @Published private(set) var wordpressAgentHistoryStatusMessage: String?
     @Published private(set) var wordpressAgentPreview: WordPressAgentPreview?
+    private var wordpressAgentPreviewsByConversationID: [String: WordPressAgentPreview] = [:]
     @Published private(set) var isWordPressAgentWindowFocused = false
     @Published private(set) var isWordPressAgentUtilityOverlayFocused = false
     @Published var errorMessage: String?
@@ -981,6 +984,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations = []
         selectedWordPressAgentConversationID = nil
         wordpressAgentPreview = nil
+        wordpressAgentPreviewsByConversationID = [:]
         isRefreshingWordPressAgentConversations = false
         hasLoadedWordPressAgentConversations = false
         wordpressAgentHistoryStatusMessage = nil
@@ -1302,7 +1306,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if selectedWordPressAgentConversationID == nil {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
+            setActiveWordPressAgentConversation(
+                sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
+            )
         }
     }
 
@@ -1394,7 +1400,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func selectWordPressAgentConversation(_ conversationID: String?) {
         guard let conversationID else {
             let fallbackConversation = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }
-            selectedWordPressAgentConversationID = fallbackConversation?.id
+            setActiveWordPressAgentConversation(fallbackConversation?.id)
             if let siteID = fallbackConversation?.key.siteID, siteID > 0 {
                 selectedWordPressComSiteID = siteID
             }
@@ -1403,14 +1409,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         guard let conversation = wordpressAgentConversations.first(where: { $0.id == conversationID }) else {
             let fallbackConversation = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }
-            selectedWordPressAgentConversationID = fallbackConversation?.id
+            setActiveWordPressAgentConversation(fallbackConversation?.id)
             if let siteID = fallbackConversation?.key.siteID, siteID > 0 {
                 selectedWordPressComSiteID = siteID
             }
             return
         }
         removeEmptyWordPressAgentDrafts(except: conversationID)
-        selectedWordPressAgentConversationID = conversationID
+        setActiveWordPressAgentConversation(conversationID)
         if conversation.key.siteID > 0 {
             selectedWordPressComSiteID = conversation.key.siteID
             recordWordPressAgentSiteUse(conversation.key.siteID)
@@ -1441,7 +1447,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let conversationID = createWordPressAgentConversation(for: key)
         recordWordPressAgentSiteUse(siteID)
         selectedWordPressComSiteID = siteID
-        selectedWordPressAgentConversationID = conversationID
+        setActiveWordPressAgentConversation(conversationID)
         return conversationID
     }
 
@@ -1470,14 +1476,46 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @MainActor
     func openWordPressAgentPreview(url: URL, title: String? = nil, conversationID: String? = nil) {
+        let targetConversationID = conversationID
+            ?? selectedWordPressAgentConversationID
+            ?? startWordPressAgentConversation(siteID: selectedWordPressComSiteID)
         let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
-        wordpressAgentPreview = WordPressAgentPreview(url: previewURL, title: title)
-        showWordPressAgentWindow(conversationID: conversationID ?? selectedWordPressAgentConversationID)
+        let preview = WordPressAgentPreview(
+            url: previewURL,
+            title: title,
+            siteID: siteIDForWordPressAgentPreview(conversationID: targetConversationID)
+        )
+
+        if let targetConversationID {
+            wordpressAgentPreviewsByConversationID[targetConversationID] = preview
+        }
+        wordpressAgentPreview = preview
+        showWordPressAgentWindow(conversationID: targetConversationID)
     }
 
     @MainActor
     func closeWordPressAgentPreview() {
+        if let selectedWordPressAgentConversationID {
+            wordpressAgentPreviewsByConversationID[selectedWordPressAgentConversationID] = nil
+        }
         wordpressAgentPreview = nil
+    }
+
+    private func setActiveWordPressAgentConversation(_ conversationID: String?) {
+        selectedWordPressAgentConversationID = conversationID
+        wordpressAgentPreview = conversationID.flatMap { wordpressAgentPreviewsByConversationID[$0] }
+    }
+
+    private func siteIDForWordPressAgentPreview(conversationID: String?) -> Int? {
+        let siteID = conversationID
+            .flatMap { conversationID in
+                wordpressAgentConversations.first(where: { $0.id == conversationID })?.key.siteID
+            }
+            ?? selectedWordPressAgentConversation?.key.siteID
+            ?? selectedWordPressComSiteID
+
+        guard let siteID, siteID > 0 else { return nil }
+        return siteID
     }
 
     func importImagesIntoWordPressAgentChat(
@@ -2000,7 +2038,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].isSending = markSending
         wordpressAgentConversations[index].errorMessage = nil
         recordWordPressAgentSiteUse(key.siteID)
-        selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+        setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
         return WordPressAgentAppendResult(
             conversationID: wordpressAgentConversations[index].id,
             sessionID: wordpressAgentConversations[index].sessionID
@@ -2030,7 +2068,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = false
         wordpressAgentConversations[index].errorMessage = nil
-        selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+        setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
     }
 
     private func setWordPressAgentError(_ error: String, for conversationID: String) {
@@ -2040,7 +2078,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         wordpressAgentConversations[index].isSending = false
         wordpressAgentConversations[index].errorMessage = error
-        selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+        setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
     }
 
     private func markWordPressAgentConversation(
@@ -2059,7 +2097,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             WordPressAgentMessage(role: .system, text: error, state: "failed")
         )
         wordpressAgentConversations[index].lastUpdated = Date()
-        selectedWordPressAgentConversationID = wordpressAgentConversations[index].id
+        setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
     }
 
     @MainActor
@@ -2090,7 +2128,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].isSending = false
         wordpressAgentConversations[index].errorMessage = nil
         selectedWordPressComSiteID = siteID
-        selectedWordPressAgentConversationID = conversationID
+        setActiveWordPressAgentConversation(conversationID)
         recordWordPressAgentSiteUse(siteID)
         return conversationID
     }
