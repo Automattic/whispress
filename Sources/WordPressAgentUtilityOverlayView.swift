@@ -108,11 +108,11 @@ struct WordPressAgentUtilityOverlayView: View {
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(canSendMessage ? .white : .secondary)
+                        .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
                         .frame(width: 36, height: 36)
                         .background(
                             Circle()
-                                .fill(canSendMessage ? Color.black : Color.black.opacity(0.08))
+                                .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
                         )
                 }
                 .buttonStyle(.plain)
@@ -244,7 +244,7 @@ private struct UtilityOverlayAttachmentPill: View {
         .frame(height: 32)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.black.opacity(0.06))
+                .fill(AgentPalette.softControl)
         )
     }
 }

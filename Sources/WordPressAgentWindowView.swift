@@ -131,7 +131,7 @@ struct WordPressAgentWindowView: View {
                 .frame(width: 292)
 
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(AgentPalette.separator)
                 .frame(width: 1)
 
             contentArea
@@ -208,10 +208,10 @@ struct WordPressAgentWindowView: View {
         .frame(height: 40)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.72))
+                .fill(AgentPalette.searchField)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                        .stroke(AgentPalette.controlStroke, lineWidth: 1)
                 )
         )
     }
@@ -342,7 +342,7 @@ struct WordPressAgentWindowView: View {
     private var accountFooter: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(AgentPalette.separator)
                 .frame(height: 1)
 
             Button {
@@ -656,11 +656,11 @@ struct WordPressAgentWindowView: View {
                     } label: {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(canSendMessage ? .white : .secondary)
+                            .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
                             .frame(width: 36, height: 36)
                             .background(
                                 Circle()
-                                    .fill(canSendMessage ? Color.black : Color.black.opacity(0.08))
+                                    .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
                             )
                     }
                     .buttonStyle(.plain)
@@ -675,7 +675,7 @@ struct WordPressAgentWindowView: View {
                     .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                            .stroke(AgentPalette.controlStroke, lineWidth: 1)
                     )
             )
             .frame(maxWidth: 820)
@@ -814,7 +814,7 @@ private struct WordPressAgentPreviewPanel: View {
             .background(Color(nsColor: .windowBackgroundColor))
 
             Rectangle()
-                .fill(Color.black.opacity(0.08))
+                .fill(AgentPalette.separator)
                 .frame(height: 1)
 
             WordPressAgentWebPreview(url: preview.url)
@@ -926,11 +926,17 @@ private final class PreviewResizeHandleView: NSView {
         super.draw(dirtyRect)
 
         if isHovered || dragStartX != nil {
-            NSColor.black.withAlphaComponent(0.045).setFill()
+            let hoverFill = effectiveAppearance.isDarkMode
+                ? NSColor.white.withAlphaComponent(0.04)
+                : NSColor.black.withAlphaComponent(0.045)
+            hoverFill.setFill()
             bounds.fill()
         }
 
-        NSColor.black.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.1).setFill()
+        let separatorFill = effectiveAppearance.isDarkMode
+            ? NSColor.white.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.10)
+            : NSColor.black.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.10)
+        separatorFill.setFill()
         NSRect(x: floor(bounds.midX), y: 0, width: 1, height: bounds.height).fill()
 
         NSColor.secondaryLabelColor
@@ -1053,12 +1059,58 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     }
 }
 
-private enum AgentPalette {
-    static let sidebar = Color(red: 0.972, green: 0.958, blue: 0.974)
-    static let sidebarSelection = Color.black.opacity(0.06)
+enum AgentPalette {
+    static let sidebar = dynamicColor(
+        light: NSColor(calibratedRed: 0.972, green: 0.958, blue: 0.974, alpha: 1),
+        dark: NSColor(calibratedRed: 0.120, green: 0.116, blue: 0.128, alpha: 1)
+    )
+    static let sidebarSelection = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
     static let workspace = Color(nsColor: .textBackgroundColor)
     static let composer = Color(nsColor: .windowBackgroundColor)
-    static let softControl = Color.black.opacity(0.055)
+    static let softControl = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.055),
+        dark: NSColor.white.withAlphaComponent(0.07)
+    )
+    static let searchField = dynamicColor(
+        light: NSColor.white.withAlphaComponent(0.72),
+        dark: NSColor.white.withAlphaComponent(0.07)
+    )
+    static let separator = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
+    static let controlStroke = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.10)
+    )
+    static let disabledControl = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.08),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
+    static let primaryActionFill = dynamicColor(
+        light: .black,
+        dark: .white
+    )
+    static let primaryActionIcon = dynamicColor(
+        light: .white,
+        dark: .black
+    )
+    static let secondaryText = Color(nsColor: .secondaryLabelColor)
+
+    private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.isDarkMode ? dark : light
+        })
+    }
+}
+
+private extension NSAppearance {
+    var isDarkMode: Bool {
+        bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
 }
 
 private struct SidebarSectionHeader: View {
@@ -1275,7 +1327,7 @@ private struct ComposerAttachmentPill: View {
         .frame(height: 40)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.045))
+                .fill(AgentPalette.softControl)
         )
     }
 }
@@ -1338,7 +1390,7 @@ private struct LocalImageThumbnail: View {
             }
         }
         .frame(width: width, height: height)
-        .background(Color.black.opacity(0.06))
+        .background(AgentPalette.softControl)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
