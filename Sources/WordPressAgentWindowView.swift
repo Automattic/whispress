@@ -1470,6 +1470,10 @@ private struct ConversationSidebarRow: View {
         site?.displayName ?? conversation.title
     }
 
+    private var lastUpdatedText: String {
+        Self.relativeTimestamp(from: conversation.lastUpdated)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             if let site {
@@ -1490,12 +1494,21 @@ private struct ConversationSidebarRow: View {
 
                 HStack(spacing: 6) {
                     Text(subtitle)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(conversation.lastUpdated, style: .relative)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(AgentPalette.softControl.opacity(isSelected ? 0.85 : 0.62))
+                        )
+
+                    Text(lastUpdatedText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 8)
@@ -1505,6 +1518,33 @@ private struct ConversationSidebarRow: View {
                 .fill(isSelected ? AgentPalette.sidebarSelection : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+
+    private static func relativeTimestamp(from date: Date) -> String {
+        let interval = max(0, Date().timeIntervalSince(date))
+        if interval < 60 {
+            return "now"
+        }
+
+        let minute = 60.0
+        let hour = 60.0 * minute
+        let day = 24.0 * hour
+        let month = 30.0 * day
+        let year = 365.0 * day
+
+        if interval < hour {
+            return "\(max(1, Int(interval / minute))) min"
+        }
+        if interval < day {
+            return "\(max(1, Int(interval / hour))) h"
+        }
+        if interval < month {
+            return "\(max(1, Int(interval / day))) d"
+        }
+        if interval < year {
+            return "\(max(1, Int(interval / month))) mo"
+        }
+        return "\(max(1, Int(interval / year))) y"
     }
 }
 
