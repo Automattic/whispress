@@ -18,6 +18,7 @@ struct WordPressAgentWindowView: View {
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
     private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
+    private static let pasteableImageContentTypes: [UTType] = [.fileURL, .image]
 
     private var selectedConversation: WordPressAgentConversation? {
         appState.selectedWordPressAgentConversation
@@ -650,6 +651,9 @@ struct WordPressAgentWindowView: View {
                     .lineLimit(1...5)
                     .focused($isComposerFocused)
                     .onSubmit(sendDraftMessage)
+                    .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+                        pasteImagesFromClipboard()
+                    }
                     .disabled(isComposerInputDisabled)
 
                 HStack(spacing: 14) {
@@ -722,6 +726,16 @@ struct WordPressAgentWindowView: View {
             guard shouldRestoreComposerFocusAfterSend else { return }
             restoreComposerFocusSoon(clearPending: false)
         }
+        .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+            pasteImagesFromClipboard()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pasteImageIntoWordPressAgentComposer)) { notification in
+            guard isComposerFocused,
+                  let request = notification.object as? WordPressAgentComposerPasteRequest else {
+                return
+            }
+            request.handled = pasteImagesFromClipboardIfAvailable()
+        }
     }
 
     private var canSendMessage: Bool {
@@ -780,10 +794,135 @@ struct WordPressAgentWindowView: View {
 
         guard panel.runModal() == .OK else { return }
 
+        appendPendingImageURLs(panel.urls)
+    }
+
+    private func pasteImagesFromClipboard() {
+        _ = pasteImagesFromClipboardIfAvailable()
+    }
+
+    private func pasteImagesFromClipboardIfAvailable() -> Bool {
+        guard !isComposerDisabled else { return false }
+
+        do {
+            let pastedImageURLs = try Self.imageFileURLs(from: NSPasteboard.general)
+            guard !pastedImageURLs.isEmpty else { return false }
+            appendPendingImageURLs(pastedImageURLs)
+            isComposerFocused = true
+            return true
+        } catch {
+            showImagePasteError(error)
+            return true
+        }
+    }
+
+    private func appendPendingImageURLs(_ urls: [URL]) {
         var existingURLs = Set(pendingImageURLs)
-        for url in panel.urls where existingURLs.insert(url).inserted {
+        for url in urls where existingURLs.insert(url).inserted {
             pendingImageURLs.append(url)
         }
+    }
+
+    private static func imageFileURLs(from pasteboard: NSPasteboard) throws -> [URL] {
+        let existingFileURLs = existingImageFileURLs(from: pasteboard)
+        if !existingFileURLs.isEmpty {
+            return existingFileURLs
+        }
+
+        return try writeImageDataFromPasteboard(pasteboard)
+    }
+
+    private static func existingImageFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) ?? []
+        let urls = objects.compactMap { object -> URL? in
+            if let url = object as? URL {
+                return url
+            }
+            if let url = object as? NSURL {
+                return url as URL
+            }
+            return nil
+        }
+
+        let legacyFileURLs = (pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] ?? [])
+            .map(URL.init(fileURLWithPath:))
+
+        let fileURLStringURLs = pasteboard.string(forType: .fileURL)
+            .flatMap(URL.init(string:))
+            .map { [$0] } ?? []
+
+        var seenPaths = Set<String>()
+        let uniqueURLs = (urls + legacyFileURLs + fileURLStringURLs).filter { url in
+            guard url.isFileURL else { return false }
+            return seenPaths.insert(url.standardizedFileURL.path).inserted
+        }
+
+        return ImageImportProcessor.supportedImageFileURLs(from: uniqueURLs)
+    }
+
+    private struct PasteboardImagePayload {
+        let data: Data
+        let fileExtension: String
+    }
+
+    private static func writeImageDataFromPasteboard(_ pasteboard: NSPasteboard) throws -> [URL] {
+        var payloads = (pasteboard.pasteboardItems ?? []).compactMap(imagePayload)
+
+        if payloads.isEmpty,
+           let image = NSImage(pasteboard: pasteboard),
+           let pngData = pngData(from: image) {
+            payloads = [PasteboardImagePayload(data: pngData, fileExtension: "png")]
+        }
+
+        guard !payloads.isEmpty else { return [] }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WPWorkspacePastedImages", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        return try payloads.map { payload in
+            let filename = "pasted-image-\(String(UUID().uuidString.prefix(8)).lowercased()).\(payload.fileExtension)"
+            let url = directory.appendingPathComponent(filename)
+            try payload.data.write(to: url, options: .atomic)
+            return url
+        }
+    }
+
+    private static func imagePayload(from item: NSPasteboardItem) -> PasteboardImagePayload? {
+        let preferredTypes: [(NSPasteboard.PasteboardType, String)] = [
+            (NSPasteboard.PasteboardType("public.png"), "png"),
+            (NSPasteboard.PasteboardType("public.jpeg"), "jpg"),
+            (NSPasteboard.PasteboardType("public.tiff"), "tiff"),
+            (NSPasteboard.PasteboardType("com.compuserve.gif"), "gif"),
+            (NSPasteboard.PasteboardType("org.webmproject.webp"), "webp")
+        ]
+
+        for (type, fileExtension) in preferredTypes {
+            if let data = item.data(forType: type), !data.isEmpty {
+                return PasteboardImagePayload(data: data, fileExtension: fileExtension)
+            }
+        }
+
+        return nil
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private func showImagePasteError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not paste image."
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func site(for siteID: Int) -> WPCOMSite? {
@@ -1568,11 +1707,81 @@ private struct MarkdownMessageText: View {
     let foregroundStyle: Color
 
     var body: some View {
-        Text(Self.messageAttributedString(from: text))
-            .textSelection(.enabled)
-            .font(.system(size: 16))
-            .lineSpacing(4)
-            .foregroundStyle(foregroundStyle)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Self.messageFragments(from: text)) { fragment in
+                switch fragment {
+                case .text(_, let fragmentText):
+                    if !fragmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(Self.messageAttributedString(from: fragmentText))
+                            .textSelection(.enabled)
+                            .font(.system(size: 16))
+                            .lineSpacing(4)
+                            .foregroundStyle(foregroundStyle)
+                    }
+                case .image(_, let altText, let url):
+                    RemoteMarkdownImage(url: url, altText: altText)
+                }
+            }
+        }
+    }
+
+    private enum MessageFragment: Identifiable {
+        case text(Int, String)
+        case image(Int, altText: String, url: URL)
+
+        var id: Int {
+            switch self {
+            case .text(let id, _), .image(let id, _, _):
+                return id
+            }
+        }
+    }
+
+    private static func messageFragments(from text: String) -> [MessageFragment] {
+        guard let expression = markdownImageExpression else {
+            return [.text(0, text)]
+        }
+
+        let source = text as NSString
+        let fullRange = NSRange(location: 0, length: source.length)
+        let matches = expression.matches(in: text, options: [], range: fullRange)
+        guard !matches.isEmpty else {
+            return [.text(0, text)]
+        }
+
+        var fragments: [MessageFragment] = []
+        var cursor = 0
+
+        for match in matches {
+            guard match.range.location != NSNotFound else { continue }
+
+            if match.range.location > cursor {
+                let textRange = NSRange(location: cursor, length: match.range.location - cursor)
+                fragments.append(.text(fragments.count, source.substring(with: textRange)))
+            }
+
+            let originalMarkdown = source.substring(with: match.range)
+            let altText = substring(in: source, range: match.range(at: 1))
+            let rawURLString = substring(in: source, range: match.range(at: 2))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+
+            if let url = URL(string: rawURLString),
+               let scheme = url.scheme?.lowercased(),
+               ["http", "https"].contains(scheme) {
+                fragments.append(.image(fragments.count, altText: altText, url: url))
+            } else {
+                fragments.append(.text(fragments.count, originalMarkdown))
+            }
+
+            cursor = match.range.location + match.range.length
+        }
+
+        if cursor < source.length {
+            let textRange = NSRange(location: cursor, length: source.length - cursor)
+            fragments.append(.text(fragments.count, source.substring(with: textRange)))
+        }
+
+        return fragments.isEmpty ? [.text(0, text)] : fragments
     }
 
     private static func messageAttributedString(from text: String) -> AttributedString {
@@ -1601,6 +1810,263 @@ private struct MarkdownMessageText: View {
         }
 
         return attributedText
+    }
+
+    private static var markdownImageExpression: NSRegularExpression? {
+        try? NSRegularExpression(
+            pattern: #"!\[([^\]]*)\]\(\s*([^\s\)]+)(?:\s+"[^"]*")?\s*\)"#,
+            options: []
+        )
+    }
+
+    private static func substring(in source: NSString, range: NSRange) -> String {
+        guard range.location != NSNotFound else { return "" }
+        return source.substring(with: range)
+    }
+}
+
+private struct RemoteMarkdownImage: View {
+    let url: URL
+    let altText: String
+    private let maximumDisplaySize = CGSize(width: 520, height: 360)
+    @Environment(\.openURL) private var openURL
+    @StateObject private var imageLoader = CachedRemoteImageLoader()
+
+    var body: some View {
+        Button {
+            openURL(url)
+        } label: {
+            content
+        }
+        .buttonStyle(.plain)
+        .help(url.absoluteString)
+        .accessibilityLabel(accessibilityLabel)
+        .contextMenu {
+            Button {
+                copyImage()
+            } label: {
+                Label("Copy Image", systemImage: "photo.on.rectangle")
+            }
+
+            Button {
+                copyImageURL()
+            } label: {
+                Label("Copy Image URL", systemImage: "link")
+            }
+
+            Divider()
+
+            Button {
+                saveImageAs()
+            } label: {
+                Label("Save Image As...", systemImage: "square.and.arrow.down")
+            }
+
+            Button {
+                openURL(url)
+            } label: {
+                Label("Open Image", systemImage: "safari")
+            }
+        }
+        .onAppear {
+            imageLoader.load(url)
+        }
+        .onChange(of: url) { newURL in
+            imageLoader.load(newURL)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let image = imageLoader.image {
+            loadedImage(image)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(AgentPalette.searchField)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(AgentPalette.controlStroke, lineWidth: 1)
+                    )
+
+                if imageLoader.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 24, weight: .medium))
+
+                        if !altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(altText)
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                }
+            }
+            .frame(width: maximumDisplaySize.width, height: 180)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        let trimmedAltText = altText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAltText.isEmpty ? "Image" : trimmedAltText
+    }
+
+    private func loadedImage(_ image: NSImage) -> some View {
+        let displaySize = fittedDisplaySize(for: image)
+
+        return Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(width: displaySize.width, height: displaySize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(AgentPalette.controlStroke, lineWidth: 1)
+            )
+    }
+
+    private func fittedDisplaySize(for image: NSImage) -> CGSize {
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            return maximumDisplaySize
+        }
+
+        let scale = min(
+            maximumDisplaySize.width / imageSize.width,
+            maximumDisplaySize.height / imageSize.height,
+            1
+        )
+
+        return CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+    }
+
+    private func copyImage() {
+        if let image = imageLoader.image {
+            Self.writeImageToPasteboard(image)
+            return
+        }
+
+        let cachedData = imageLoader.imageData
+        Task {
+            do {
+                let data = try await Self.loadImageData(from: url, cachedData: cachedData)
+                guard let image = NSImage(data: data) else {
+                    throw URLError(.cannotDecodeContentData)
+                }
+                await MainActor.run {
+                    Self.writeImageToPasteboard(image)
+                }
+            } catch {
+                await MainActor.run {
+                    showImageActionError(title: "Could not copy image.", error: error)
+                }
+            }
+        }
+    }
+
+    private func copyImageURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+
+    private func saveImageAs() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = suggestedFilename
+
+        if let contentType = suggestedContentType {
+            panel.allowedContentTypes = [contentType]
+        }
+
+        guard panel.runModal() == .OK,
+              let destinationURL = panel.url else {
+            return
+        }
+
+        let cachedData = imageLoader.imageData
+        Task {
+            do {
+                let data = try await Self.loadImageData(from: url, cachedData: cachedData)
+                try data.write(to: destinationURL, options: .atomic)
+            } catch {
+                await MainActor.run {
+                    showImageActionError(title: "Could not save image.", error: error)
+                }
+            }
+        }
+    }
+
+    private var suggestedFilename: String {
+        let decodedLastPathComponent = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        let trimmedLastPathComponent = decodedLastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLastPathComponent.isEmpty {
+            return trimmedLastPathComponent
+        }
+
+        let baseName = sanitizedFilenameComponent(from: altText) ?? "image"
+        let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        return pathExtension.isEmpty ? "\(baseName).png" : "\(baseName).\(pathExtension)"
+    }
+
+    private var suggestedContentType: UTType? {
+        guard !url.pathExtension.isEmpty,
+              let type = UTType(filenameExtension: url.pathExtension),
+              type.conforms(to: .image) else {
+            return nil
+        }
+        return type
+    }
+
+    private func sanitizedFilenameComponent(from text: String) -> String? {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return nil }
+
+        let forbiddenCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+        let sanitizedText = trimmedText
+            .components(separatedBy: forbiddenCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+
+        guard !sanitizedText.isEmpty else { return nil }
+        return String(sanitizedText.prefix(80))
+    }
+
+    private static func loadImageData(from url: URL, cachedData: Data?) async throws -> Data {
+        if let cachedData {
+            return cachedData
+        }
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 20
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        return data
+    }
+
+    private static func writeImageToPasteboard(_ image: NSImage) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+    }
+
+    private func showImageActionError(title: String, error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
 
@@ -1650,9 +2116,11 @@ private struct RemoteAvatar: View {
 @MainActor
 private final class CachedRemoteImageLoader: ObservableObject {
     @Published private(set) var image: NSImage?
+    @Published private(set) var imageData: Data?
     @Published private(set) var isLoading = false
 
     private static let cache = NSCache<NSURL, NSImage>()
+    private static let dataCache = NSCache<NSURL, NSData>()
     private var loadedURL: URL?
     private var task: Task<Void, Never>?
 
@@ -1662,12 +2130,14 @@ private final class CachedRemoteImageLoader: ObservableObject {
         task?.cancel()
         loadedURL = url
         image = nil
+        imageData = nil
         isLoading = false
 
         guard let url else { return }
 
         if let cachedImage = Self.cache.object(forKey: url as NSURL) {
             image = cachedImage
+            imageData = Self.dataCache.object(forKey: url as NSURL) as Data?
             return
         }
 
@@ -1693,11 +2163,14 @@ private final class CachedRemoteImageLoader: ObservableObject {
                 }
 
                 Self.cache.setObject(decodedImage, forKey: url as NSURL)
+                Self.dataCache.setObject(data as NSData, forKey: url as NSURL)
                 self?.image = decodedImage
+                self?.imageData = data
                 self?.isLoading = false
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.image = nil
+                self?.imageData = nil
                 self?.isLoading = false
             }
         }

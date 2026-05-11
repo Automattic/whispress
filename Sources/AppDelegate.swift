@@ -50,6 +50,36 @@ private final class AgentUtilityOverlayPanel: NSPanel {
     }
 }
 
+private final class WordPressAgentWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if Self.isPasteKeyEvent(event), requestImagePasteIntoComposer() {
+            return
+        }
+
+        super.sendEvent(event)
+    }
+
+    private func requestImagePasteIntoComposer() -> Bool {
+        let request = WordPressAgentComposerPasteRequest()
+        NotificationCenter.default.post(name: .pasteImageIntoWordPressAgentComposer, object: request)
+        return request.handled
+    }
+
+    private static func isPasteKeyEvent(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+
+        let flags = event.modifierFlags
+        guard flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control),
+              !flags.contains(.shift) else {
+            return false
+        }
+
+        return event.keyCode == 9 || event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+}
+
 private final class StatusItemDropView: NSView {
     static let preferredSize = NSSize(width: NSStatusBar.system.thickness, height: NSStatusBar.system.thickness)
 
@@ -1182,7 +1212,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(appState)
         let hostingView = NSHostingView(rootView: agentView)
 
-        let window = NSWindow(
+        let window = WordPressAgentWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
