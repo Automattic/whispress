@@ -366,33 +366,35 @@ struct WordPressAgentWindowView: View {
 
     @ViewBuilder
     private var conversationPaginationRow: some View {
-        if appState.isLoadingMoreWordPressAgentConversations {
+        Button {
+            if !appState.isLoadingMoreWordPressAgentConversations {
+                appState.loadMoreWordPressAgentConversationsFromUI()
+            }
+        } label: {
             HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Loading previous conversations...")
-                    .font(.system(size: 12))
+                if appState.isLoadingMoreWordPressAgentConversations {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text(appState.isLoadingMoreWordPressAgentConversations
+                    ? "Loading previous conversations..."
+                    : "Load previous conversations")
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
-        } else {
-            Button {
-                appState.loadMoreWordPressAgentConversationsFromUI()
-            } label: {
-                Text("Load previous conversations")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(AgentPalette.softControl.opacity(0.55))
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(appState.isRefreshingWordPressAgentConversations)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(AgentPalette.softControl.opacity(
+                        appState.isLoadingMoreWordPressAgentConversations ? 0.72 : 0.55
+                    ))
+            )
         }
+        .buttonStyle(.plain)
+        .disabled(appState.isRefreshingWordPressAgentConversations
+            || appState.isLoadingMoreWordPressAgentConversations)
     }
 
     private var accountFooter: some View {
