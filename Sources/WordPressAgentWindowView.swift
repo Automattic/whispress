@@ -8,8 +8,8 @@ struct WordPressAgentWindowView: View {
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
-    @State private var isStarredSitesExpanded = true
-    @State private var isAllSitesExpanded = true
+    @AppStorage("wordpress_agent_starred_sites_expanded") private var isStarredSitesExpanded = true
+    @AppStorage("wordpress_agent_all_sites_expanded") private var isAllSitesExpanded = true
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
