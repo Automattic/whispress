@@ -804,23 +804,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(submenuItem(title: "Hold Shortcut", submenu: shortcutMenu(for: .hold)))
-        menu.addItem(submenuItem(title: "Toggle Shortcut", submenu: shortcutMenu(for: .toggle)))
-        menu.addItem(submenuItem(title: "Quick Ask Shortcut", submenu: shortcutMenu(for: .agentUtilityOverlay)))
         menu.addItem(submenuItem(title: "Microphone", submenu: microphoneMenu()))
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Re-run Setup...") {
-            NotificationCenter.default.post(name: .showSetup, object: nil)
-        })
         menu.addItem(actionItem("Settings") {
             NotificationCenter.default.post(name: .showSettings, object: nil)
         })
 
         menu.addItem(.separator())
-        menu.addItem(actionItem(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") { [weak self] in
-            self?.appState.toggleDebugOverlay()
-        })
         menu.addItem(actionItem("Quit WP Workspace", keyEquivalent: "q") {
             NSApplication.shared.terminate(nil)
         })

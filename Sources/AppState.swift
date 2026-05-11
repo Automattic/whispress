@@ -222,6 +222,7 @@ struct ImageImportUploadResult: Equatable {
 enum SettingsTab: String, CaseIterable, Identifiable {
     case permissions
     case keyBindings
+    case transcription
     case wordpressCom
     case wordpressAgent
 
@@ -231,6 +232,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .permissions: return "Permissions"
         case .keyBindings: return "Key Bindings"
+        case .transcription: return "Transcription"
         case .wordpressCom: return "WordPress.com"
         case .wordpressAgent: return "WordPress Agent"
         }
@@ -240,6 +242,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .permissions: return "lock.shield"
         case .keyBindings: return "keyboard"
+        case .transcription: return "waveform"
         case .wordpressCom: return "person.crop.circle.badge.checkmark"
         case .wordpressAgent: return "sparkles"
         }
@@ -353,6 +356,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeEnabledStorageKey = "command_mode_enabled"
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
+    private let saveTranscriptionArtifactsStorageKey = "save_transcription_artifacts"
     private let wordpressAgentEnabledStorageKey = "wordpress_agent_enabled"
     private let wordpressAgentSpeakRepliesStorageKey = "wordpress_agent_speak_replies"
     private let wordpressAgentSpeechProviderStorageKey = "wordpress_agent_speech_provider"
@@ -462,6 +466,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var soundVolume: Float {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
+        }
+    }
+
+    @Published var saveTranscriptionArtifacts: Bool {
+        didSet {
+            UserDefaults.standard.set(saveTranscriptionArtifacts, forKey: saveTranscriptionArtifactsStorageKey)
         }
     }
 
@@ -602,6 +612,29 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return wordpressComSites.first(where: { $0.id == selectedWordPressComSiteID })
     }
 
+    var wordpressComSitesSortedByStarred: [WPCOMSite] {
+        sortedWordPressComSitesByStarred(wordpressComSites)
+    }
+
+    func sortedWordPressComSitesByStarred(_ sites: [WPCOMSite]) -> [WPCOMSite] {
+        let starredOrder = Dictionary(uniqueKeysWithValues: starredWordPressAgentSiteIDs.enumerated().map { ($0.element, $0.offset) })
+        let originalOrder = Dictionary(uniqueKeysWithValues: sites.enumerated().map { ($0.element.id, $0.offset) })
+
+        return sites.sorted { lhs, rhs in
+            let lhsStarredIndex = starredOrder[lhs.id]
+            let rhsStarredIndex = starredOrder[rhs.id]
+            if (lhsStarredIndex != nil) != (rhsStarredIndex != nil) {
+                return lhsStarredIndex != nil
+            }
+            if let lhsStarredIndex,
+               let rhsStarredIndex,
+               lhsStarredIndex != rhsStarredIndex {
+                return lhsStarredIndex < rhsStarredIndex
+            }
+            return (originalOrder[lhs.id] ?? Int.max) < (originalOrder[rhs.id] ?? Int.max)
+        }
+    }
+
     func setWordPressAgentWindowFocused(_ isFocused: Bool) {
         let shouldRefreshRecentConversations = isFocused && !isWordPressAgentWindowFocused
         isWordPressAgentWindowFocused = isFocused
@@ -694,6 +727,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
             ? UserDefaults.standard.bool(forKey: alertSoundsEnabledStorageKey)
             : soundVolume > 0
+        let saveTranscriptionArtifacts = UserDefaults.standard.object(forKey: saveTranscriptionArtifactsStorageKey) != nil
+            ? UserDefaults.standard.bool(forKey: saveTranscriptionArtifactsStorageKey)
+            : false
         let isWordPressAgentEnabled = UserDefaults.standard.object(forKey: wordpressAgentEnabledStorageKey) != nil
             ? UserDefaults.standard.bool(forKey: wordpressAgentEnabledStorageKey)
             : false
@@ -743,6 +779,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.preserveClipboard = preserveClipboard
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
+        self.saveTranscriptionArtifacts = saveTranscriptionArtifacts
         self.isWordPressAgentEnabled = isWordPressAgentEnabled
         self.shouldSpeakWordPressAgentReplies = shouldSpeakWordPressAgentReplies
         self.wordpressAgentSpeechProvider = wordpressAgentSpeechProvider
@@ -3809,7 +3846,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         context: appContext,
                         siteID: sessionSiteID,
                         enableWordPressAgent: sessionWordPressAgentEnabled && sessionWordPressAgentConversationKey == nil,
-                        saveArtifact: true
+                        saveArtifact: self.saveTranscriptionArtifacts
                     )
                     try Task.checkCancellation()
 

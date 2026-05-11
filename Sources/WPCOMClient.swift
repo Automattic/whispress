@@ -1389,10 +1389,25 @@ final class WPCOMClient: NSObject {
     }
 
     func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
-        if let link = guideline.link, let url = URL(string: link) {
+        if let url = Self.wpAdminEditURL(postID: guideline.id, site: site) {
             return url
         }
         return URL(string: "https://wordpress.com/post/\(site.editorSitePath)/\(guideline.id)")!
+    }
+
+    private static func wpAdminEditURL(postID: Int, site: WPCOMSite) -> URL? {
+        let baseURLString = site.url ?? site.slug.map { "https://\($0)" }
+        guard let baseURLString,
+              var components = URLComponents(string: baseURLString) else {
+            return nil
+        }
+
+        components.path = "/wp-admin/post.php"
+        components.queryItems = [
+            URLQueryItem(name: "post", value: "\(postID)"),
+            URLQueryItem(name: "action", value: "edit")
+        ]
+        return components.url
     }
 
     private func authorize(url: URL) async throws -> URL {

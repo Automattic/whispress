@@ -4,10 +4,11 @@ struct WordPressSiteSearchPicker: View {
     let sites: [WPCOMSite]
     @Binding var selectedSiteID: Int?
     var maxVisibleRows = 6
+    var starredSiteIDs: [Int] = []
+    var onToggleStar: ((Int) -> Void)?
 
     @State private var searchText = ""
 
-    private let rowLimit = 80
     private let rowHeight: CGFloat = 44
 
     var body: some View {
@@ -23,21 +24,7 @@ struct WordPressSiteSearchPicker: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(visibleSites) { site in
-                            Button {
-                                selectedSiteID = site.id
-                                searchText = site.primarySearchText
-                            } label: {
-                                siteRow(site)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if hiddenMatchCount > 0 {
-                            Text("\(hiddenMatchCount) more matches")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
+                            siteRow(site)
                         }
                     }
                 }
@@ -77,11 +64,7 @@ struct WordPressSiteSearchPicker: View {
     }
 
     private var visibleSites: [WPCOMSite] {
-        Array(matchingSites.prefix(rowLimit))
-    }
-
-    private var hiddenMatchCount: Int {
-        max(0, matchingSites.count - rowLimit)
+        matchingSites
     }
 
     private var listHeight: CGFloat {
@@ -89,17 +72,13 @@ struct WordPressSiteSearchPicker: View {
         return CGFloat(visibleRows) * rowHeight
     }
 
-    private var selectedSite: WPCOMSite? {
-        guard let selectedSiteID else { return nil }
-        return sites.first { $0.id == selectedSiteID }
+    private var starredSiteOrder: [Int: Int] {
+        Dictionary(uniqueKeysWithValues: starredSiteIDs.enumerated().map { ($0.element, $0.offset) })
     }
 
     private var matchingSites: [WPCOMSite] {
         let tokens = normalizedTokens(searchText)
         guard !tokens.isEmpty else {
-            if let selectedSite {
-                return [selectedSite] + sites.filter { $0.id != selectedSite.id }
-            }
             return sites
         }
 
@@ -109,6 +88,17 @@ struct WordPressSiteSearchPicker: View {
                 return (site, score)
             }
             .sorted {
+                let lhsStarred = isStarred($0.site)
+                let rhsStarred = isStarred($1.site)
+                if lhsStarred != rhsStarred {
+                    return lhsStarred
+                }
+                if lhsStarred,
+                   let lhsIndex = starredSiteOrder[$0.site.id],
+                   let rhsIndex = starredSiteOrder[$1.site.id],
+                   lhsIndex != rhsIndex {
+                    return lhsIndex < rhsIndex
+                }
                 if $0.score != $1.score {
                     return $0.score > $1.score
                 }
@@ -119,34 +109,60 @@ struct WordPressSiteSearchPicker: View {
 
     private func siteRow(_ site: WPCOMSite) -> some View {
         let isSelected = site.id == selectedSiteID
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(site.displayName)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+        return HStack(spacing: 4) {
+            Button {
+                selectedSiteID = site.id
+                searchText = site.primarySearchText
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(site.displayName)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                Text(site.secondaryDisplayText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                        Text(site.secondaryDisplayText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 8)
-
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.blue)
+            if onToggleStar != nil {
+                Button {
+                    onToggleStar?(site.id)
+                } label: {
+                    Image(systemName: isStarred(site) ? "star.fill" : "star")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(isStarred(site) ? Color.yellow : Color.secondary)
+                        .frame(width: 30, height: rowHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isStarred(site) ? "Remove from Starred" : "Add to Starred")
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
-        .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
         )
+    }
+
+    private func isStarred(_ site: WPCOMSite) -> Bool {
+        starredSiteOrder[site.id] != nil
     }
 
     private func score(_ site: WPCOMSite, tokens: [String]) -> Int? {

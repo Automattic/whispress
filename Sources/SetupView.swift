@@ -255,7 +255,7 @@ struct SetupView: View {
 
                     if !appState.wordpressComSites.isEmpty {
                         WordPressSiteSearchPicker(
-                            sites: appState.wordpressComSites,
+                            sites: appState.wordpressComSitesSortedByStarred,
                             selectedSiteID: Binding(
                                 get: { appState.selectedWordPressComSiteID },
                                 set: { appState.selectedWordPressComSiteID = $0 }
