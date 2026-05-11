@@ -801,6 +801,8 @@ private struct WordPressAgentPreviewPanel: View {
     let preview: WordPressAgentPreview
     let onClose: () -> Void
 
+    @State private var previewReloadTrigger = 0
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -829,6 +831,18 @@ private struct WordPressAgentPreviewPanel: View {
                 Spacer(minLength: 10)
 
                 Button {
+                    previewReloadTrigger += 1
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Refresh preview")
+
+                Button {
                     NSWorkspace.shared.open(preview.url)
                 } label: {
                     Image(systemName: "arrow.up.right.square")
@@ -848,7 +862,7 @@ private struct WordPressAgentPreviewPanel: View {
                 .fill(AgentPalette.separator)
                 .frame(height: 1)
 
-            WordPressAgentWebPreview(url: preview.url)
+            WordPressAgentWebPreview(url: preview.url, reloadTrigger: previewReloadTrigger)
                 .id(preview.id)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -997,6 +1011,7 @@ private final class PreviewResizeHandleView: NSView {
 
 private struct WordPressAgentWebPreview: NSViewRepresentable {
     let url: URL
+    let reloadTrigger: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1015,6 +1030,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.load(url, in: webView)
+        context.coordinator.reloadIfNeeded(reloadTrigger, in: webView)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -1025,12 +1041,19 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private var loadedURL: URL?
+        private var lastReloadTrigger = 0
 
         func load(_ url: URL, in webView: WKWebView) {
             let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
             guard loadedURL != previewURL else { return }
             loadedURL = previewURL
             webView.load(URLRequest(url: previewURL))
+        }
+
+        func reloadIfNeeded(_ trigger: Int, in webView: WKWebView) {
+            guard trigger != lastReloadTrigger else { return }
+            lastReloadTrigger = trigger
+            webView.reloadFromOrigin()
         }
 
         func webView(
