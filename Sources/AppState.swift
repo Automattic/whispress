@@ -1159,17 +1159,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 pageNumber: 1,
                 itemsPerPage: pageSize
             )
-            let hasMore = page.summaries.count >= pageSize
+            let pageMayHaveMore = page.summaries.count >= pageSize
 
             await MainActor.run {
-                self.mergeWordPressAgentHistory(
+                let shouldRemoveMissingRemoteConversations = !pageMayHaveMore && !page.summaries.isEmpty
+                let mergedConversationCount = self.mergeWordPressAgentHistory(
                     agentID: self.normalizedWordPressAgentID(agentID),
                     summaries: page.summaries,
                     chatsByID: page.chatsByID,
-                    removeMissingRemoteConversations: !hasMore
+                    removeMissingRemoteConversations: shouldRemoveMissingRemoteConversations
                 )
                 self.hasLoadedWordPressAgentConversations = true
-                self.canLoadMoreWordPressAgentConversations = hasMore
+                self.canLoadMoreWordPressAgentConversations = pageMayHaveMore && mergedConversationCount > 0
                 self.nextWordPressAgentConversationsPage = 2
                 self.isRefreshingWordPressAgentConversations = false
                 let hasAnyConversation = self.wordpressAgentConversations.contains { !$0.isEmptyLocalDraft }
@@ -1212,15 +1213,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let hasMore = page.summaries.count >= request.itemsPerPage && containsNewRemoteConversation
 
             await MainActor.run {
-                self.mergeWordPressAgentHistory(
-                    agentID: self.normalizedWordPressAgentID(agentID),
-                    summaries: page.summaries,
-                    chatsByID: page.chatsByID,
-                    removeMissingRemoteConversations: false
-                )
+                let mergedConversationCount: Int
+                if containsNewRemoteConversation {
+                    mergedConversationCount = self.mergeWordPressAgentHistory(
+                        agentID: self.normalizedWordPressAgentID(agentID),
+                        summaries: page.summaries,
+                        chatsByID: page.chatsByID,
+                        removeMissingRemoteConversations: false
+                    )
+                } else {
+                    mergedConversationCount = 0
+                }
                 self.hasLoadedWordPressAgentConversations = true
-                self.canLoadMoreWordPressAgentConversations = hasMore
+                self.canLoadMoreWordPressAgentConversations = hasMore && mergedConversationCount > 0
                 self.nextWordPressAgentConversationsPage = page.summaries.isEmpty
+                    || !containsNewRemoteConversation
+                    || mergedConversationCount == 0
                     ? request.pageNumber
                     : request.pageNumber + 1
                 self.isLoadingMoreWordPressAgentConversations = false
@@ -1418,13 +1426,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let sessionID: String?
     }
 
+    @discardableResult
     private func mergeWordPressAgentHistory(
         agentID: String,
         summaries: [WPCOMAgentConversationSummary],
         chatsByID: [Int: WPCOMAgentChat],
         removeMissingRemoteConversations: Bool
-    ) {
+    ) -> Int {
         var refreshedRemoteChatIDs = Set<Int>()
+        var mergedConversationCount = 0
 
         for summary in summaries {
             let chat = chatsByID[summary.chatID]
@@ -1456,15 +1466,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     errorMessage: nil,
                     lastUpdated: conversation.lastUpdated
                 )
+                mergedConversationCount += 1
             } else {
                 wordpressAgentConversations.append(conversation)
+                mergedConversationCount += 1
             }
             if let remoteChatID = conversation.remoteChatID {
                 refreshedRemoteChatIDs.insert(remoteChatID)
             }
         }
 
-        if removeMissingRemoteConversations {
+        if removeMissingRemoteConversations && mergedConversationCount > 0 {
             wordpressAgentConversations.removeAll { conversation in
                 guard conversation.key.agentID == agentID,
                       let remoteChatID = conversation.remoteChatID,
@@ -1483,6 +1495,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
             )
         }
+
+        return mergedConversationCount
     }
 
     private func makeWordPressAgentConversation(

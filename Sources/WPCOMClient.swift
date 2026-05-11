@@ -1125,9 +1125,7 @@ final class WPCOMClient: NSObject {
         components.queryItems = [
             URLQueryItem(name: "truncation_method", value: "last_message"),
             URLQueryItem(name: "page_number", value: "\(pageNumber)"),
-            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)"),
-            URLQueryItem(name: "page", value: "\(pageNumber)"),
-            URLQueryItem(name: "per_page", value: "\(itemsPerPage)")
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
         ]
         let data = try await authenticatedData(for: components.url!)
         return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
