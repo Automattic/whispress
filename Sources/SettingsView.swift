@@ -400,7 +400,7 @@ struct GeneralSettingsView: View {
                 )
             )
 
-            Text("Enable this when /etc/hosts points public-api.wordpress.com at a sandbox IP and a system PAC/proxy would otherwise route around local DNS.")
+            Text("Developer sandbox setting. Use only when /etc/hosts points public-api.wordpress.com at a sandbox IP and a system proxy would otherwise route around local DNS.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
