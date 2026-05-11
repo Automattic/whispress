@@ -81,7 +81,13 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         case icon
     }
 
-    init(id: Int, name: String, url: String?, slug: String?, icon: WPCOMSiteIcon? = nil) {
+    init(
+        id: Int,
+        name: String,
+        url: String?,
+        slug: String?,
+        icon: WPCOMSiteIcon? = nil
+    ) {
         self.id = id
         self.name = name
         self.url = url

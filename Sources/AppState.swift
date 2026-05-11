@@ -1000,16 +1000,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let sites = try await sitesTask
             let currentUser = try? await userTask
             await MainActor.run {
+                let siteIDs = Set(sites.map(\.id))
                 self.wordpressComSites = sites
                 self.wordpressComUser = currentUser
                 if let selected = self.selectedWordPressComSiteID,
-                   sites.contains(where: { $0.id == selected }) {
+                   siteIDs.contains(selected) {
                     // Keep the user's selected site.
                 } else {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
-                self.pruneWordPressComAppSiteOverrides(validSiteIDs: Set(sites.map(\.id)))
-                self.pruneWordPressAgentRecentSites(validSiteIDs: Set(sites.map(\.id)))
+                self.pruneWordPressComAppSiteOverrides(validSiteIDs: siteIDs)
+                self.pruneWordPressAgentRecentSites(validSiteIDs: siteIDs)
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
                     ? "No WordPress.com sites found"
@@ -1392,16 +1393,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func selectWordPressAgentConversation(_ conversationID: String?) {
         guard let conversationID else {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
+            let fallbackConversation = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }
+            selectedWordPressAgentConversationID = fallbackConversation?.id
+            if let siteID = fallbackConversation?.key.siteID, siteID > 0 {
+                selectedWordPressComSiteID = siteID
+            }
             return
         }
 
-        guard wordpressAgentConversations.contains(where: { $0.id == conversationID }) else {
-            selectedWordPressAgentConversationID = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
+        guard let conversation = wordpressAgentConversations.first(where: { $0.id == conversationID }) else {
+            let fallbackConversation = sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }
+            selectedWordPressAgentConversationID = fallbackConversation?.id
+            if let siteID = fallbackConversation?.key.siteID, siteID > 0 {
+                selectedWordPressComSiteID = siteID
+            }
             return
         }
         removeEmptyWordPressAgentDrafts(except: conversationID)
         selectedWordPressAgentConversationID = conversationID
+        if conversation.key.siteID > 0 {
+            selectedWordPressComSiteID = conversation.key.siteID
+            recordWordPressAgentSiteUse(conversation.key.siteID)
+        }
     }
 
     func selectWordPressAgentSite(_ siteID: Int) {
@@ -1537,14 +1550,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return nil }
 
-        let targetSiteID = siteID ?? selectedWordPressAgentConversation?.key.siteID ?? selectedWordPressComSiteID
-        var conversationID = startsNewConversation ? nil : selectedWordPressAgentConversation?.id
+        let targetSiteID = siteID ?? selectedWordPressComSiteID ?? selectedWordPressAgentConversation?.key.siteID
+        let targetKey = targetSiteID.map {
+            WordPressAgentConversationKey(siteID: $0, agentID: "dolly")
+        }
+        let reusableConversation = targetKey.flatMap { key in
+            selectedWordPressAgentConversation?.key == key ? selectedWordPressAgentConversation : nil
+        }
+        var conversationID = startsNewConversation ? nil : reusableConversation?.id
         if startsNewConversation {
             guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
             conversationID = newConversationID
         } else if !attachments.isEmpty,
-           let selectedWordPressAgentConversation,
-           !selectedWordPressAgentConversation.isEmptyLocalDraft {
+           let reusableConversation,
+           !reusableConversation.isEmptyLocalDraft {
             guard let newConversationID = startWordPressAgentConversation(siteID: targetSiteID) else { return nil }
             conversationID = newConversationID
         } else if conversationID == nil {
@@ -2110,7 +2129,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         preferredConversationID: String? = nil
     ) -> Int {
         if let preferredConversationID,
-           let index = wordpressAgentConversations.firstIndex(where: { $0.id == preferredConversationID }) {
+           let index = wordpressAgentConversations.firstIndex(where: {
+               $0.id == preferredConversationID && $0.key == key
+           }) {
             wordpressAgentConversations[index].siteName = siteName(forWordPressAgentSiteID: key.siteID)
             return index
         }
