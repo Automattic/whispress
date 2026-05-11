@@ -355,8 +355,7 @@ struct WordPressAgentWindowView: View {
                         .buttonStyle(.plain)
                     }
 
-                    if normalizedSearch.isEmpty,
-                       appState.canLoadMoreWordPressAgentConversations || appState.isLoadingMoreWordPressAgentConversations {
+                    if normalizedSearch.isEmpty {
                         conversationPaginationRow
                     }
                 }

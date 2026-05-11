@@ -1189,8 +1189,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let request = await MainActor.run { () -> (pageNumber: Int, itemsPerPage: Int)? in
             guard isWordPressComSignedIn,
                   !isRefreshingWordPressAgentConversations,
-                  !isLoadingMoreWordPressAgentConversations,
-                  canLoadMoreWordPressAgentConversations else {
+                  !isLoadingMoreWordPressAgentConversations else {
                 return nil
             }
             isLoadingMoreWordPressAgentConversations = true
