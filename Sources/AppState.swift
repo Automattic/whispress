@@ -364,6 +364,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let wordpressAgentStarredSiteIDsStorageKey = "wordpress_agent_starred_site_ids"
     private let wordpressComSitesCacheStorageKey = "wordpress_com_sites_cache"
     private let wordpressAgentConversationsCacheStorageKey = "wordpress_agent_conversations_cache"
+    private let wordpressAgentConversationPageSize = 20
     private static let wordpressAgentFrontendAbilities: [WPCOMAgentFrontendAbility] = [.preview]
     private let maxWordPressAgentFrontendToolIterations = 4
     private let transcribingIndicatorDelay: TimeInterval = 0.25
@@ -474,6 +475,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
     @Published var selectedWordPressAgentConversationID: String?
     @Published private(set) var isRefreshingWordPressAgentConversations = false
+    @Published private(set) var isLoadingMoreWordPressAgentConversations = false
+    @Published private(set) var canLoadMoreWordPressAgentConversations = true
     @Published private(set) var hasLoadedWordPressAgentConversations = false
     @Published private(set) var wordpressAgentHistoryStatusMessage: String?
     @Published private(set) var wordpressAgentPreview: WordPressAgentPreview?
@@ -643,6 +646,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
+    private var nextWordPressAgentConversationsPage = 1
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var elevenLabsSpeechTask: Task<Void, Never>?
     private var elevenLabsAudioPlayer: AVAudioPlayer?
@@ -720,6 +724,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let cachedWordPressAgentConversations = isInitiallyWordPressComSignedIn
             ? Self.loadCachedWordPressAgentConversations(forKey: wordpressAgentConversationsCacheStorageKey)
             : []
+        let cachedRemoteConversationCount = cachedWordPressAgentConversations.filter { $0.remoteChatID != nil }.count
         self.hasCompletedSetup = hasCompletedSetup
         self.holdShortcut = shortcuts.hold
         self.toggleShortcut = shortcuts.toggle
@@ -749,6 +754,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.wordpressComSites = cachedWordPressComSites
         self.wordpressAgentConversations = cachedWordPressAgentConversations
         self.hasLoadedWordPressAgentConversations = !cachedWordPressAgentConversations.isEmpty
+        self.canLoadMoreWordPressAgentConversations = cachedRemoteConversationCount >= wordpressAgentConversationPageSize
+            && cachedRemoteConversationCount % wordpressAgentConversationPageSize == 0
+        self.nextWordPressAgentConversationsPage = max(
+            1,
+            ((cachedRemoteConversationCount + wordpressAgentConversationPageSize - 1)
+                / wordpressAgentConversationPageSize) + 1
+        )
         self.isWordPressComSignedIn = isInitiallyWordPressComSignedIn
 
         refreshAvailableMicrophones()
@@ -1050,6 +1062,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentPreview = nil
         wordpressAgentPreviewsByConversationID = [:]
         isRefreshingWordPressAgentConversations = false
+        isLoadingMoreWordPressAgentConversations = false
+        canLoadMoreWordPressAgentConversations = true
+        nextWordPressAgentConversationsPage = 1
         hasLoadedWordPressAgentConversations = false
         wordpressAgentHistoryStatusMessage = nil
         transcribeSkill = nil
@@ -1109,6 +1124,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let shouldRefresh = await MainActor.run {
             isWordPressComSignedIn
                 && !isRefreshingWordPressAgentConversations
+                && !isLoadingMoreWordPressAgentConversations
                 && !hasLoadedWordPressAgentConversations
         }
         guard shouldRefresh else { return }
@@ -1119,9 +1135,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         Task { await refreshWordPressAgentConversations() }
     }
 
+    func loadMoreWordPressAgentConversationsFromUI() {
+        Task { await loadMoreWordPressAgentConversations() }
+    }
+
     func refreshWordPressAgentConversations(agentID: String = "dolly") async {
+        let pageSize = wordpressAgentConversationPageSize
         let canRefresh = await MainActor.run {
-            isWordPressComSignedIn && !isRefreshingWordPressAgentConversations
+            isWordPressComSignedIn
+                && !isRefreshingWordPressAgentConversations
+                && !isLoadingMoreWordPressAgentConversations
         }
         guard canRefresh else { return }
 
@@ -1131,29 +1154,26 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         do {
-            let summaries = try await wpcomClient.fetchAgentConversationSummaries(agentID: agentID)
-            var chatsByID: [Int: WPCOMAgentChat] = [:]
-            for summary in summaries {
-                do {
-                    chatsByID[summary.chatID] = try await wpcomClient.fetchAgentChat(
-                        agentID: agentID,
-                        chatID: summary.chatID
-                    )
-                } catch {
-                    // Keep the summary row even if the full chat cannot be loaded.
-                }
-            }
-            let fetchedChatsByID = chatsByID
+            let page = try await fetchWordPressAgentConversationPage(
+                agentID: agentID,
+                pageNumber: 1,
+                itemsPerPage: pageSize
+            )
+            let hasMore = page.summaries.count >= pageSize
 
             await MainActor.run {
                 self.mergeWordPressAgentHistory(
                     agentID: self.normalizedWordPressAgentID(agentID),
-                    summaries: summaries,
-                    chatsByID: fetchedChatsByID
+                    summaries: page.summaries,
+                    chatsByID: page.chatsByID,
+                    removeMissingRemoteConversations: !hasMore
                 )
                 self.hasLoadedWordPressAgentConversations = true
+                self.canLoadMoreWordPressAgentConversations = hasMore
+                self.nextWordPressAgentConversationsPage = 2
                 self.isRefreshingWordPressAgentConversations = false
-                self.wordpressAgentHistoryStatusMessage = summaries.isEmpty ? "No Dolly history found" : nil
+                let hasAnyConversation = self.wordpressAgentConversations.contains { !$0.isEmptyLocalDraft }
+                self.wordpressAgentHistoryStatusMessage = hasAnyConversation ? nil : "No Dolly history found"
             }
         } catch {
             await MainActor.run {
@@ -1162,6 +1182,80 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.isRefreshingWordPressAgentConversations = false
             }
         }
+    }
+
+    func loadMoreWordPressAgentConversations(agentID: String = "dolly") async {
+        let request = await MainActor.run { () -> (pageNumber: Int, itemsPerPage: Int)? in
+            guard isWordPressComSignedIn,
+                  !isRefreshingWordPressAgentConversations,
+                  !isLoadingMoreWordPressAgentConversations,
+                  canLoadMoreWordPressAgentConversations else {
+                return nil
+            }
+            isLoadingMoreWordPressAgentConversations = true
+            return (nextWordPressAgentConversationsPage, wordpressAgentConversationPageSize)
+        }
+        guard let request else { return }
+
+        do {
+            let page = try await fetchWordPressAgentConversationPage(
+                agentID: agentID,
+                pageNumber: request.pageNumber,
+                itemsPerPage: request.itemsPerPage
+            )
+            let existingRemoteChatIDs = await MainActor.run {
+                Set(self.wordpressAgentConversations.compactMap(\.remoteChatID))
+            }
+            let containsNewRemoteConversation = page.summaries.contains { summary in
+                !existingRemoteChatIDs.contains(summary.chatID)
+            }
+            let hasMore = page.summaries.count >= request.itemsPerPage && containsNewRemoteConversation
+
+            await MainActor.run {
+                self.mergeWordPressAgentHistory(
+                    agentID: self.normalizedWordPressAgentID(agentID),
+                    summaries: page.summaries,
+                    chatsByID: page.chatsByID,
+                    removeMissingRemoteConversations: false
+                )
+                self.hasLoadedWordPressAgentConversations = true
+                self.canLoadMoreWordPressAgentConversations = hasMore
+                self.nextWordPressAgentConversationsPage = page.summaries.isEmpty
+                    ? request.pageNumber
+                    : request.pageNumber + 1
+                self.isLoadingMoreWordPressAgentConversations = false
+            }
+        } catch {
+            await MainActor.run {
+                self.wordpressAgentHistoryStatusMessage = "Could not load more Dolly history: \(error.localizedDescription)"
+                self.errorMessage = error.localizedDescription
+                self.isLoadingMoreWordPressAgentConversations = false
+            }
+        }
+    }
+
+    private func fetchWordPressAgentConversationPage(
+        agentID: String,
+        pageNumber: Int,
+        itemsPerPage: Int
+    ) async throws -> (summaries: [WPCOMAgentConversationSummary], chatsByID: [Int: WPCOMAgentChat]) {
+        let summaries = try await wpcomClient.fetchAgentConversationSummaries(
+            agentID: agentID,
+            pageNumber: pageNumber,
+            itemsPerPage: itemsPerPage
+        )
+        var chatsByID: [Int: WPCOMAgentChat] = [:]
+        for summary in summaries {
+            do {
+                chatsByID[summary.chatID] = try await wpcomClient.fetchAgentChat(
+                    agentID: agentID,
+                    chatID: summary.chatID
+                )
+            } catch {
+                // Keep the summary row even if the full chat cannot be loaded.
+            }
+        }
+        return (summaries, chatsByID)
     }
 
     func refreshLatestExternalAppSnapshot() {
@@ -1327,7 +1421,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func mergeWordPressAgentHistory(
         agentID: String,
         summaries: [WPCOMAgentConversationSummary],
-        chatsByID: [Int: WPCOMAgentChat]
+        chatsByID: [Int: WPCOMAgentChat],
+        removeMissingRemoteConversations: Bool
     ) {
         var refreshedRemoteChatIDs = Set<Int>()
 
@@ -1369,13 +1464,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
         }
 
-        wordpressAgentConversations.removeAll { conversation in
-            guard conversation.key.agentID == agentID,
-                  let remoteChatID = conversation.remoteChatID,
-                  !conversation.isSending else {
-                return false
+        if removeMissingRemoteConversations {
+            wordpressAgentConversations.removeAll { conversation in
+                guard conversation.key.agentID == agentID,
+                      let remoteChatID = conversation.remoteChatID,
+                      !conversation.isSending else {
+                    return false
+                }
+                return !refreshedRemoteChatIDs.contains(remoteChatID)
             }
-            return !refreshedRemoteChatIDs.contains(remoteChatID)
         }
 
         let selectedConversationExists = selectedWordPressAgentConversationID.map { selectedID in

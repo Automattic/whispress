@@ -144,6 +144,9 @@ struct WordPressAgentWindowView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 18)
             }
+            .refreshable {
+                await appState.refreshWordPressAgentConversations()
+            }
 
             accountFooter
         }
@@ -354,8 +357,30 @@ struct WordPressAgentWindowView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if normalizedSearch.isEmpty {
+                        conversationPaginationRow
+                    }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var conversationPaginationRow: some View {
+        if appState.isLoadingMoreWordPressAgentConversations {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                SidebarEmptyText("Loading more...")
+            }
+            .padding(.horizontal, 8)
+        } else if appState.canLoadMoreWordPressAgentConversations {
+            Color.clear
+                .frame(height: 1)
+                .onAppear {
+                    appState.loadMoreWordPressAgentConversationsFromUI()
+                }
         }
     }
 

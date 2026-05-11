@@ -1115,11 +1115,17 @@ final class WPCOMClient: NSObject {
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
     }
 
-    func fetchAgentConversationSummaries(agentID: String = "dolly") async throws -> [WPCOMAgentConversationSummary] {
+    func fetchAgentConversationSummaries(
+        agentID: String = "dolly",
+        pageNumber: Int = 1,
+        itemsPerPage: Int = 20
+    ) async throws -> [WPCOMAgentConversationSummary] {
         let historyBotID = Self.historyBotID(for: agentID)
         var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chats/\(historyBotID)")!
         components.queryItems = [
-            URLQueryItem(name: "truncation_method", value: "last_message")
+            URLQueryItem(name: "truncation_method", value: "last_message"),
+            URLQueryItem(name: "page_number", value: "\(pageNumber)"),
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
         ]
         let data = try await authenticatedData(for: components.url!)
         return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
