@@ -18,6 +18,7 @@ struct WordPressAgentWindowView: View {
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
     private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
+    private static let pasteableImageContentTypes: [UTType] = [.fileURL, .image]
 
     private var selectedConversation: WordPressAgentConversation? {
         appState.selectedWordPressAgentConversation
@@ -650,6 +651,9 @@ struct WordPressAgentWindowView: View {
                     .lineLimit(1...5)
                     .focused($isComposerFocused)
                     .onSubmit(sendDraftMessage)
+                    .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+                        pasteImagesFromClipboard()
+                    }
                     .disabled(isComposerInputDisabled)
 
                 HStack(spacing: 14) {
@@ -722,6 +726,16 @@ struct WordPressAgentWindowView: View {
             guard shouldRestoreComposerFocusAfterSend else { return }
             restoreComposerFocusSoon(clearPending: false)
         }
+        .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+            pasteImagesFromClipboard()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pasteImageIntoWordPressAgentComposer)) { notification in
+            guard isComposerFocused,
+                  let request = notification.object as? WordPressAgentComposerPasteRequest else {
+                return
+            }
+            request.handled = pasteImagesFromClipboardIfAvailable()
+        }
     }
 
     private var canSendMessage: Bool {
@@ -780,10 +794,135 @@ struct WordPressAgentWindowView: View {
 
         guard panel.runModal() == .OK else { return }
 
+        appendPendingImageURLs(panel.urls)
+    }
+
+    private func pasteImagesFromClipboard() {
+        _ = pasteImagesFromClipboardIfAvailable()
+    }
+
+    private func pasteImagesFromClipboardIfAvailable() -> Bool {
+        guard !isComposerDisabled else { return false }
+
+        do {
+            let pastedImageURLs = try Self.imageFileURLs(from: NSPasteboard.general)
+            guard !pastedImageURLs.isEmpty else { return false }
+            appendPendingImageURLs(pastedImageURLs)
+            isComposerFocused = true
+            return true
+        } catch {
+            showImagePasteError(error)
+            return true
+        }
+    }
+
+    private func appendPendingImageURLs(_ urls: [URL]) {
         var existingURLs = Set(pendingImageURLs)
-        for url in panel.urls where existingURLs.insert(url).inserted {
+        for url in urls where existingURLs.insert(url).inserted {
             pendingImageURLs.append(url)
         }
+    }
+
+    private static func imageFileURLs(from pasteboard: NSPasteboard) throws -> [URL] {
+        let existingFileURLs = existingImageFileURLs(from: pasteboard)
+        if !existingFileURLs.isEmpty {
+            return existingFileURLs
+        }
+
+        return try writeImageDataFromPasteboard(pasteboard)
+    }
+
+    private static func existingImageFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) ?? []
+        let urls = objects.compactMap { object -> URL? in
+            if let url = object as? URL {
+                return url
+            }
+            if let url = object as? NSURL {
+                return url as URL
+            }
+            return nil
+        }
+
+        let legacyFileURLs = (pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] ?? [])
+            .map(URL.init(fileURLWithPath:))
+
+        let fileURLStringURLs = pasteboard.string(forType: .fileURL)
+            .flatMap(URL.init(string:))
+            .map { [$0] } ?? []
+
+        var seenPaths = Set<String>()
+        let uniqueURLs = (urls + legacyFileURLs + fileURLStringURLs).filter { url in
+            guard url.isFileURL else { return false }
+            return seenPaths.insert(url.standardizedFileURL.path).inserted
+        }
+
+        return ImageImportProcessor.supportedImageFileURLs(from: uniqueURLs)
+    }
+
+    private struct PasteboardImagePayload {
+        let data: Data
+        let fileExtension: String
+    }
+
+    private static func writeImageDataFromPasteboard(_ pasteboard: NSPasteboard) throws -> [URL] {
+        var payloads = (pasteboard.pasteboardItems ?? []).compactMap(imagePayload)
+
+        if payloads.isEmpty,
+           let image = NSImage(pasteboard: pasteboard),
+           let pngData = pngData(from: image) {
+            payloads = [PasteboardImagePayload(data: pngData, fileExtension: "png")]
+        }
+
+        guard !payloads.isEmpty else { return [] }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WPWorkspacePastedImages", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        return try payloads.map { payload in
+            let filename = "pasted-image-\(String(UUID().uuidString.prefix(8)).lowercased()).\(payload.fileExtension)"
+            let url = directory.appendingPathComponent(filename)
+            try payload.data.write(to: url, options: .atomic)
+            return url
+        }
+    }
+
+    private static func imagePayload(from item: NSPasteboardItem) -> PasteboardImagePayload? {
+        let preferredTypes: [(NSPasteboard.PasteboardType, String)] = [
+            (NSPasteboard.PasteboardType("public.png"), "png"),
+            (NSPasteboard.PasteboardType("public.jpeg"), "jpg"),
+            (NSPasteboard.PasteboardType("public.tiff"), "tiff"),
+            (NSPasteboard.PasteboardType("com.compuserve.gif"), "gif"),
+            (NSPasteboard.PasteboardType("org.webmproject.webp"), "webp")
+        ]
+
+        for (type, fileExtension) in preferredTypes {
+            if let data = item.data(forType: type), !data.isEmpty {
+                return PasteboardImagePayload(data: data, fileExtension: fileExtension)
+            }
+        }
+
+        return nil
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private func showImagePasteError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not paste image."
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func site(for siteID: Int) -> WPCOMSite? {
