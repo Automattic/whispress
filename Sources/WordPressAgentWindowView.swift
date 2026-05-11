@@ -17,6 +17,7 @@ struct WordPressAgentWindowView: View {
     private let recentSiteLimit = 5
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
+    private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
 
     private var selectedConversation: WordPressAgentConversation? {
         appState.selectedWordPressAgentConversation
@@ -550,6 +551,10 @@ struct WordPressAgentWindowView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, 4)
                             }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(transcriptBottomAnchorID)
                         }
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
@@ -558,19 +563,45 @@ struct WordPressAgentWindowView: View {
                         .padding(.bottom, 28)
                     }
                     .onAppear {
-                        if let lastMessageID = selectedConversation.messages.last?.id {
-                            proxy.scrollTo(lastMessageID, anchor: .bottom)
-                        }
+                        scrollTranscriptToBottom(proxy, animated: false)
                     }
                     .onChange(of: selectedConversation.messages.count) { _ in
-                        if let lastMessageID = selectedConversation.messages.last?.id {
-                            proxy.scrollTo(lastMessageID, anchor: .bottom)
-                        }
+                        scrollTranscriptToBottom(proxy)
+                    }
+                    .onChange(of: selectedConversation.isSending) { _ in
+                        scrollTranscriptToBottom(proxy)
+                    }
+                    .onChange(of: selectedConversation.errorMessage) { _ in
+                        scrollTranscriptToBottom(proxy)
                     }
                 }
             }
         } else {
             emptyWorkspace
+        }
+    }
+
+    private func scrollTranscriptToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
+            proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                scroll()
+            }
+        } else {
+            scroll()
+        }
+
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    scroll()
+                }
+            } else {
+                scroll()
+            }
         }
     }
 
