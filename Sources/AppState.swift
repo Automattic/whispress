@@ -109,19 +109,57 @@ struct WordPressAgentAttachment: Identifiable, Equatable, Codable {
 struct WordPressAgentPreview: Identifiable, Equatable {
     let id: UUID
     let url: URL
+    let currentURL: URL
     let title: String?
+    let pageTitle: String?
     let siteID: Int?
+    let isLoading: Bool
 
-    init(id: UUID = UUID(), url: URL, title: String? = nil, siteID: Int? = nil) {
+    init(
+        id: UUID = UUID(),
+        url: URL,
+        currentURL: URL? = nil,
+        title: String? = nil,
+        pageTitle: String? = nil,
+        siteID: Int? = nil,
+        isLoading: Bool = false
+    ) {
         self.id = id
         self.url = url
+        self.currentURL = currentURL ?? url
         self.siteID = siteID
+        self.isLoading = isLoading
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.title = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
+        let trimmedPageTitle = pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.pageTitle = trimmedPageTitle?.isEmpty == false ? trimmedPageTitle : nil
     }
 
     var displayTitle: String {
-        title ?? url.host ?? url.absoluteString
+        pageTitle ?? title ?? currentURL.host ?? currentURL.absoluteString
+    }
+
+    func updatingCurrentPage(url currentURL: URL?, title pageTitle: String?, isLoading: Bool) -> WordPressAgentPreview {
+        let resolvedCurrentURL = currentURL ?? self.currentURL
+        let trimmedPageTitle = pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPageTitle: String?
+        if let trimmedPageTitle, !trimmedPageTitle.isEmpty {
+            resolvedPageTitle = trimmedPageTitle
+        } else if resolvedCurrentURL == self.currentURL {
+            resolvedPageTitle = self.pageTitle
+        } else {
+            resolvedPageTitle = nil
+        }
+
+        return WordPressAgentPreview(
+            id: id,
+            url: url,
+            currentURL: resolvedCurrentURL,
+            title: title,
+            pageTitle: resolvedPageTitle,
+            siteID: siteID,
+            isLoading: isLoading
+        )
     }
 }
 
@@ -1866,6 +1904,25 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentPreview = nil
     }
 
+    @MainActor
+    func updateWordPressAgentPreviewPage(
+        previewID: UUID,
+        currentURL: URL?,
+        title: String?,
+        isLoading: Bool
+    ) {
+        guard let preview = wordpressAgentPreview, preview.id == previewID else { return }
+        let updatedPreview = preview.updatingCurrentPage(
+            url: currentURL,
+            title: title,
+            isLoading: isLoading
+        )
+        wordpressAgentPreview = updatedPreview
+        if let selectedWordPressAgentConversationID {
+            wordpressAgentPreviewsByConversationID[selectedWordPressAgentConversationID] = updatedPreview
+        }
+    }
+
     private func setActiveWordPressAgentConversation(_ conversationID: String?) {
         selectedWordPressAgentConversationID = conversationID
         wordpressAgentPreview = conversationID.flatMap { wordpressAgentPreviewsByConversationID[$0] }
@@ -1881,6 +1938,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         guard let siteID, siteID > 0 else { return nil }
         return siteID
+    }
+
+    private func wordPressAgentPreviewContext(
+        siteID: Int,
+        conversationID: String?
+    ) -> WPCOMAgentPreviewContextPayload? {
+        let preview = conversationID.flatMap { wordpressAgentPreviewsByConversationID[$0] }
+            ?? wordpressAgentPreview
+        guard let preview,
+              preview.siteID == nil || preview.siteID == siteID else {
+            return nil
+        }
+
+        return WPCOMAgentPreviewContextPayload(
+            isOpen: true,
+            siteID: preview.siteID,
+            openedURL: preview.url.absoluteString,
+            currentURL: preview.currentURL.absoluteString,
+            title: preview.displayTitle,
+            isLoading: preview.isLoading
+        )
     }
 
     func importImagesIntoWordPressAgentChat(
@@ -2114,15 +2192,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         let frontendAbilities = Self.wordpressAgentFrontendAbilities
         let clientContext = WPCOMAgentClientContextPayload(
+            constructorArguments: WPCOMAgentConstructorArgumentsPayload(client: "wpworkspace"),
             selectedSiteID: siteID,
-            appName: context.appName,
-            bundleIdentifier: context.bundleIdentifier,
-            windowTitle: context.windowTitle,
-            selectedText: context.selectedText,
-            currentActivity: context.currentActivity,
-            client: "wpworkspace",
-            clientVersion: clientVersion,
-            uploadedFiles: freshlyUploadedMedia.map(WPCOMAgentUploadedFileContext.init)
+            wpworkspace: WPCOMAgentWPWorkspaceContextPayload(
+                appName: context.appName,
+                currentActivity: context.currentActivity,
+                clientVersion: clientVersion,
+                preview: wordPressAgentPreviewContext(
+                    siteID: siteID,
+                    conversationID: conversationIDForPreview
+                )
+            )
         )
         let response = try await sendWordPressAgentMessageWithMediaRetry(
             siteID: siteID,
