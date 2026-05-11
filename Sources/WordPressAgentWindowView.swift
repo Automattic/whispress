@@ -8,13 +8,13 @@ struct WordPressAgentWindowView: View {
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
-    @State private var isAllSitesExpanded = false
+    @AppStorage("wordpress_agent_starred_sites_expanded") private var isStarredSitesExpanded = true
+    @AppStorage("wordpress_agent_all_sites_expanded") private var isAllSitesExpanded = true
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
     @FocusState private var isComposerFocused: Bool
 
-    private let recentSiteLimit = 5
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
     private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
@@ -54,37 +54,18 @@ struct WordPressAgentWindowView: View {
         Dictionary(uniqueKeysWithValues: appState.wordpressComSites.map { ($0.id, $0) })
     }
 
-    private var recentSites: [WPCOMSite] {
+    private var starredSites: [WPCOMSite] {
         let sitesByID = siteByID
-        var seenSiteIDs = Set<Int>()
-        var orderedSites: [WPCOMSite] = []
-
-        func appendSite(_ siteID: Int?) {
-            guard let siteID,
-                  seenSiteIDs.insert(siteID).inserted,
-                  let site = sitesByID[siteID] else {
-                return
-            }
-            orderedSites.append(site)
-        }
-
-        appState.recentWordPressAgentSiteIDs.forEach { appendSite($0) }
-        appendSite(appState.selectedWordPressComSiteID)
-        appState.sortedWordPressAgentConversations.forEach { appendSite($0.key.siteID) }
-        appState.wordpressComSites.prefix(recentSiteLimit).forEach { appendSite($0.id) }
-
-        return Array(orderedSites.prefix(recentSiteLimit))
+        return appState.starredWordPressAgentSiteIDs.compactMap { sitesByID[$0] }
     }
 
-    private var visibleRecentSites: [WPCOMSite] {
-        guard !normalizedSearch.isEmpty else { return recentSites }
-        return recentSites.filter(siteMatchesSearch)
+    private var visibleStarredSites: [WPCOMSite] {
+        guard !normalizedSearch.isEmpty else { return starredSites }
+        return starredSites.filter(siteMatchesSearch)
     }
 
-    private var dropdownSites: [WPCOMSite] {
-        let recentSiteIDs = Set(recentSites.map(\.id))
+    private var allSites: [WPCOMSite] {
         return appState.wordpressComSites
-            .filter { !recentSiteIDs.contains($0.id) }
             .filter { normalizedSearch.isEmpty || siteMatchesSearch($0) }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
@@ -99,22 +80,22 @@ struct WordPressAgentWindowView: View {
         selectedConversation?.isSending == true
     }
 
-    private var remainingSiteCount: Int {
-        max(0, appState.wordpressComSites.count - recentSites.count)
+    private var allSitesCount: Int {
+        normalizedSearch.isEmpty ? appState.wordpressComSites.count : allSites.count
+    }
+
+    private var starredSitesCount: Int {
+        normalizedSearch.isEmpty ? starredSites.count : visibleStarredSites.count
+    }
+
+    private var shouldShowStarredSites: Bool {
+        isStarredSitesExpanded || !normalizedSearch.isEmpty
     }
 
     private func siteMatchesSearch(_ site: WPCOMSite) -> Bool {
         site.displayName.localizedCaseInsensitiveContains(normalizedSearch)
         || (site.slug ?? "").localizedCaseInsensitiveContains(normalizedSearch)
         || (site.url ?? "").localizedCaseInsensitiveContains(normalizedSearch)
-    }
-
-    private var latestConversationBySiteID: [Int: WordPressAgentConversation] {
-        var conversationsBySiteID: [Int: WordPressAgentConversation] = [:]
-        for conversation in appState.sortedWordPressAgentConversations where conversationsBySiteID[conversation.key.siteID] == nil {
-            conversationsBySiteID[conversation.key.siteID] = conversation
-        }
-        return conversationsBySiteID
     }
 
     private var visibleConversations: [WordPressAgentConversation] {
@@ -220,34 +201,72 @@ struct WordPressAgentWindowView: View {
 
     private var sitesSection: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
-            SidebarSectionHeader(title: "Last")
-
-            if visibleRecentSites.isEmpty {
-                SidebarEmptyText(appState.isWordPressComSignedIn ? "No recent matching sites" : "Sign in to WordPress.com")
-                    .padding(.horizontal, 8)
-            } else {
-                LazyVStack(spacing: 2) {
-                    let conversationsBySiteID = latestConversationBySiteID
-                    ForEach(visibleRecentSites) { site in
-                        Button {
-                            appState.selectWordPressAgentSite(site.id)
-                            isComposerFocused = true
-                        } label: {
-                            SiteSidebarRow(
-                                site: site,
-                                isSelected: site.id == activeSiteID,
-                                lastUsedDate: conversationsBySiteID[site.id]?.lastUpdated
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
+            starredSitesDropdown
 
             if appState.isWordPressComSignedIn {
                 allSitesDropdown
             }
         }
+    }
+
+    private var starredSitesDropdown: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isStarredSitesExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: shouldShowStarredSites ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 12)
+
+                    Text("Starred")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    Spacer()
+
+                    Text("\(starredSitesCount)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if shouldShowStarredSites {
+                if visibleStarredSites.isEmpty {
+                    SidebarEmptyText(starredEmptyText)
+                        .padding(.horizontal, 8)
+                } else {
+                    LazyVStack(spacing: 2) {
+                        ForEach(visibleStarredSites) { site in
+                            SiteSidebarRow(
+                                site: site,
+                                isSelected: site.id == activeSiteID,
+                                isStarred: appState.isWordPressAgentSiteStarred(site.id),
+                                onSelect: {
+                                    appState.selectWordPressAgentSite(site.id)
+                                    isComposerFocused = true
+                                },
+                                onToggleStar: {
+                                    appState.toggleWordPressAgentSiteStar(site.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var starredEmptyText: String {
+        if !appState.isWordPressComSignedIn {
+            return "Sign in to WordPress.com"
+        }
+        return normalizedSearch.isEmpty ? "No starred sites" : "No starred matching sites"
     }
 
     private var allSitesDropdown: some View {
@@ -267,7 +286,7 @@ struct WordPressAgentWindowView: View {
 
                     Spacer()
 
-                    Text("\(normalizedSearch.isEmpty ? remainingSiteCount : dropdownSites.count)")
+                    Text("\(allSitesCount)")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -278,25 +297,24 @@ struct WordPressAgentWindowView: View {
             .buttonStyle(.plain)
 
             if shouldShowDropdownSites {
-                if dropdownSites.isEmpty {
+                if allSites.isEmpty {
                     SidebarEmptyText("No matching sites")
                         .padding(.horizontal, 8)
                 } else {
                     LazyVStack(spacing: 2) {
-                        let conversationsBySiteID = latestConversationBySiteID
-                        ForEach(dropdownSites) { site in
-                            Button {
-                                appState.selectWordPressAgentSite(site.id)
-                                isAllSitesExpanded = false
-                                isComposerFocused = true
-                            } label: {
-                                SiteSidebarRow(
-                                    site: site,
-                                    isSelected: site.id == activeSiteID,
-                                    lastUsedDate: conversationsBySiteID[site.id]?.lastUpdated
-                                )
-                            }
-                            .buttonStyle(.plain)
+                        ForEach(allSites) { site in
+                            SiteSidebarRow(
+                                site: site,
+                                isSelected: site.id == activeSiteID,
+                                isStarred: appState.isWordPressAgentSiteStarred(site.id),
+                                onSelect: {
+                                    appState.selectWordPressAgentSite(site.id)
+                                    isComposerFocused = true
+                                },
+                                onToggleStar: {
+                                    appState.toggleWordPressAgentSiteStar(site.id)
+                                }
+                            )
                         }
                     }
                 }
@@ -305,10 +323,12 @@ struct WordPressAgentWindowView: View {
     }
 
     private var conversationsSection: some View {
-        LazyVStack(alignment: .leading, spacing: 6) {
+        let conversations = visibleConversations
+
+        return VStack(alignment: .leading, spacing: 6) {
             SidebarSectionHeader(title: "Recent")
 
-            if visibleConversations.isEmpty {
+            if conversations.isEmpty {
                 if appState.isRefreshingWordPressAgentConversations {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -321,8 +341,8 @@ struct WordPressAgentWindowView: View {
                         .padding(.horizontal, 8)
                 }
             } else {
-                LazyVStack(spacing: 2) {
-                    ForEach(visibleConversations) { conversation in
+                VStack(spacing: 2) {
+                    ForEach(conversations) { conversation in
                         Button {
                             appState.selectWordPressAgentConversation(conversation.id)
                             appState.selectedWordPressComSiteID = conversation.key.siteID
@@ -336,9 +356,46 @@ struct WordPressAgentWindowView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if normalizedSearch.isEmpty {
+                        conversationPaginationRow
+                    }
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var conversationPaginationRow: some View {
+        Button {
+            if !appState.isLoadingMoreWordPressAgentConversations {
+                appState.loadMoreWordPressAgentConversationsFromUI()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if appState.isLoadingMoreWordPressAgentConversations {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text(appState.isLoadingMoreWordPressAgentConversations
+                    ? "Loading previous conversations..."
+                    : "Load previous conversations")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(AgentPalette.softControl.opacity(
+                        appState.isLoadingMoreWordPressAgentConversations ? 0.72 : 0.55
+                    ))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isRefreshingWordPressAgentConversations
+            || appState.isLoadingMoreWordPressAgentConversations)
     }
 
     private var accountFooter: some View {
@@ -1291,6 +1348,10 @@ enum AgentPalette {
         light: .white,
         dark: .black
     )
+    static let starFill = dynamicColor(
+        light: NSColor(calibratedRed: 0.86, green: 0.55, blue: 0.02, alpha: 1),
+        dark: NSColor(calibratedRed: 1.00, green: 0.70, blue: 0.18, alpha: 1)
+    )
     static let secondaryText = Color(nsColor: .secondaryLabelColor)
 
     private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
@@ -1337,35 +1398,47 @@ private struct SidebarEmptyText: View {
 private struct SiteSidebarRow: View {
     let site: WPCOMSite
     let isSelected: Bool
-    let lastUsedDate: Date?
+    let isStarred: Bool
+    let onSelect: () -> Void
+    let onToggleStar: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
+        HStack(spacing: 4) {
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(site.displayName)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(site.displayName)
+                            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                Text(site.slug ?? readableHost(from: site.url) ?? "Site \(site.id)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                        Text(site.slug ?? readableHost(from: site.url) ?? "Site \(site.id)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 4)
-
-            if let lastUsedDate {
-                Text(lastUsedDate, style: .relative)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .frame(maxWidth: 52, alignment: .trailing)
+            Button(action: onToggleStar) {
+                Image(systemName: isStarred ? "star.fill" : "star")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isStarred ? AgentPalette.starFill : AgentPalette.secondaryText)
+                    .frame(width: 28, height: 42)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(isStarred ? "Remove from Starred" : "Add to Starred")
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, 8)
+        .padding(.trailing, 4)
         .frame(height: 42)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1400,41 +1473,82 @@ private struct ConversationSidebarRow: View {
         site?.displayName ?? conversation.title
     }
 
+    private var lastUpdatedText: String {
+        Self.relativeTimestamp(from: conversation.lastUpdated)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             if let site {
                 RemoteSiteIcon(site: site, size: 22, cornerRadius: 6)
+                    .frame(width: 22, height: 22)
             } else {
                 WordPressComLogoMark()
                     .frame(width: 22, height: 22)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
 
                 HStack(spacing: 6) {
                     Text(subtitle)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(conversation.lastUpdated, style: .relative)
+                        .padding(.horizontal, 6)
+                        .frame(height: 16)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(AgentPalette.softControl.opacity(isSelected ? 0.65 : 0.42))
+                        )
+
+                    Text(lastUpdatedText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(height: 16)
+
+                    Spacer(minLength: 0)
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .frame(height: 50)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? AgentPalette.sidebarSelection : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+
+    private static func relativeTimestamp(from date: Date) -> String {
+        let interval = max(0, Date().timeIntervalSince(date))
+        if interval < 60 {
+            return "now"
+        }
+
+        let minute = 60.0
+        let hour = 60.0 * minute
+        let day = 24.0 * hour
+        let month = 30.0 * day
+        let year = 365.0 * day
+
+        if interval < hour {
+            return "\(max(1, Int(interval / minute))) min"
+        }
+        if interval < day {
+            return "\(max(1, Int(interval / hour))) h"
+        }
+        if interval < month {
+            return "\(max(1, Int(interval / day))) d"
+        }
+        if interval < year {
+            return "\(max(1, Int(interval / month))) mo"
+        }
+        return "\(max(1, Int(interval / year))) y"
     }
 }
 

@@ -67,7 +67,7 @@ enum WordPressAgentSpeechProvider: String, CaseIterable, Hashable, Identifiable 
     }
 }
 
-struct WordPressAgentConversationKey: Hashable, Identifiable {
+struct WordPressAgentConversationKey: Codable, Hashable, Identifiable {
     let siteID: Int
     let agentID: String
 
@@ -88,13 +88,13 @@ struct WordPressAgentConversationKey: Hashable, Identifiable {
     }
 }
 
-enum WordPressAgentMessageRole: String, Equatable {
+enum WordPressAgentMessageRole: String, Codable, Equatable {
     case user
     case agent
     case system
 }
 
-struct WordPressAgentAttachment: Identifiable, Equatable {
+struct WordPressAgentAttachment: Identifiable, Equatable, Codable {
     let id: UUID
     let fileURL: URL
     let displayName: String
@@ -125,7 +125,7 @@ struct WordPressAgentPreview: Identifiable, Equatable {
     }
 }
 
-struct WordPressAgentMessage: Identifiable, Equatable {
+struct WordPressAgentMessage: Identifiable, Equatable, Codable {
     let id: UUID
     let role: WordPressAgentMessageRole
     let text: String
@@ -150,7 +150,7 @@ struct WordPressAgentMessage: Identifiable, Equatable {
     }
 }
 
-struct WordPressAgentConversation: Identifiable, Equatable {
+struct WordPressAgentConversation: Identifiable, Equatable, Codable {
     let id: String
     let key: WordPressAgentConversationKey
     var remoteChatID: Int?
@@ -361,7 +361,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let elevenLabsVoiceIdentifierStorageKey = "elevenlabs_voice_identifier"
     private let selectedWPCOMSiteIDStorageKey = "selected_wpcom_site_id"
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
-    private let wordpressAgentRecentSiteIDsStorageKey = "wordpress_agent_recent_site_ids"
+    private let wordpressAgentStarredSiteIDsStorageKey = "wordpress_agent_starred_site_ids"
+    private let wordpressComSitesCacheStorageKey = "wordpress_com_sites_cache"
+    private let wordpressAgentConversationsCacheStorageKey = "wordpress_agent_conversations_cache"
+    private let wordpressAgentConversationPageSize = 20
+    private let wordpressAgentConversationsCacheDebounceNanoseconds: UInt64 = 350_000_000
     private static let wordpressAgentFrontendAbilities: [WPCOMAgentFrontendAbility] = [.preview]
     private let maxWordPressAgentFrontendToolIterations = 4
     private let transcribingIndicatorDelay: TimeInterval = 0.25
@@ -465,9 +469,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var isTranscribing = false
     @Published var lastTranscript: String = ""
     @Published var lastAgentResponse: String = ""
-    @Published private(set) var wordpressAgentConversations: [WordPressAgentConversation] = []
+    @Published private(set) var wordpressAgentConversations: [WordPressAgentConversation] = [] {
+        didSet {
+            scheduleCachedWordPressAgentConversationsPersistence()
+        }
+    }
     @Published var selectedWordPressAgentConversationID: String?
     @Published private(set) var isRefreshingWordPressAgentConversations = false
+    @Published private(set) var isLoadingMoreWordPressAgentConversations = false
+    @Published private(set) var canLoadMoreWordPressAgentConversations = true
     @Published private(set) var hasLoadedWordPressAgentConversations = false
     @Published private(set) var wordpressAgentHistoryStatusMessage: String?
     @Published private(set) var wordpressAgentPreview: WordPressAgentPreview?
@@ -543,12 +553,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var isWordPressComSignedIn = false
     @Published private(set) var isSigningInToWordPressCom = false
     @Published private(set) var isRefreshingWordPressComSites = false
-    @Published private(set) var wordpressComSites: [WPCOMSite] = []
+    @Published private(set) var wordpressComSites: [WPCOMSite] = [] {
+        didSet {
+            persistCachedWordPressComSites()
+        }
+    }
     @Published private(set) var wordpressComUser: WPCOMUser?
     @Published private(set) var transcribeSkill: WPCOMGuideline?
-    @Published private(set) var recentWordPressAgentSiteIDs: [Int] = [] {
+    @Published private(set) var starredWordPressAgentSiteIDs: [Int] = [] {
         didSet {
-            persistWordPressAgentRecentSiteIDs()
+            persistWordPressAgentStarredSiteIDs()
         }
     }
     @Published var wordpressComStatusMessage: String?
@@ -589,7 +603,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func setWordPressAgentWindowFocused(_ isFocused: Bool) {
+        let shouldRefreshRecentConversations = isFocused && !isWordPressAgentWindowFocused
         isWordPressAgentWindowFocused = isFocused
+        if shouldRefreshRecentConversations {
+            refreshWordPressAgentConversationsFromUI()
+        }
     }
 
     func setWordPressAgentUtilityOverlayFocused(_ isFocused: Bool) {
@@ -625,16 +643,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var pendingShortcutStartTask: Task<Void, Never>?
     private var pendingShortcutStartMode: RecordingTriggerMode?
     private var pendingOverlayDismissToken: UUID?
+    private var pendingWordPressAgentConversationsCacheTask: Task<Void, Never>?
+    private var wordpressAgentConversationsCacheGeneration = 0
+    private var shouldPersistWordPressAgentConversationsCache = true
     private var shouldMonitorHotkeys = false
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
+    private var nextWordPressAgentConversationsPage = 1
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var elevenLabsSpeechTask: Task<Void, Never>?
     private var elevenLabsAudioPlayer: AVAudioPlayer?
 
     init() {
         UserDefaults.standard.removeObject(forKey: "force_http2_transcription")
+        UserDefaults.standard.removeObject(forKey: "wordpress_agent_recent_site_ids")
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
         let shortcuts = Self.loadShortcutConfiguration(
             holdKey: holdShortcutStorageKey,
@@ -693,11 +716,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
         let storedSiteID = UserDefaults.standard.object(forKey: selectedWPCOMSiteIDStorageKey) as? Int
         let storedAppSiteOverrides = Self.loadWordPressComAppSiteOverrides(forKey: wpcomAppSiteOverridesStorageKey)
-        let storedWordPressAgentRecentSiteIDs = Self.loadWordPressAgentRecentSiteIDs(
-            forKey: wordpressAgentRecentSiteIDsStorageKey
+        let storedWordPressAgentStarredSiteIDs = Self.loadWordPressAgentStarredSiteIDs(
+            forKey: wordpressAgentStarredSiteIDsStorageKey
         )
 
         self.contextService = AppContextService()
+        let isInitiallyWordPressComSignedIn = wpcomClient.isSignedIn
+        let cachedWordPressComSites = isInitiallyWordPressComSignedIn
+            ? Self.loadCachedWordPressComSites(forKey: wordpressComSitesCacheStorageKey)
+            : []
+        let cachedWordPressAgentConversations = isInitiallyWordPressComSignedIn
+            ? Self.loadCachedWordPressAgentConversations(forKey: wordpressAgentConversationsCacheStorageKey)
+            : []
+        let cachedRemoteConversationCount = cachedWordPressAgentConversations.filter { $0.remoteChatID != nil }.count
         self.hasCompletedSetup = hasCompletedSetup
         self.holdShortcut = shortcuts.hold
         self.toggleShortcut = shortcuts.toggle
@@ -723,8 +754,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.selectedMicrophoneID = selectedMicrophoneID
         self.selectedWordPressComSiteID = storedSiteID
         self.wordpressComAppSiteOverrides = storedAppSiteOverrides
-        self.recentWordPressAgentSiteIDs = storedWordPressAgentRecentSiteIDs
-        self.isWordPressComSignedIn = wpcomClient.isSignedIn
+        self.starredWordPressAgentSiteIDs = storedWordPressAgentStarredSiteIDs
+        self.wordpressComSites = cachedWordPressComSites
+        self.wordpressAgentConversations = cachedWordPressAgentConversations
+        self.hasLoadedWordPressAgentConversations = !cachedWordPressAgentConversations.isEmpty
+        self.canLoadMoreWordPressAgentConversations = cachedRemoteConversationCount >= wordpressAgentConversationPageSize
+            && cachedRemoteConversationCount % wordpressAgentConversationPageSize == 0
+        self.nextWordPressAgentConversationsPage = max(
+            1,
+            ((cachedRemoteConversationCount + wordpressAgentConversationPageSize - 1)
+                / wordpressAgentConversationPageSize) + 1
+        )
+        self.isWordPressComSignedIn = isInitiallyWordPressComSignedIn
 
         refreshAvailableMicrophones()
         refreshAvailableSpeechVoices()
@@ -760,13 +801,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
         }
 
-        if wpcomClient.isSignedIn {
+        if isInitiallyWordPressComSignedIn {
             Task { await refreshWordPressComSites() }
         }
     }
 
     deinit {
         elevenLabsSpeechTask?.cancel()
+        pendingWordPressAgentConversationsCacheTask?.cancel()
         removeAudioDeviceObservers()
         removeAppActivationObserver()
     }
@@ -925,7 +967,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         UserDefaults.standard.set(data, forKey: wpcomAppSiteOverridesStorageKey)
     }
 
-    private static func loadWordPressAgentRecentSiteIDs(forKey key: String) -> [Int] {
+    private static func loadWordPressAgentStarredSiteIDs(forKey key: String) -> [Int] {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([Int].self, from: data) else {
             return []
@@ -937,9 +979,123 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func persistWordPressAgentRecentSiteIDs() {
-        guard let data = try? JSONEncoder().encode(recentWordPressAgentSiteIDs) else { return }
-        UserDefaults.standard.set(data, forKey: wordpressAgentRecentSiteIDsStorageKey)
+    private func persistWordPressAgentStarredSiteIDs() {
+        guard let data = try? JSONEncoder().encode(starredWordPressAgentSiteIDs) else { return }
+        UserDefaults.standard.set(data, forKey: wordpressAgentStarredSiteIDsStorageKey)
+    }
+
+    private static func loadCachedWordPressComSites(forKey key: String) -> [WPCOMSite] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([WPCOMSite].self, from: data) else {
+            return []
+        }
+
+        var seenSiteIDs = Set<Int>()
+        return decoded.filter { site in
+            site.id > 0 && seenSiteIDs.insert(site.id).inserted
+        }
+    }
+
+    private func persistCachedWordPressComSites() {
+        guard let data = try? JSONEncoder().encode(wordpressComSites) else { return }
+        UserDefaults.standard.set(data, forKey: wordpressComSitesCacheStorageKey)
+    }
+
+    private static func loadCachedWordPressAgentConversations(forKey key: String) -> [WordPressAgentConversation] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([WordPressAgentConversation].self, from: data) else {
+            return []
+        }
+
+        let cacheableConversations: [WordPressAgentConversation] = decoded.compactMap { conversation in
+            guard !conversation.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            var cachedConversation = conversation
+            cachedConversation.isSending = false
+            cachedConversation.errorMessage = nil
+            return cachedConversation
+        }
+        return deduplicatedWordPressAgentConversations(cacheableConversations)
+    }
+
+    private static func deduplicatedWordPressAgentConversations(
+        _ conversations: [WordPressAgentConversation]
+    ) -> [WordPressAgentConversation] {
+        var seenConversationIDs = Set<String>()
+        var seenRemoteChatIDs = Set<Int>()
+        var seenSessionIDs = Set<String>()
+
+        return conversations.filter { conversation in
+            let conversationID = conversation.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !conversationID.isEmpty,
+                  seenConversationIDs.insert(conversationID).inserted else {
+                return false
+            }
+
+            if let remoteChatID = conversation.remoteChatID,
+               !seenRemoteChatIDs.insert(remoteChatID).inserted {
+                return false
+            }
+
+            if let sessionID = normalizedWordPressAgentSessionID(conversation.sessionID),
+               !seenSessionIDs.insert(sessionID).inserted {
+                return false
+            }
+
+            return true
+        }
+    }
+
+    private static func normalizedWordPressAgentSessionID(_ sessionID: String?) -> String? {
+        let trimmedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedSessionID.isEmpty ? nil : trimmedSessionID
+    }
+
+    private func scheduleCachedWordPressAgentConversationsPersistence() {
+        guard shouldPersistWordPressAgentConversationsCache else { return }
+
+        let cacheableConversations = Self.deduplicatedWordPressAgentConversations(
+            wordpressAgentConversations.filter { !$0.isEmptyLocalDraft }
+        )
+        let storageKey = wordpressAgentConversationsCacheStorageKey
+        let debounceNanoseconds = wordpressAgentConversationsCacheDebounceNanoseconds
+
+        pendingWordPressAgentConversationsCacheTask?.cancel()
+        wordpressAgentConversationsCacheGeneration += 1
+        let generation = wordpressAgentConversationsCacheGeneration
+
+        pendingWordPressAgentConversationsCacheTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            guard !Task.isCancelled else { return }
+
+            let shouldPersist = await MainActor.run { [weak self] in
+                self?.wordpressAgentConversationsCacheGeneration == generation
+            }
+            guard shouldPersist else { return }
+
+            guard let data = Self.encodedCachedWordPressAgentConversations(cacheableConversations),
+                  !Task.isCancelled else {
+                return
+            }
+
+            let shouldStillPersist = await MainActor.run { [weak self] in
+                self?.wordpressAgentConversationsCacheGeneration == generation
+            }
+            guard shouldStillPersist else { return }
+
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
+
+    private func cancelPendingWordPressAgentConversationsCachePersistence() {
+        pendingWordPressAgentConversationsCacheTask?.cancel()
+        pendingWordPressAgentConversationsCacheTask = nil
+        wordpressAgentConversationsCacheGeneration += 1
+    }
+
+    private static func encodedCachedWordPressAgentConversations(
+        _ conversations: [WordPressAgentConversation]
+    ) -> Data? {
+        try? JSONEncoder().encode(conversations)
     }
 
     private static func sortWordPressComAppSiteOverrides(_ lhs: WPCOMAppSiteOverride, _ rhs: WPCOMAppSiteOverride) -> Bool {
@@ -976,19 +1132,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func signOutOfWordPressCom() {
         wpcomClient.signOut()
+        cancelPendingWordPressAgentConversationsCachePersistence()
         isWordPressComSignedIn = false
         wordpressComSites = []
         wordpressComUser = nil
         selectedWordPressComSiteID = nil
         wordpressComAppSiteOverrides = []
+        shouldPersistWordPressAgentConversationsCache = false
         wordpressAgentConversations = []
+        shouldPersistWordPressAgentConversationsCache = true
         selectedWordPressAgentConversationID = nil
         wordpressAgentPreview = nil
         wordpressAgentPreviewsByConversationID = [:]
         isRefreshingWordPressAgentConversations = false
+        isLoadingMoreWordPressAgentConversations = false
+        canLoadMoreWordPressAgentConversations = true
+        nextWordPressAgentConversationsPage = 1
         hasLoadedWordPressAgentConversations = false
         wordpressAgentHistoryStatusMessage = nil
         transcribeSkill = nil
+        UserDefaults.standard.removeObject(forKey: wordpressComSitesCacheStorageKey)
+        UserDefaults.standard.removeObject(forKey: wordpressAgentConversationsCacheStorageKey)
         wordpressComStatusMessage = "Signed out"
     }
 
@@ -1014,7 +1178,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.selectedWordPressComSiteID = sites.first?.id
                 }
                 self.pruneWordPressComAppSiteOverrides(validSiteIDs: siteIDs)
-                self.pruneWordPressAgentRecentSites(validSiteIDs: siteIDs)
+                self.pruneWordPressAgentStarredSites(validSiteIDs: siteIDs)
                 self.isWordPressComSignedIn = true
                 self.wordpressComStatusMessage = sites.isEmpty
                     ? "No WordPress.com sites found"
@@ -1022,7 +1186,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.isRefreshingWordPressComSites = false
             }
             await discoverTranscribeSkillForSelectedSite()
-            await refreshWordPressAgentConversationsIfNeeded()
+            await refreshWordPressAgentConversations()
         } catch {
             await MainActor.run {
                 self.wordpressComStatusMessage = error.localizedDescription
@@ -1043,6 +1207,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let shouldRefresh = await MainActor.run {
             isWordPressComSignedIn
                 && !isRefreshingWordPressAgentConversations
+                && !isLoadingMoreWordPressAgentConversations
                 && !hasLoadedWordPressAgentConversations
         }
         guard shouldRefresh else { return }
@@ -1053,9 +1218,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         Task { await refreshWordPressAgentConversations() }
     }
 
+    func loadMoreWordPressAgentConversationsFromUI() {
+        Task { await loadMoreWordPressAgentConversations() }
+    }
+
     func refreshWordPressAgentConversations(agentID: String = "dolly") async {
+        let pageSize = wordpressAgentConversationPageSize
         let canRefresh = await MainActor.run {
-            isWordPressComSignedIn && !isRefreshingWordPressAgentConversations
+            isWordPressComSignedIn
+                && !isRefreshingWordPressAgentConversations
+                && !isLoadingMoreWordPressAgentConversations
         }
         guard canRefresh else { return }
 
@@ -1065,29 +1237,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         do {
-            let summaries = try await wpcomClient.fetchAgentConversationSummaries(agentID: agentID)
-            var chatsByID: [Int: WPCOMAgentChat] = [:]
-            for summary in summaries {
-                do {
-                    chatsByID[summary.chatID] = try await wpcomClient.fetchAgentChat(
-                        agentID: agentID,
-                        chatID: summary.chatID
-                    )
-                } catch {
-                    // Keep the summary row even if the full chat cannot be loaded.
-                }
-            }
-            let fetchedChatsByID = chatsByID
+            let page = try await fetchWordPressAgentConversationPage(
+                agentID: agentID,
+                pageNumber: 1,
+                itemsPerPage: pageSize
+            )
+            let pageMayHaveMore = page.summaries.count >= pageSize
 
             await MainActor.run {
-                self.mergeWordPressAgentHistory(
+                let shouldRemoveMissingRemoteConversations = !pageMayHaveMore && !page.summaries.isEmpty
+                let mergedConversationCount = self.mergeWordPressAgentHistory(
                     agentID: self.normalizedWordPressAgentID(agentID),
-                    summaries: summaries,
-                    chatsByID: fetchedChatsByID
+                    summaries: page.summaries,
+                    chatsByID: page.chatsByID,
+                    removeMissingRemoteConversations: shouldRemoveMissingRemoteConversations
                 )
                 self.hasLoadedWordPressAgentConversations = true
+                self.canLoadMoreWordPressAgentConversations = pageMayHaveMore && mergedConversationCount > 0
+                self.nextWordPressAgentConversationsPage = 2
                 self.isRefreshingWordPressAgentConversations = false
-                self.wordpressAgentHistoryStatusMessage = summaries.isEmpty ? "No Dolly history found" : nil
+                let hasAnyConversation = self.wordpressAgentConversations.contains { !$0.isEmptyLocalDraft }
+                self.wordpressAgentHistoryStatusMessage = hasAnyConversation ? nil : "No Dolly history found"
             }
         } catch {
             await MainActor.run {
@@ -1096,6 +1266,86 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.isRefreshingWordPressAgentConversations = false
             }
         }
+    }
+
+    func loadMoreWordPressAgentConversations(agentID: String = "dolly") async {
+        let request = await MainActor.run { () -> (pageNumber: Int, itemsPerPage: Int)? in
+            guard isWordPressComSignedIn,
+                  !isRefreshingWordPressAgentConversations,
+                  !isLoadingMoreWordPressAgentConversations else {
+                return nil
+            }
+            isLoadingMoreWordPressAgentConversations = true
+            return (nextWordPressAgentConversationsPage, wordpressAgentConversationPageSize)
+        }
+        guard let request else { return }
+
+        do {
+            let page = try await fetchWordPressAgentConversationPage(
+                agentID: agentID,
+                pageNumber: request.pageNumber,
+                itemsPerPage: request.itemsPerPage
+            )
+            let existingRemoteChatIDs = await MainActor.run {
+                Set(self.wordpressAgentConversations.compactMap(\.remoteChatID))
+            }
+            let containsNewRemoteConversation = page.summaries.contains { summary in
+                !existingRemoteChatIDs.contains(summary.chatID)
+            }
+            let hasMore = page.summaries.count >= request.itemsPerPage && containsNewRemoteConversation
+
+            await MainActor.run {
+                let mergedConversationCount: Int
+                if containsNewRemoteConversation {
+                    mergedConversationCount = self.mergeWordPressAgentHistory(
+                        agentID: self.normalizedWordPressAgentID(agentID),
+                        summaries: page.summaries,
+                        chatsByID: page.chatsByID,
+                        removeMissingRemoteConversations: false
+                    )
+                } else {
+                    mergedConversationCount = 0
+                }
+                self.hasLoadedWordPressAgentConversations = true
+                self.canLoadMoreWordPressAgentConversations = hasMore && mergedConversationCount > 0
+                self.nextWordPressAgentConversationsPage = page.summaries.isEmpty
+                    || !containsNewRemoteConversation
+                    || mergedConversationCount == 0
+                    ? request.pageNumber
+                    : request.pageNumber + 1
+                self.isLoadingMoreWordPressAgentConversations = false
+            }
+        } catch {
+            await MainActor.run {
+                self.wordpressAgentHistoryStatusMessage = "Could not load more Dolly history: \(error.localizedDescription)"
+                self.errorMessage = error.localizedDescription
+                self.isLoadingMoreWordPressAgentConversations = false
+            }
+        }
+    }
+
+    private func fetchWordPressAgentConversationPage(
+        agentID: String,
+        pageNumber: Int,
+        itemsPerPage: Int
+    ) async throws -> (summaries: [WPCOMAgentConversationSummary], chatsByID: [Int: WPCOMAgentChat]) {
+        let summaries = try await wpcomClient.fetchAgentConversationSummaries(
+            agentID: agentID,
+            pageNumber: pageNumber,
+            itemsPerPage: itemsPerPage
+        )
+        var chatsByID: [Int: WPCOMAgentChat] = [:]
+        for summary in summaries {
+            do {
+                chatsByID[summary.chatID] = try await wpcomClient.fetchAgentChat(
+                    agentID: agentID,
+                    chatID: summary.chatID
+                )
+            } catch {
+                // Keep the summary row even if the full chat cannot be loaded.
+            }
+        }
+        return (summaries, chatsByID)
     }
 
     func refreshLatestExternalAppSnapshot() {
@@ -1156,10 +1406,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func pruneWordPressAgentRecentSites(validSiteIDs: Set<Int>) {
-        let prunedSiteIDs = recentWordPressAgentSiteIDs.filter { validSiteIDs.contains($0) }
-        if prunedSiteIDs.count != recentWordPressAgentSiteIDs.count {
-            recentWordPressAgentSiteIDs = prunedSiteIDs
+    private func pruneWordPressAgentStarredSites(validSiteIDs: Set<Int>) {
+        let prunedSiteIDs = starredWordPressAgentSiteIDs.filter { validSiteIDs.contains($0) }
+        if prunedSiteIDs.count != starredWordPressAgentSiteIDs.count {
+            starredWordPressAgentSiteIDs = prunedSiteIDs
         }
     }
 
@@ -1258,14 +1508,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let sessionID: String?
     }
 
+    @discardableResult
     private func mergeWordPressAgentHistory(
         agentID: String,
         summaries: [WPCOMAgentConversationSummary],
-        chatsByID: [Int: WPCOMAgentChat]
-    ) {
-        var mergedSiteIDs: [Int] = []
+        chatsByID: [Int: WPCOMAgentChat],
+        removeMissingRemoteConversations: Bool
+    ) -> Int {
+        var mergedConversations = Self.deduplicatedWordPressAgentConversations(wordpressAgentConversations)
+        var refreshedRemoteChatIDs = Set<Int>()
+        var processedRemoteChatIDs = Set<Int>()
+        var mergedConversationCount = 0
 
         for summary in summaries {
+            guard processedRemoteChatIDs.insert(summary.chatID).inserted else { continue }
+
             let chat = chatsByID[summary.chatID]
             guard let conversation = makeWordPressAgentConversation(
                 agentID: agentID,
@@ -1276,14 +1533,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
 
             if let index = indexForRemoteWordPressAgentConversation(
+                in: mergedConversations,
                 chatID: summary.chatID,
                 sessionID: conversation.sessionID
             ) {
-                if wordpressAgentConversations[index].isSending {
+                if mergedConversations[index].isSending {
                     continue
                 }
-                let existingID = wordpressAgentConversations[index].id
-                wordpressAgentConversations[index] = WordPressAgentConversation(
+                let existingID = mergedConversations[index].id
+                mergedConversations[index] = WordPressAgentConversation(
                     id: existingID,
                     key: conversation.key,
                     remoteChatID: conversation.remoteChatID,
@@ -1295,21 +1553,39 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     errorMessage: nil,
                     lastUpdated: conversation.lastUpdated
                 )
+                mergedConversationCount += 1
             } else {
-                wordpressAgentConversations.append(conversation)
+                mergedConversations.append(conversation)
+                mergedConversationCount += 1
             }
-            mergedSiteIDs.append(conversation.key.siteID)
+            if let remoteChatID = conversation.remoteChatID {
+                refreshedRemoteChatIDs.insert(remoteChatID)
+            }
         }
 
-        for siteID in mergedSiteIDs.reversed() {
-            recordWordPressAgentSiteUse(siteID)
+        if removeMissingRemoteConversations && mergedConversationCount > 0 {
+            mergedConversations.removeAll { conversation in
+                guard conversation.key.agentID == agentID,
+                      let remoteChatID = conversation.remoteChatID,
+                      !conversation.isSending else {
+                    return false
+                }
+                return !refreshedRemoteChatIDs.contains(remoteChatID)
+            }
         }
 
-        if selectedWordPressAgentConversationID == nil {
+        wordpressAgentConversations = Self.deduplicatedWordPressAgentConversations(mergedConversations)
+
+        let selectedConversationExists = selectedWordPressAgentConversationID.map { selectedID in
+            wordpressAgentConversations.contains { $0.id == selectedID }
+        } ?? false
+        if !selectedConversationExists {
             setActiveWordPressAgentConversation(
                 sortedWordPressAgentConversations.first { !$0.isEmptyLocalDraft }?.id
             )
         }
+
+        return mergedConversationCount
     }
 
     private func makeWordPressAgentConversation(
@@ -1383,18 +1659,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return formatter.date(from: value)
     }
 
-    private func indexForRemoteWordPressAgentConversation(chatID: Int?, sessionID: String?) -> Int? {
+    private func indexForRemoteWordPressAgentConversation(
+        in conversations: [WordPressAgentConversation],
+        chatID: Int?,
+        sessionID: String?
+    ) -> Int? {
         if let chatID,
-           let index = wordpressAgentConversations.firstIndex(where: { $0.remoteChatID == chatID }) {
+           let index = conversations.firstIndex(where: { $0.remoteChatID == chatID }) {
             return index
         }
 
-        if let sessionID, !sessionID.isEmpty,
-           let index = wordpressAgentConversations.firstIndex(where: { $0.sessionID == sessionID }) {
+        if let sessionID = Self.normalizedWordPressAgentSessionID(sessionID),
+           let index = conversations.firstIndex(where: {
+               Self.normalizedWordPressAgentSessionID($0.sessionID) == sessionID
+           }) {
             return index
         }
 
         return nil
+    }
+
+    private func indexForRemoteWordPressAgentConversation(chatID: Int?, sessionID: String?) -> Int? {
+        indexForRemoteWordPressAgentConversation(
+            in: wordpressAgentConversations,
+            chatID: chatID,
+            sessionID: sessionID
+        )
     }
 
     func selectWordPressAgentConversation(_ conversationID: String?) {
@@ -1419,7 +1709,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         setActiveWordPressAgentConversation(conversationID)
         if conversation.key.siteID > 0 {
             selectedWordPressComSiteID = conversation.key.siteID
-            recordWordPressAgentSiteUse(conversation.key.siteID)
         }
     }
 
@@ -1445,17 +1734,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let key = WordPressAgentConversationKey(siteID: siteID, agentID: normalizedWordPressAgentID(agentID))
         removeEmptyWordPressAgentDrafts()
         let conversationID = createWordPressAgentConversation(for: key)
-        recordWordPressAgentSiteUse(siteID)
         selectedWordPressComSiteID = siteID
         setActiveWordPressAgentConversation(conversationID)
         return conversationID
     }
 
-    func recordWordPressAgentSiteUse(_ siteID: Int) {
+    func isWordPressAgentSiteStarred(_ siteID: Int) -> Bool {
+        starredWordPressAgentSiteIDs.contains(siteID)
+    }
+
+    func toggleWordPressAgentSiteStar(_ siteID: Int) {
         guard siteID > 0 else { return }
-        var recentSiteIDs = recentWordPressAgentSiteIDs.filter { $0 != siteID }
-        recentSiteIDs.insert(siteID, at: 0)
-        recentWordPressAgentSiteIDs = Array(recentSiteIDs.prefix(30))
+        if isWordPressAgentSiteStarred(siteID) {
+            starredWordPressAgentSiteIDs.removeAll { $0 == siteID }
+        } else {
+            var siteIDs = starredWordPressAgentSiteIDs.filter { $0 != siteID }
+            siteIDs.insert(siteID, at: 0)
+            starredWordPressAgentSiteIDs = siteIDs
+        }
     }
 
     func showWordPressAgentWindow(conversationID: String? = nil) {
@@ -2037,7 +2333,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].lastUpdated = Date()
         wordpressAgentConversations[index].isSending = markSending
         wordpressAgentConversations[index].errorMessage = nil
-        recordWordPressAgentSiteUse(key.siteID)
         setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
         return WordPressAgentAppendResult(
             conversationID: wordpressAgentConversations[index].id,
@@ -2129,7 +2424,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentConversations[index].errorMessage = nil
         selectedWordPressComSiteID = siteID
         setActiveWordPressAgentConversation(conversationID)
-        recordWordPressAgentSiteUse(siteID)
         return conversationID
     }
 

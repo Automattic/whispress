@@ -75,8 +75,10 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id = "ID"
+        case blogID = "blog_id"
         case name
         case url = "URL"
+        case primaryDomain = "primary_domain"
         case slug
         case icon
     }
@@ -101,13 +103,39 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
             id = intID
         } else if let stringID = try? container.decode(String.self, forKey: .id), let intID = Int(stringID) {
             id = intID
+        } else if let intID = try? container.decode(Int.self, forKey: .blogID) {
+            id = intID
+        } else if let stringID = try? container.decode(String.self, forKey: .blogID), let intID = Int(stringID) {
+            id = intID
         } else {
             throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "Missing site ID")
         }
         name = (try? container.decode(String.self, forKey: .name)) ?? ""
-        url = try? container.decode(String.self, forKey: .url)
-        slug = try? container.decode(String.self, forKey: .slug)
+        let decodedURL = try? container.decode(String.self, forKey: .url)
+        let primaryDomain = try? container.decode(String.self, forKey: .primaryDomain)
+        url = Self.normalizedURLString(decodedURL ?? primaryDomain)
+        slug = (try? container.decode(String.self, forKey: .slug)) ?? primaryDomain
         icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(slug, forKey: .slug)
+        try container.encodeIfPresent(icon, forKey: .icon)
+    }
+
+    private static func normalizedURLString(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        if URLComponents(string: value)?.scheme != nil {
+            return value
+        }
+        return "https://\(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
     }
 }
 
@@ -398,7 +426,7 @@ struct WPCOMAgentResponse: Equatable {
     let toolCalls: [WPCOMAgentToolCall]
 }
 
-struct WPCOMUploadedMedia: Decodable, Equatable {
+struct WPCOMUploadedMedia: Codable, Equatable {
     let id: Int
     let urlString: String
     let file: String?
@@ -480,6 +508,17 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
         slug = try? container.decode(String.self, forKey: .slug)
         mimeType = (try? container.decode(String.self, forKey: .mimeType))
             ?? (try? container.decode(String.self, forKey: .mimeTypeCamel))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(urlString, forKey: .urlString)
+        try container.encodeIfPresent(file, forKey: .file)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(linkString, forKey: .link)
+        try container.encodeIfPresent(slug, forKey: .slug)
     }
 
     private static func decodeFlexibleInt<Key: CodingKey>(
@@ -1061,11 +1100,8 @@ final class WPCOMClient: NSObject {
     }
 
     func fetchSites() async throws -> [WPCOMSite] {
-        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
-        components.queryItems = [
-            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon")
-        ]
-        let data = try await authenticatedData(for: components.url!)
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/ai/agent/dolly/sites")!
+        let data = try await authenticatedData(for: url)
         let response = try JSONDecoder().decode(SitesResponse.self, from: data)
         return response.sites
     }
@@ -1079,11 +1115,17 @@ final class WPCOMClient: NSObject {
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
     }
 
-    func fetchAgentConversationSummaries(agentID: String = "dolly") async throws -> [WPCOMAgentConversationSummary] {
+    func fetchAgentConversationSummaries(
+        agentID: String = "dolly",
+        pageNumber: Int = 1,
+        itemsPerPage: Int = 20
+    ) async throws -> [WPCOMAgentConversationSummary] {
         let historyBotID = Self.historyBotID(for: agentID)
         var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chats/\(historyBotID)")!
         components.queryItems = [
-            URLQueryItem(name: "truncation_method", value: "last_message")
+            URLQueryItem(name: "truncation_method", value: "last_message"),
+            URLQueryItem(name: "page_number", value: "\(pageNumber)"),
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
         ]
         let data = try await authenticatedData(for: components.url!)
         return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
