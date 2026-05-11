@@ -1017,7 +1017,7 @@ final class WPCOMClient: NSObject {
     private let redirectURI = "wpworkspace://oauth/callback"
     private let callbackScheme = "wpworkspace"
     private let tokenStorageAccount = "wpcom_oauth_state"
-    private let session = URLSession(configuration: .ephemeral)
+    private let sessionProvider = AppNetworkSessionProvider.shared
     private var authSession: ASWebAuthenticationSession?
 
     private var clientID: String {
@@ -1194,7 +1194,7 @@ final class WPCOMClient: NSObject {
             boundary: boundary
         )
 
-        let (data, response) = try await session.upload(for: request, from: body)
+        let (data, response) = try await sessionProvider.upload(for: request, from: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(WPCOMTranscribeResponse.self, from: data)
     }
@@ -1277,7 +1277,7 @@ final class WPCOMClient: NSObject {
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         let decoded = try JSONDecoder().decode(AgentRPCResponse.self, from: data)
         if let error = decoded.error {
@@ -1358,7 +1358,7 @@ final class WPCOMClient: NSObject {
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
 
         let body = try makeMultipartBody(fields: fields, files: files, boundary: boundary)
-        let (data, response) = try await session.upload(for: request, from: body)
+        let (data, response) = try await sessionProvider.upload(for: request, from: body)
         try validate(response: response, data: data)
 
         let decoded = try JSONDecoder().decode(MediaUploadResponse.self, from: data)
@@ -1458,7 +1458,7 @@ final class WPCOMClient: NSObject {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Self.formURLEncoded(fields)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
         let expirationDate = tokenResponse.expiresIn.map { Date().addingTimeInterval($0) }
@@ -1473,7 +1473,7 @@ final class WPCOMClient: NSObject {
     private func authenticatedData(for url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         return data
     }

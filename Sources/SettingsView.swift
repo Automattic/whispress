@@ -89,6 +89,8 @@ struct SettingsView: View {
                     GeneralSettingsView(tab: .keyBindings)
                 case .wordpressCom:
                     GeneralSettingsView(tab: .wordpressCom)
+                case .network:
+                    GeneralSettingsView(tab: .network)
                 case .wordpressAgent:
                     GeneralSettingsView(tab: .wordpressAgent)
                 }
@@ -135,6 +137,10 @@ struct GeneralSettingsView: View {
                 case .wordpressCom:
                     SettingsCard("WordPress.com", icon: tab.icon, usesWordPressComLogo: true) {
                         wordpressComSection
+                    }
+                case .network:
+                    SettingsCard("Network", icon: tab.icon) {
+                        networkSection
                     }
                 case .wordpressAgent:
                     SettingsCard("WordPress Agent", icon: tab.icon) {
@@ -381,6 +387,22 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var networkSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(
+                "Bypass macOS system proxy",
+                isOn: Binding(
+                    get: { appState.networkRoutingSettings.bypassesSystemProxy },
+                    set: { appState.setNetworkBypassesSystemProxy($0) }
+                )
+            )
+
+            Text("Enable this when /etc/hosts points public-api.wordpress.com at a sandbox IP and a system PAC/proxy would otherwise route around local DNS.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
