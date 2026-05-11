@@ -1002,18 +1002,53 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return []
         }
 
-        var seenConversationIDs = Set<String>()
-        return decoded.compactMap { conversation in
-            guard seenConversationIDs.insert(conversation.id).inserted else { return nil }
+        let cacheableConversations: [WordPressAgentConversation] = decoded.compactMap { conversation in
+            guard !conversation.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             var cachedConversation = conversation
             cachedConversation.isSending = false
             cachedConversation.errorMessage = nil
             return cachedConversation
         }
+        return deduplicatedWordPressAgentConversations(cacheableConversations)
+    }
+
+    private static func deduplicatedWordPressAgentConversations(
+        _ conversations: [WordPressAgentConversation]
+    ) -> [WordPressAgentConversation] {
+        var seenConversationIDs = Set<String>()
+        var seenRemoteChatIDs = Set<Int>()
+        var seenSessionIDs = Set<String>()
+
+        return conversations.filter { conversation in
+            let conversationID = conversation.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !conversationID.isEmpty,
+                  seenConversationIDs.insert(conversationID).inserted else {
+                return false
+            }
+
+            if let remoteChatID = conversation.remoteChatID,
+               !seenRemoteChatIDs.insert(remoteChatID).inserted {
+                return false
+            }
+
+            if let sessionID = normalizedWordPressAgentSessionID(conversation.sessionID),
+               !seenSessionIDs.insert(sessionID).inserted {
+                return false
+            }
+
+            return true
+        }
+    }
+
+    private static func normalizedWordPressAgentSessionID(_ sessionID: String?) -> String? {
+        let trimmedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedSessionID.isEmpty ? nil : trimmedSessionID
     }
 
     private func persistCachedWordPressAgentConversations() {
-        let cacheableConversations = wordpressAgentConversations.filter { !$0.isEmptyLocalDraft }
+        let cacheableConversations = Self.deduplicatedWordPressAgentConversations(
+            wordpressAgentConversations.filter { !$0.isEmptyLocalDraft }
+        )
         guard let data = try? JSONEncoder().encode(cacheableConversations) else { return }
         UserDefaults.standard.set(data, forKey: wordpressAgentConversationsCacheStorageKey)
     }
@@ -1432,10 +1467,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         chatsByID: [Int: WPCOMAgentChat],
         removeMissingRemoteConversations: Bool
     ) -> Int {
+        var mergedConversations = Self.deduplicatedWordPressAgentConversations(wordpressAgentConversations)
         var refreshedRemoteChatIDs = Set<Int>()
+        var processedRemoteChatIDs = Set<Int>()
         var mergedConversationCount = 0
 
         for summary in summaries {
+            guard processedRemoteChatIDs.insert(summary.chatID).inserted else { continue }
+
             let chat = chatsByID[summary.chatID]
             guard let conversation = makeWordPressAgentConversation(
                 agentID: agentID,
@@ -1446,14 +1485,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
 
             if let index = indexForRemoteWordPressAgentConversation(
+                in: mergedConversations,
                 chatID: summary.chatID,
                 sessionID: conversation.sessionID
             ) {
-                if wordpressAgentConversations[index].isSending {
+                if mergedConversations[index].isSending {
                     continue
                 }
-                let existingID = wordpressAgentConversations[index].id
-                wordpressAgentConversations[index] = WordPressAgentConversation(
+                let existingID = mergedConversations[index].id
+                mergedConversations[index] = WordPressAgentConversation(
                     id: existingID,
                     key: conversation.key,
                     remoteChatID: conversation.remoteChatID,
@@ -1467,7 +1507,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 )
                 mergedConversationCount += 1
             } else {
-                wordpressAgentConversations.append(conversation)
+                mergedConversations.append(conversation)
                 mergedConversationCount += 1
             }
             if let remoteChatID = conversation.remoteChatID {
@@ -1476,7 +1516,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if removeMissingRemoteConversations && mergedConversationCount > 0 {
-            wordpressAgentConversations.removeAll { conversation in
+            mergedConversations.removeAll { conversation in
                 guard conversation.key.agentID == agentID,
                       let remoteChatID = conversation.remoteChatID,
                       !conversation.isSending else {
@@ -1485,6 +1525,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 return !refreshedRemoteChatIDs.contains(remoteChatID)
             }
         }
+
+        wordpressAgentConversations = Self.deduplicatedWordPressAgentConversations(mergedConversations)
 
         let selectedConversationExists = selectedWordPressAgentConversationID.map { selectedID in
             wordpressAgentConversations.contains { $0.id == selectedID }
@@ -1569,18 +1611,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return formatter.date(from: value)
     }
 
-    private func indexForRemoteWordPressAgentConversation(chatID: Int?, sessionID: String?) -> Int? {
+    private func indexForRemoteWordPressAgentConversation(
+        in conversations: [WordPressAgentConversation],
+        chatID: Int?,
+        sessionID: String?
+    ) -> Int? {
         if let chatID,
-           let index = wordpressAgentConversations.firstIndex(where: { $0.remoteChatID == chatID }) {
+           let index = conversations.firstIndex(where: { $0.remoteChatID == chatID }) {
             return index
         }
 
-        if let sessionID, !sessionID.isEmpty,
-           let index = wordpressAgentConversations.firstIndex(where: { $0.sessionID == sessionID }) {
+        if let sessionID = Self.normalizedWordPressAgentSessionID(sessionID),
+           let index = conversations.firstIndex(where: {
+               Self.normalizedWordPressAgentSessionID($0.sessionID) == sessionID
+           }) {
             return index
         }
 
         return nil
+    }
+
+    private func indexForRemoteWordPressAgentConversation(chatID: Int?, sessionID: String?) -> Int? {
+        indexForRemoteWordPressAgentConversation(
+            in: wordpressAgentConversations,
+            chatID: chatID,
+            sessionID: sessionID
+        )
     }
 
     func selectWordPressAgentConversation(_ conversationID: String?) {

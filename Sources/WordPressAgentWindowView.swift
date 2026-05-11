@@ -323,10 +323,12 @@ struct WordPressAgentWindowView: View {
     }
 
     private var conversationsSection: some View {
-        LazyVStack(alignment: .leading, spacing: 6) {
+        let conversations = visibleConversations
+
+        return VStack(alignment: .leading, spacing: 6) {
             SidebarSectionHeader(title: "Recent")
 
-            if visibleConversations.isEmpty {
+            if conversations.isEmpty {
                 if appState.isRefreshingWordPressAgentConversations {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -339,8 +341,8 @@ struct WordPressAgentWindowView: View {
                         .padding(.horizontal, 8)
                 }
             } else {
-                LazyVStack(spacing: 2) {
-                    ForEach(visibleConversations) { conversation in
+                VStack(spacing: 2) {
+                    ForEach(conversations) { conversation in
                         Button {
                             appState.selectWordPressAgentConversation(conversation.id)
                             appState.selectedWordPressComSiteID = conversation.key.siteID
