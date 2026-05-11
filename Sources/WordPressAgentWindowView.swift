@@ -1616,7 +1616,7 @@ private struct WordPressAgentMessageRow: View {
                 }
 
                 if !message.text.isEmpty {
-                    MarkdownMessageText(text: message.text, foregroundStyle: .white)
+                    MarkdownMessageText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -1705,6 +1705,7 @@ private struct WordPressAgentTypingRow: View {
 private struct MarkdownMessageText: View {
     let text: String
     let foregroundStyle: Color
+    var isOnDarkBackground = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1720,6 +1721,12 @@ private struct MarkdownMessageText: View {
                     }
                 case .image(_, let altText, let url):
                     RemoteMarkdownImage(url: url, altText: altText)
+                case .table(_, let table):
+                    MarkdownTableView(
+                        table: table,
+                        foregroundStyle: foregroundStyle,
+                        isOnDarkBackground: isOnDarkBackground
+                    )
                 }
             }
         }
@@ -1728,28 +1735,64 @@ private struct MarkdownMessageText: View {
     private enum MessageFragment: Identifiable {
         case text(Int, String)
         case image(Int, altText: String, url: URL)
+        case table(Int, MarkdownTable)
 
         var id: Int {
             switch self {
-            case .text(let id, _), .image(let id, _, _):
+            case .text(let id, _), .image(let id, _, _), .table(let id, _):
                 return id
             }
         }
     }
 
     private static func messageFragments(from text: String) -> [MessageFragment] {
-        guard let expression = markdownImageExpression else {
+        let source = text as NSString
+        let lines = sourceLines(from: text)
+        guard !lines.isEmpty else {
             return [.text(0, text)]
+        }
+
+        var fragments: [MessageFragment] = []
+        var cursor = 0
+        var lineIndex = 0
+
+        while lineIndex < lines.count {
+            if let block = markdownTableBlock(startingAt: lineIndex, in: lines) {
+                if block.range.location > cursor {
+                    let leadingRange = NSRange(location: cursor, length: block.range.location - cursor)
+                    appendTextAndImageFragments(from: source.substring(with: leadingRange), to: &fragments)
+                }
+
+                fragments.append(.table(fragments.count, block.table))
+                cursor = block.range.location + block.range.length
+                lineIndex = block.nextLineIndex
+            } else {
+                lineIndex += 1
+            }
+        }
+
+        if cursor < source.length {
+            let trailingRange = NSRange(location: cursor, length: source.length - cursor)
+            appendTextAndImageFragments(from: source.substring(with: trailingRange), to: &fragments)
+        }
+
+        return fragments.isEmpty ? [.text(0, text)] : fragments
+    }
+
+    private static func appendTextAndImageFragments(from text: String, to fragments: inout [MessageFragment]) {
+        guard let expression = markdownImageExpression else {
+            fragments.append(.text(fragments.count, text))
+            return
         }
 
         let source = text as NSString
         let fullRange = NSRange(location: 0, length: source.length)
         let matches = expression.matches(in: text, options: [], range: fullRange)
         guard !matches.isEmpty else {
-            return [.text(0, text)]
+            fragments.append(.text(fragments.count, text))
+            return
         }
 
-        var fragments: [MessageFragment] = []
         var cursor = 0
 
         for match in matches {
@@ -1780,11 +1823,9 @@ private struct MarkdownMessageText: View {
             let textRange = NSRange(location: cursor, length: source.length - cursor)
             fragments.append(.text(fragments.count, source.substring(with: textRange)))
         }
-
-        return fragments.isEmpty ? [.text(0, text)] : fragments
     }
 
-    private static func messageAttributedString(from text: String) -> AttributedString {
+    fileprivate static func messageAttributedString(from text: String) -> AttributedString {
         var attributedText = (try? AttributedString(
             markdown: text,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -1822,6 +1863,342 @@ private struct MarkdownMessageText: View {
     private static func substring(in source: NSString, range: NSRange) -> String {
         guard range.location != NSNotFound else { return "" }
         return source.substring(with: range)
+    }
+
+    private struct SourceLine {
+        let text: String
+        let range: NSRange
+    }
+
+    private static func sourceLines(from text: String) -> [SourceLine] {
+        let source = text as NSString
+        var lines: [SourceLine] = []
+        var location = 0
+
+        while location < source.length {
+            var lineEnd = location
+
+            while lineEnd < source.length {
+                let character = source.character(at: lineEnd)
+                if character == 10 || character == 13 {
+                    break
+                }
+                lineEnd += 1
+            }
+
+            var enclosingEnd = lineEnd
+            if enclosingEnd < source.length {
+                let character = source.character(at: enclosingEnd)
+                enclosingEnd += 1
+                if character == 13,
+                   enclosingEnd < source.length,
+                   source.character(at: enclosingEnd) == 10 {
+                    enclosingEnd += 1
+                }
+            }
+
+            lines.append(SourceLine(
+                text: source.substring(with: NSRange(location: location, length: lineEnd - location)),
+                range: NSRange(location: location, length: enclosingEnd - location)
+            ))
+            location = enclosingEnd
+        }
+
+        return lines
+    }
+
+    private static func markdownTableBlock(
+        startingAt lineIndex: Int,
+        in lines: [SourceLine]
+    ) -> (table: MarkdownTable, range: NSRange, nextLineIndex: Int)? {
+        guard lineIndex + 1 < lines.count else { return nil }
+
+        let headerCells = markdownTableCells(in: lines[lineIndex].text)
+        guard headerCells.count >= 2,
+              let alignments = markdownTableAlignments(in: lines[lineIndex + 1].text),
+              alignments.count == headerCells.count else {
+            return nil
+        }
+
+        var rows: [[String]] = []
+        var nextLineIndex = lineIndex + 2
+
+        while nextLineIndex < lines.count {
+            let line = lines[nextLineIndex].text
+            guard !line.trimmingCharacters(in: .whitespaces).isEmpty,
+                  line.contains("|") else {
+                break
+            }
+
+            let cells = markdownTableCells(in: line)
+            guard cells.count >= 2 else {
+                break
+            }
+
+            rows.append(normalizedMarkdownTableRow(cells, columnCount: headerCells.count))
+            nextLineIndex += 1
+        }
+
+        let firstLine = lines[lineIndex]
+        let lastLine = lines[nextLineIndex - 1]
+        return (
+            table: MarkdownTable(
+                header: headerCells,
+                alignments: alignments,
+                rows: rows
+            ),
+            range: NSRange(
+                location: firstLine.range.location,
+                length: lastLine.range.location + lastLine.range.length - firstLine.range.location
+            ),
+            nextLineIndex: nextLineIndex
+        )
+    }
+
+    private static func markdownTableCells(in line: String) -> [String] {
+        let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+        guard trimmedLine.contains("|") else { return [] }
+
+        var cells: [String] = []
+        var currentCell = ""
+        var isEscaped = false
+
+        for character in trimmedLine {
+            if isEscaped {
+                if character == "|" {
+                    currentCell.append(character)
+                } else {
+                    currentCell.append("\\")
+                    currentCell.append(character)
+                }
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else if character == "|" {
+                cells.append(currentCell)
+                currentCell = ""
+            } else {
+                currentCell.append(character)
+            }
+        }
+
+        if isEscaped {
+            currentCell.append("\\")
+        }
+        cells.append(currentCell)
+
+        if trimmedLine.hasPrefix("|"), !cells.isEmpty {
+            cells.removeFirst()
+        }
+        if trimmedLine.hasSuffix("|"), !cells.isEmpty {
+            cells.removeLast()
+        }
+
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private static func markdownTableAlignments(in line: String) -> [MarkdownTable.ColumnAlignment]? {
+        let cells = markdownTableCells(in: line)
+        guard cells.count >= 2 else { return nil }
+
+        var alignments: [MarkdownTable.ColumnAlignment] = []
+
+        for cell in cells {
+            let trimmedCell = cell.trimmingCharacters(in: .whitespaces)
+            let hasLeadingColon = trimmedCell.hasPrefix(":")
+            let hasTrailingColon = trimmedCell.hasSuffix(":")
+            let dashContent = trimmedCell
+                .drop(while: { $0 == ":" })
+                .dropLast(hasTrailingColon ? 1 : 0)
+
+            guard dashContent.count >= 3,
+                  dashContent.allSatisfy({ $0 == "-" }) else {
+                return nil
+            }
+
+            if hasLeadingColon && hasTrailingColon {
+                alignments.append(.center)
+            } else if hasTrailingColon {
+                alignments.append(.trailing)
+            } else {
+                alignments.append(.leading)
+            }
+        }
+
+        return alignments
+    }
+
+    private static func normalizedMarkdownTableRow(_ cells: [String], columnCount: Int) -> [String] {
+        guard cells.count != columnCount else { return cells }
+
+        if cells.count < columnCount {
+            return cells + Array(repeating: "", count: columnCount - cells.count)
+        }
+
+        let leadingCells = cells.prefix(columnCount - 1)
+        let trailingCell = cells.dropFirst(columnCount - 1).joined(separator: " | ")
+        return Array(leadingCells) + [trailingCell]
+    }
+}
+
+private struct MarkdownTable: Equatable {
+    enum ColumnAlignment: Equatable {
+        case leading
+        case center
+        case trailing
+    }
+
+    let header: [String]
+    let alignments: [ColumnAlignment]
+    let rows: [[String]]
+
+    var columnCount: Int {
+        header.count
+    }
+}
+
+private struct MarkdownTableView: View {
+    let table: MarkdownTable
+    let foregroundStyle: Color
+    let isOnDarkBackground: Bool
+
+    private var borderColor: Color {
+        isOnDarkBackground ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
+    }
+
+    private var headerBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.14) : Color.black.opacity(0.05)
+    }
+
+    private var rowBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.06) : Color.black.opacity(0.02)
+    }
+
+    private var alternateRowBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.03) : Color.clear
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(0..<table.columnCount, id: \.self) { columnIndex in
+                        cell(
+                            text: table.header[columnIndex],
+                            columnIndex: columnIndex,
+                            rowIndex: 0,
+                            isHeader: true
+                        )
+                    }
+                }
+
+                ForEach(table.rows.indices, id: \.self) { rowIndex in
+                    GridRow {
+                        let row = normalizedRow(table.rows[rowIndex])
+                        ForEach(0..<table.columnCount, id: \.self) { columnIndex in
+                            cell(
+                                text: row[columnIndex],
+                                columnIndex: columnIndex,
+                                rowIndex: rowIndex + 1,
+                                isHeader: false
+                            )
+                        }
+                    }
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func cell(
+        text: String,
+        columnIndex: Int,
+        rowIndex: Int,
+        isHeader: Bool
+    ) -> some View {
+        Text(MarkdownMessageText.messageAttributedString(from: text))
+            .textSelection(.enabled)
+            .font(.system(size: 14, weight: isHeader ? .semibold : .regular))
+            .lineSpacing(3)
+            .foregroundStyle(foregroundStyle)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(width: columnWidth(for: columnIndex), alignment: alignment(for: columnIndex))
+            .frame(minHeight: 34, alignment: alignment(for: columnIndex))
+            .background(backgroundColor(rowIndex: rowIndex, isHeader: isHeader))
+            .overlay(alignment: .trailing) {
+                if columnIndex < table.columnCount - 1 {
+                    Rectangle()
+                        .fill(borderColor)
+                        .frame(width: 1)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if rowIndex < table.rows.count {
+                    Rectangle()
+                        .fill(borderColor)
+                        .frame(height: 1)
+                }
+            }
+    }
+
+    private func normalizedRow(_ row: [String]) -> [String] {
+        if row.count == table.columnCount {
+            return row
+        }
+
+        if row.count < table.columnCount {
+            return row + Array(repeating: "", count: table.columnCount - row.count)
+        }
+
+        let leadingCells = row.prefix(table.columnCount - 1)
+        let trailingCell = row.dropFirst(table.columnCount - 1).joined(separator: " | ")
+        return Array(leadingCells) + [trailingCell]
+    }
+
+    private func backgroundColor(rowIndex: Int, isHeader: Bool) -> Color {
+        if isHeader {
+            return headerBackground
+        }
+
+        return rowIndex.isMultiple(of: 2) ? alternateRowBackground : rowBackground
+    }
+
+    private func alignment(for columnIndex: Int) -> Alignment {
+        guard columnIndex < table.alignments.count else {
+            return .leading
+        }
+
+        switch table.alignments[columnIndex] {
+        case .leading:
+            return .leading
+        case .center:
+            return .center
+        case .trailing:
+            return .trailing
+        }
+    }
+
+    private func columnWidth(for columnIndex: Int) -> CGFloat {
+        let values = [table.header[columnIndex]]
+            + table.rows.compactMap { row in
+                columnIndex < row.count ? row[columnIndex] : nil
+            }
+        let longestText = values.map(visibleCharacterCount(in:)).max() ?? 0
+        let width = CGFloat(longestText) * 7.5 + 28
+        return min(max(width, columnIndex == 0 ? 44 : 72), 220)
+    }
+
+    private func visibleCharacterCount(in markdown: String) -> Int {
+        markdown
+            .replacingOccurrences(of: #"[*_`~\[\]\(\)]"#, with: "", options: .regularExpression)
+            .count
     }
 }
 
