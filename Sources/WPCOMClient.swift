@@ -50,7 +50,7 @@ struct WPCOMAuthState: Codable, Equatable {
     }
 }
 
-struct WPCOMSite: Decodable, Identifiable, Equatable {
+struct WPCOMSite: Codable, Identifiable, Equatable {
     let id: Int
     let name: String
     let url: String?
@@ -116,6 +116,15 @@ struct WPCOMSite: Decodable, Identifiable, Equatable {
         url = Self.normalizedURLString(decodedURL ?? primaryDomain)
         slug = (try? container.decode(String.self, forKey: .slug)) ?? primaryDomain
         icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(slug, forKey: .slug)
+        try container.encodeIfPresent(icon, forKey: .icon)
     }
 
     private static func normalizedURLString(_ value: String?) -> String? {
@@ -417,7 +426,7 @@ struct WPCOMAgentResponse: Equatable {
     let toolCalls: [WPCOMAgentToolCall]
 }
 
-struct WPCOMUploadedMedia: Decodable, Equatable {
+struct WPCOMUploadedMedia: Codable, Equatable {
     let id: Int
     let urlString: String
     let file: String?
@@ -499,6 +508,17 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
         slug = try? container.decode(String.self, forKey: .slug)
         mimeType = (try? container.decode(String.self, forKey: .mimeType))
             ?? (try? container.decode(String.self, forKey: .mimeTypeCamel))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(urlString, forKey: .urlString)
+        try container.encodeIfPresent(file, forKey: .file)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(linkString, forKey: .link)
+        try container.encodeIfPresent(slug, forKey: .slug)
     }
 
     private static func decodeFlexibleInt<Key: CodingKey>(

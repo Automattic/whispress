@@ -8,6 +8,7 @@ struct WordPressAgentWindowView: View {
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
+    @State private var isStarredSitesExpanded = true
     @State private var isAllSitesExpanded = true
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
@@ -81,6 +82,14 @@ struct WordPressAgentWindowView: View {
 
     private var allSitesCount: Int {
         normalizedSearch.isEmpty ? appState.wordpressComSites.count : allSites.count
+    }
+
+    private var starredSitesCount: Int {
+        normalizedSearch.isEmpty ? starredSites.count : visibleStarredSites.count
+    }
+
+    private var shouldShowStarredSites: Bool {
+        isStarredSitesExpanded || !normalizedSearch.isEmpty
     }
 
     private func siteMatchesSearch(_ site: WPCOMSite) -> Bool {
@@ -192,32 +201,63 @@ struct WordPressAgentWindowView: View {
 
     private var sitesSection: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
-            SidebarSectionHeader(title: "Starred")
-
-            if visibleStarredSites.isEmpty {
-                SidebarEmptyText(starredEmptyText)
-                    .padding(.horizontal, 8)
-            } else {
-                LazyVStack(spacing: 2) {
-                    ForEach(visibleStarredSites) { site in
-                        SiteSidebarRow(
-                            site: site,
-                            isSelected: site.id == activeSiteID,
-                            isStarred: appState.isWordPressAgentSiteStarred(site.id),
-                            onSelect: {
-                                appState.selectWordPressAgentSite(site.id)
-                                isComposerFocused = true
-                            },
-                            onToggleStar: {
-                                appState.toggleWordPressAgentSiteStar(site.id)
-                            }
-                        )
-                    }
-                }
-            }
+            starredSitesDropdown
 
             if appState.isWordPressComSignedIn {
                 allSitesDropdown
+            }
+        }
+    }
+
+    private var starredSitesDropdown: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isStarredSitesExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: shouldShowStarredSites ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 12)
+
+                    Text("Starred")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    Spacer()
+
+                    Text("\(starredSitesCount)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if shouldShowStarredSites {
+                if visibleStarredSites.isEmpty {
+                    SidebarEmptyText(starredEmptyText)
+                        .padding(.horizontal, 8)
+                } else {
+                    LazyVStack(spacing: 2) {
+                        ForEach(visibleStarredSites) { site in
+                            SiteSidebarRow(
+                                site: site,
+                                isSelected: site.id == activeSiteID,
+                                isStarred: appState.isWordPressAgentSiteStarred(site.id),
+                                onSelect: {
+                                    appState.selectWordPressAgentSite(site.id)
+                                    isComposerFocused = true
+                                },
+                                onToggleStar: {
+                                    appState.toggleWordPressAgentSiteStar(site.id)
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1414,6 +1454,8 @@ private struct ConversationSidebarRow: View {
 
                 HStack(spacing: 6) {
                     Text(subtitle)
+                        .lineLimit(1)
+                    Text(conversation.lastUpdated, style: .relative)
                         .lineLimit(1)
                 }
                 .font(.system(size: 11))
