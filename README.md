@@ -83,6 +83,15 @@ Or read it from an untracked local file:
 make CODESIGN_IDENTITY=- WPCOM_OAUTH_CLIENT_SECRET_FILE=.wpcom-oauth-client-secret
 ```
 
+For local development with a different WordPress.com OAuth app, pass that app's
+client ID at build time instead of editing `Info.plist`:
+
+```sh
+make CODESIGN_IDENTITY=- \
+  WPCOM_OAUTH_CLIENT_ID="$WPCOM_CLIENT_ID" \
+  WPCOM_OAUTH_CLIENT_SECRET_FILE=.wpcom-oauth-client-secret
+```
+
 The secret is copied into the built app bundle and then the app is signed. This
 is an app credential rather than a server-grade secret, because native app
 bundles can be inspected. Do not commit it, and rotate it if it leaks publicly.
