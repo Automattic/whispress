@@ -87,6 +87,8 @@ struct SettingsView: View {
                     GeneralSettingsView(tab: .permissions)
                 case .keyBindings:
                     GeneralSettingsView(tab: .keyBindings)
+                case .transcription:
+                    GeneralSettingsView(tab: .transcription)
                 case .wordpressCom:
                     GeneralSettingsView(tab: .wordpressCom)
                 case .wordpressAgent:
@@ -128,9 +130,16 @@ struct GeneralSettingsView: View {
                     SettingsCard("Permissions", icon: tab.icon) {
                         permissionsSection
                     }
+                    SettingsCard("Setup & Diagnostics", icon: "wrench.and.screwdriver") {
+                        setupDiagnosticsSection
+                    }
                 case .keyBindings:
                     SettingsCard("Shortcuts", icon: tab.icon) {
                         hotkeySection
+                    }
+                case .transcription:
+                    SettingsCard("Transcription", icon: tab.icon) {
+                        transcriptionSection
                     }
                 case .wordpressCom:
                     SettingsCard("WordPress.com", icon: tab.icon, usesWordPressComLogo: true) {
@@ -209,31 +218,21 @@ struct GeneralSettingsView: View {
                     Text("Default Site")
                         .font(.caption.weight(.semibold))
                     WordPressSiteSearchPicker(
-                        sites: appState.wordpressComSites,
+                        sites: appState.wordpressComSitesSortedByStarred,
                         selectedSiteID: Binding(
                             get: { appState.selectedWordPressComSiteID },
                             set: { appState.selectedWordPressComSiteID = $0 }
                         ),
-                        maxVisibleRows: 6
+                        maxVisibleRows: 6,
+                        starredSiteIDs: appState.starredWordPressAgentSiteIDs,
+                        onToggleStar: { siteID in
+                            appState.toggleWordPressAgentSiteStar(siteID)
+                        }
                     )
                 }
             }
 
-            HStack(spacing: 10) {
-                if appState.transcribeSkill != nil {
-                    Label("Transcribe skill found", systemImage: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("Open Transcribe Skill") {
-                        appState.openTranscribeSkill()
-                    }
-                    .font(.caption)
-                } else if appState.selectedWordPressComSiteID != nil {
-                    Text("The AI transcription endpoint will create the Transcribe skill on first use.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            transcribeGuidelineLink
 
             if !appState.wordpressComSites.isEmpty {
                 appSiteOverridesSection
@@ -252,9 +251,14 @@ struct GeneralSettingsView: View {
             Toggle("Enable WordPress Agent", isOn: $appState.isWordPressAgentEnabled)
                 .disabled(!appState.isWordPressComSignedIn)
 
-            Text("Enables Quick Ask and lets voice requests route to the WordPress Agent instead of always pasting text.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("When enabled:")
+                    .font(.caption.weight(.semibold))
+                Text("- Voice invocation can route requests to the WordPress Agent instead of always pasting dictated text.")
+                Text("- Left-clicking the menu bar icon opens the WordPress Agent window.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
             Toggle("Read WordPress Agent Replies Aloud", isOn: $appState.shouldSpeakWordPressAgentReplies)
                 .disabled(!appState.isWordPressComSignedIn || !appState.isWordPressAgentEnabled)
@@ -267,6 +271,62 @@ struct GeneralSettingsView: View {
 
             if !appState.isWordPressComSignedIn {
                 Text("Sign in to WordPress.com before enabling the WordPress Agent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var transcriptionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Save Transcription Artifacts", isOn: $appState.saveTranscriptionArtifacts)
+                .disabled(!appState.isWordPressComSignedIn)
+
+            Text("When enabled, each non-empty recording saves the raw transcript as a private Transcription artifact on the WordPress.com site used for that recording.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Text("App-specific transcription site routing is managed in the WordPress.com tab.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open WordPress.com") {
+                    appState.selectedSettingsTab = .wordpressCom
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Transcription Guideline")
+                    .font(.caption.weight(.semibold))
+                transcribeGuidelineLink
+            }
+
+            if !appState.isWordPressComSignedIn {
+                Text("Sign in to WordPress.com before saving transcription artifacts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transcribeGuidelineLink: some View {
+        HStack(spacing: 10) {
+            if appState.transcribeSkill != nil {
+                Label("Transcription guideline found", systemImage: "sparkles")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    appState.openTranscribeSkill()
+                } label: {
+                    Label("Open in wp-admin", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption)
+            } else if appState.selectedWordPressComSiteID != nil {
+                Text("The AI transcription endpoint will create the Transcription guideline on first use.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -403,9 +463,11 @@ struct GeneralSettingsView: View {
 
             currentAppSiteOverrideRow
 
-            let storedOverrides = appState.wordpressComAppSiteOverrides.filter {
-                $0.bundleIdentifier != appState.latestExternalAppSnapshot?.bundleIdentifier
-            }
+            let storedOverrides = sortedAppSiteOverrides(
+                appState.wordpressComAppSiteOverrides.filter {
+                    $0.bundleIdentifier != appState.latestExternalAppSnapshot?.bundleIdentifier
+                }
+            )
             if !storedOverrides.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(storedOverrides) { override in
@@ -519,11 +581,15 @@ struct GeneralSettingsView: View {
                 Divider()
             }
 
-            ForEach(appState.wordpressComSites) { site in
+            ForEach(appState.wordpressComSitesSortedByStarred) { site in
                 Button {
                     action(site.id)
                 } label: {
-                    siteMenuItem(title: site.displayName, isSelected: siteID == site.id)
+                    siteMenuItem(
+                        title: site.displayName,
+                        isSelected: siteID == site.id,
+                        isStarred: appState.isWordPressAgentSiteStarred(site.id)
+                    )
                 }
             }
         } label: {
@@ -539,12 +605,26 @@ struct GeneralSettingsView: View {
         .frame(maxWidth: 190, alignment: .trailing)
     }
 
-    private func siteMenuItem(title: String, isSelected: Bool) -> some View {
+    private func siteMenuItem(title: String, isSelected: Bool, isStarred: Bool = false) -> some View {
         HStack {
             if isSelected {
                 Image(systemName: "checkmark")
             }
+            if isStarred {
+                Image(systemName: "star.fill")
+            }
             Text(title)
+        }
+    }
+
+    private func sortedAppSiteOverrides(_ overrides: [WPCOMAppSiteOverride]) -> [WPCOMAppSiteOverride] {
+        overrides.sorted { lhs, rhs in
+            let lhsStarred = appState.isWordPressAgentSiteStarred(lhs.siteID)
+            let rhsStarred = appState.isWordPressAgentSiteStarred(rhs.siteID)
+            if lhsStarred != rhsStarred {
+                return lhsStarred
+            }
+            return lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
         }
     }
 
@@ -587,6 +667,31 @@ struct GeneralSettingsView: View {
                     appState.openAccessibilitySettings()
                 }
             )
+        }
+    }
+
+    private var setupDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    NotificationCenter.default.post(name: .showSetup, object: nil)
+                } label: {
+                    Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Button {
+                    appState.toggleDebugOverlay()
+                } label: {
+                    Label(
+                        appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Start Debug Overlay",
+                        systemImage: appState.isDebugOverlayActive ? "xmark.circle" : "ladybug"
+                    )
+                }
+            }
+
+            Text("Use setup to revisit permissions and onboarding. The debug overlay shows live app state while diagnosing shortcut, transcription, or context issues.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
