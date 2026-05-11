@@ -144,9 +144,6 @@ struct WordPressAgentWindowView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 18)
             }
-            .refreshable {
-                await appState.refreshWordPressAgentConversations()
-            }
 
             accountFooter
         }
@@ -356,12 +353,10 @@ struct WordPressAgentWindowView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .onAppear {
-                            loadMoreConversationsIfNeeded(after: conversation)
-                        }
                     }
 
-                    if appState.isLoadingMoreWordPressAgentConversations {
+                    if normalizedSearch.isEmpty,
+                       appState.canLoadMoreWordPressAgentConversations || appState.isLoadingMoreWordPressAgentConversations {
                         conversationPaginationRow
                     }
                 }
@@ -371,23 +366,33 @@ struct WordPressAgentWindowView: View {
 
     @ViewBuilder
     private var conversationPaginationRow: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            SidebarEmptyText("Loading more...")
+        if appState.isLoadingMoreWordPressAgentConversations {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading previous conversations...")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        } else {
+            Button {
+                appState.loadMoreWordPressAgentConversationsFromUI()
+            } label: {
+                Text("Load previous conversations")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(AgentPalette.softControl.opacity(0.55))
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isRefreshingWordPressAgentConversations)
         }
-        .padding(.horizontal, 8)
-    }
-
-    private func loadMoreConversationsIfNeeded(after conversation: WordPressAgentConversation) {
-        guard normalizedSearch.isEmpty,
-              appState.canLoadMoreWordPressAgentConversations,
-              !appState.isRefreshingWordPressAgentConversations,
-              !appState.isLoadingMoreWordPressAgentConversations,
-              visibleConversations.last?.id == conversation.id else {
-            return
-        }
-        appState.loadMoreWordPressAgentConversationsFromUI()
     }
 
     private var accountFooter: some View {
