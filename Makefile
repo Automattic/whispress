@@ -97,28 +97,28 @@ $(ICON_ICNS): $(ICON_SOURCE)
 	@rm -rf $(BUILD_DIR)/AppIcon.iconset
 	@echo "Generated $@"
 
+# Uses `appdmg` (npm) rather than `create-dmg` (brew) because appdmg writes the
+# .DS_Store layout directly via `hdiutil` + the `ds-store` library, no AppleScript
+# or Finder session required. That matters on headless CI agents, where any tool
+# that drives Finder via osascript times out after ~120s.
 dmg: all
 	@rm -f "$(DMG_PATH)"
-	@rm -rf $(BUILD_DIR)/dmg-staging
-	@mkdir -p $(BUILD_DIR)/dmg-staging
-	@cp -R "$(APP_BUNDLE)" $(BUILD_DIR)/dmg-staging/
-	@osascript -e 'tell application "Finder" to make alias file to POSIX file "/Applications" at POSIX file "'"$$(cd $(BUILD_DIR)/dmg-staging && pwd)"'"'
-	@ALIAS=$$(find $(BUILD_DIR)/dmg-staging -maxdepth 1 -not -name '*.app' -not -name '.DS_Store' -type f | head -1) && mv "$$ALIAS" "$(BUILD_DIR)/dmg-staging/Applications"
-	@fileicon set "$(BUILD_DIR)/dmg-staging/Applications" /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ApplicationsFolderIcon.icns
+	@mkdir -p $(BUILD_DIR)
+	@printf '%s\n' \
+		'{' \
+		'  "title": "$(APP_NAME)",' \
+		'  "icon": "$(CURDIR)/$(ICON_ICNS)",' \
+		'  "icon-size": 128,' \
+		'  "format": "UDZO",' \
+		'  "window": { "position": { "x": 200, "y": 120 }, "size": { "width": 660, "height": 400 } },' \
+		'  "contents": [' \
+		'    { "x": 180, "y": 170, "type": "file", "path": "$(CURDIR)/$(APP_BUNDLE)", "hide-extension": true },' \
+		'    { "x": 480, "y": 170, "type": "link", "path": "/Applications" }' \
+		'  ]' \
+		'}' > $(BUILD_DIR)/dmg-spec.json
 	@echo "Creating DMG..."
-	@create-dmg \
-		--volname "$(APP_NAME)" \
-		--volicon "$(ICON_ICNS)" \
-		--window-pos 200 120 \
-		--window-size 660 400 \
-		--icon-size 128 \
-		--icon "$(APP_NAME).app" 180 170 \
-		--hide-extension "$(APP_NAME).app" \
-		--icon "Applications" 480 170 \
-		--no-internet-enable \
-		"$(DMG_PATH)" \
-		"$(BUILD_DIR)/dmg-staging"
-	@rm -rf $(BUILD_DIR)/dmg-staging
+	@npx --yes appdmg@0.6.6 $(BUILD_DIR)/dmg-spec.json "$(DMG_PATH)"
+	@rm -f $(BUILD_DIR)/dmg-spec.json
 	@echo "Created $(DMG_PATH)"
 
 codesign-dmg: dmg
