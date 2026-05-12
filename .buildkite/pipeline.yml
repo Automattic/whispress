@@ -11,7 +11,9 @@ steps:
   - label: ":package: Build, sign, notarize"
     key: build
     command: .buildkite/commands/build.sh
-    plugins: [$CI_TOOLKIT_PLUGIN]
+    plugins:
+      - $CI_TOOLKIT_PLUGIN
+      - automattic/nvm#0.6.0
     artifact_paths:
       - build/*.zip
       - build/*.dmg
