@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import WebKit
 
 enum WPCOMClientError: LocalizedError {
     case missingOAuthCredentials
@@ -210,6 +211,11 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         }
         return "https://\(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
     }
+}
+
+struct WPCOMSitePreviewOptions: Equatable {
+    let unmappedURL: String?
+    let frameNonce: String?
 }
 
 struct WPCOMSiteIcon: Codable, Equatable {
@@ -500,7 +506,7 @@ struct WPCOMAgentFrontendAbility: Encodable, Equatable {
             "properties": .object([
                 "url": .object([
                     "type": .string("string"),
-                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WP Workspace will treat them as https URLs. WordPress wp-admin post edit links are shown as their public post URLs.")
+                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WP Workspace will treat them as https URLs. WordPress wp-admin post edit links and frontend post ID URLs are opened with preview=true when possible.")
                 ]),
                 "title": .object([
                     "type": .string("string"),
@@ -852,6 +858,102 @@ final class WPCOMClient: NSObject {
 
     private struct SitesResponse: Decodable {
         let sites: [WPCOMSite]
+    }
+
+    private struct AtomicReadAccessCookiesResponse: Decodable {
+        let url: String?
+        let cookies: [AtomicReadAccessCookie]
+    }
+
+    private struct SitePreviewOptionsResponse: Decodable {
+        let options: SitePreviewOptions?
+    }
+
+    private struct SitePreviewOptions: Decodable {
+        let unmappedURL: String?
+        let frameNonce: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case unmappedURL = "unmapped_url"
+            case frameNonce = "frame_nonce"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            unmappedURL = Self.decodeString(container, forKey: .unmappedURL)
+            frameNonce = Self.decodeString(container, forKey: .frameNonce)
+        }
+
+        var previewOptions: WPCOMSitePreviewOptions {
+            WPCOMSitePreviewOptions(unmappedURL: unmappedURL, frameNonce: frameNonce)
+        }
+
+        private static func decodeString(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> String? {
+            guard let value = try? container.decode(String.self, forKey: key) else {
+                return nil
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private struct AtomicReadAccessCookie: Decodable {
+        let name: String
+        let value: String
+        let domain: String?
+        let path: String?
+        let expires: Date?
+        let secure: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case value
+            case domain
+            case path
+            case expires
+            case secure
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            value = try container.decode(String.self, forKey: .value)
+            domain = try? container.decode(String.self, forKey: .domain)
+            path = try? container.decode(String.self, forKey: .path)
+            secure = (try? container.decode(Bool.self, forKey: .secure)) ?? false
+
+            if let timestamp = try? container.decode(TimeInterval.self, forKey: .expires), timestamp > 0 {
+                expires = Date(timeIntervalSince1970: timestamp)
+            } else if let timestampString = try? container.decode(String.self, forKey: .expires),
+                      let timestamp = TimeInterval(timestampString),
+                      timestamp > 0 {
+                expires = Date(timeIntervalSince1970: timestamp)
+            } else {
+                expires = nil
+            }
+        }
+
+        func httpCookie(defaultDomain: String?) -> HTTPCookie? {
+            let resolvedDomain = domain?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackDomain = defaultDomain?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let cookieDomain = [resolvedDomain, fallbackDomain].compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
+                return nil
+            }
+
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: cookieDomain,
+                .path: path?.isEmpty == false ? path! : "/"
+            ]
+            if let expires {
+                properties[.expires] = expires
+            }
+            if secure {
+                properties[.secure] = "TRUE"
+            }
+            return HTTPCookie(properties: properties)
+        }
     }
 
     private struct AgentRPCRequest: Encodable {
@@ -1237,8 +1339,73 @@ final class WPCOMClient: NSObject {
         components.queryItems = [
             URLQueryItem(name: "fields", value: "ID,display_name,username,email,avatar_URL,profile_URL")
         ]
-        let data = try await authenticatedData(for: components.url!)
+        let data = try await authenticatedData(for: components.url!, timeoutInterval: 15)
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
+    }
+
+    func loadWordPressComAuthCookies(username: String, into cookieStore: WKHTTPCookieStore) async throws {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
+        }
+
+        let loginURL = URL(string: "https://wordpress.com/wp-login.php")!
+        let authorizationHeader = try await authorizationHeaderValue()
+        var request = URLRequest(url: loginURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json,text/html", forHTTPHeaderField: "Accept")
+        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+        request.httpBody = Self.formURLEncodedBody([
+            "log": trimmedUsername,
+            "pwd": "",
+            "rememberme": "forever",
+            "authorization": authorizationHeader,
+            "redirect_to": "https://wordpress.com/"
+        ])
+
+        let session = sessionProvider.isolatedSession()
+        defer { session.finishTasksAndInvalidate() }
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw WPCOMClientError.invalidResponse("No HTTP response")
+        }
+        guard (200...399).contains(httpResponse.statusCode) else {
+            throw WPCOMClientError.requestFailed(httpResponse.statusCode, "")
+        }
+
+        let cookies = (session.configuration.httpCookieStorage?.cookies ?? []) + Self.cookies(from: httpResponse, for: loginURL)
+        guard !cookies.isEmpty else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return preview authentication cookies.")
+        }
+        await Self.setCookies(cookies, into: cookieStore)
+        guard await Self.hasWordPressComAuthCookie(username: trimmedUsername, in: cookieStore) else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
+        }
+    }
+
+    func loadAtomicReadAccessCookies(siteID: Int, into cookieStore: WKHTTPCookieStore) async throws {
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/atomic-auth-proxy/read-access-cookies")!
+        let data = try await authenticatedData(for: url, timeoutInterval: 15)
+        let response = try JSONDecoder().decode(AtomicReadAccessCookiesResponse.self, from: data)
+        let defaultDomain = response.url.flatMap { URL(string: $0)?.host }
+        let cookies = response.cookies.compactMap { $0.httpCookie(defaultDomain: defaultDomain) }
+        guard !cookies.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Atomic read access response did not include cookies.")
+        }
+        await Self.setCookies(cookies, into: cookieStore)
+    }
+
+    func fetchSitePreviewOptions(siteID: Int) async throws -> WPCOMSitePreviewOptions {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)")!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "options"),
+            URLQueryItem(name: "options", value: "unmapped_url,frame_nonce")
+        ]
+        let data = try await authenticatedData(for: components.url!, timeoutInterval: 15)
+        let response = try JSONDecoder().decode(SitePreviewOptionsResponse.self, from: data)
+        return response.options?.previewOptions ?? WPCOMSitePreviewOptions(unmappedURL: nil, frameNonce: nil)
     }
 
     func fetchAgentConversationSummaries(
@@ -1612,7 +1779,14 @@ final class WPCOMClient: NSObject {
     }
 
     private func authenticatedData(for url: URL) async throws -> Data {
+        try await authenticatedData(for: url, timeoutInterval: nil)
+    }
+
+    private func authenticatedData(for url: URL, timeoutInterval: TimeInterval?) async throws -> Data {
         var request = URLRequest(url: url)
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
         let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
@@ -1636,6 +1810,52 @@ final class WPCOMClient: NSObject {
         guard (200...299).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw WPCOMClientError.requestFailed(httpResponse.statusCode, body)
+        }
+    }
+
+    private static func formURLEncodedBody(_ fields: [String: String]) -> Data? {
+        var components = URLComponents()
+        components.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
+        return components.percentEncodedQuery?.data(using: .utf8)
+    }
+
+    private static func cookies(from response: HTTPURLResponse, for url: URL) -> [HTTPCookie] {
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+            guard let key = pair.key as? String, let value = pair.value as? String else { return }
+            result[key] = value
+        }
+        return HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+    }
+
+    @MainActor
+    private static func setCookies(_ cookies: [HTTPCookie], into cookieStore: WKHTTPCookieStore) async {
+        for cookie in cookies {
+            await withCheckedContinuation { continuation in
+                cookieStore.setCookie(cookie) {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func hasWordPressComAuthCookie(username: String, in cookieStore: WKHTTPCookieStore) async -> Bool {
+        let cookies = await allCookies(in: cookieStore)
+        return cookies.contains { cookie in
+            guard cookie.name.hasPrefix("wordpress_logged_in"),
+                  cookie.domain == "wordpress.com" || cookie.domain.hasSuffix(".wordpress.com") else {
+                return false
+            }
+            return cookie.value.components(separatedBy: "%").first == username
+        }
+    }
+
+    @MainActor
+    private static func allCookies(in cookieStore: WKHTTPCookieStore) async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            cookieStore.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
         }
     }
 

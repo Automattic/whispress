@@ -6,6 +6,7 @@ import ServiceManagement
 import ApplicationServices
 import os.log
 import UserNotifications
+import WebKit
 private let recordingLog = OSLog(subsystem: "com.automattic.wpworkspace", category: "Recording")
 private let unknownWordPressAgentSiteID = -1
 
@@ -408,6 +409,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let wpcomAppSiteOverridesStorageKey = "wpcom_app_site_overrides"
     private let wordpressAgentStarredSiteIDsStorageKey = "wordpress_agent_starred_site_ids"
     private let wordpressComSitesCacheStorageKey = "wordpress_com_sites_cache"
+    private let wordpressComUserCacheStorageKey = "wordpress_com_user_cache"
     private let wordpressAgentConversationsCacheStorageKey = "wordpress_agent_conversations_cache"
     private let lastNotifiedAppUpdateVersionStorageKey = "last_notified_app_update_version"
     private let networkRoutingSettingsStorageKey = "network_routing_settings"
@@ -620,7 +622,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             persistCachedWordPressComSites()
         }
     }
-    @Published private(set) var wordpressComUser: WPCOMUser?
+    @Published private(set) var wordpressComUser: WPCOMUser? {
+        didSet {
+            persistCachedWordPressComUser()
+        }
+    }
     @Published private(set) var transcribeSkill: WPCOMGuideline?
     @Published private(set) var starredWordPressAgentSiteIDs: [Int] = [] {
         didSet {
@@ -816,6 +822,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let cachedWordPressComSites = isInitiallyWordPressComSignedIn
             ? Self.loadCachedWordPressComSites(forKey: wordpressComSitesCacheStorageKey)
             : []
+        let cachedWordPressComUser = isInitiallyWordPressComSignedIn
+            ? Self.loadCachedWordPressComUser(forKey: wordpressComUserCacheStorageKey)
+            : nil
         let cachedWordPressAgentConversations = isInitiallyWordPressComSignedIn
             ? Self.loadCachedWordPressAgentConversations(forKey: wordpressAgentConversationsCacheStorageKey)
             : []
@@ -849,6 +858,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.wordpressComAppSiteOverrides = storedAppSiteOverrides
         self.starredWordPressAgentSiteIDs = storedWordPressAgentStarredSiteIDs
         self.wordpressComSites = cachedWordPressComSites
+        self.wordpressComUser = cachedWordPressComUser
         self.wordpressAgentConversations = cachedWordPressAgentConversations
         self.hasLoadedWordPressAgentConversations = !cachedWordPressAgentConversations.isEmpty
         self.canLoadMoreWordPressAgentConversations = cachedRemoteConversationCount >= wordpressAgentConversationPageSize
@@ -1170,6 +1180,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
         UserDefaults.standard.set(data, forKey: wordpressComSitesCacheStorageKey)
     }
 
+    private static func loadCachedWordPressComUser(forKey key: String) -> WPCOMUser? {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(WPCOMUser.self, from: data)
+    }
+
+    private func persistCachedWordPressComUser() {
+        guard let wordpressComUser else {
+            UserDefaults.standard.removeObject(forKey: wordpressComUserCacheStorageKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(wordpressComUser) else { return }
+        UserDefaults.standard.set(data, forKey: wordpressComUserCacheStorageKey)
+    }
+
     private static func loadCachedWordPressAgentConversations(forKey key: String) -> [WordPressAgentConversation] {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([WordPressAgentConversation].self, from: data) else {
@@ -1328,6 +1354,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wordpressAgentHistoryStatusMessage = nil
         transcribeSkill = nil
         UserDefaults.standard.removeObject(forKey: wordpressComSitesCacheStorageKey)
+        UserDefaults.standard.removeObject(forKey: wordpressComUserCacheStorageKey)
         UserDefaults.standard.removeObject(forKey: wordpressAgentConversationsCacheStorageKey)
         wordpressComStatusMessage = "Signed out"
     }
@@ -1346,7 +1373,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
             async let sitesTask = wpcomClient.fetchSites()
             async let userTask = wpcomClient.fetchCurrentUser()
             let sites = try await sitesTask
-            let currentUser = try? await userTask
+            let existingUser = await MainActor.run { self.wordpressComUser }
+            let currentUser: WPCOMUser?
+            do {
+                currentUser = try await userTask
+            } catch {
+                os_log("WordPress.com current user load failed: %{public}@", log: recordingLog, type: .error, error.localizedDescription)
+                currentUser = existingUser
+            }
             await MainActor.run {
                 let siteIDs = Set(sites.map(\.id))
                 self.wordpressComSites = sites
@@ -2088,6 +2122,48 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         wordpressAgentPreview = preview
         showWordPressAgentWindow(conversationID: targetConversationID)
+    }
+
+    @MainActor
+    func prepareWordPressAgentPreviewCookies(siteID: Int?, cookieStore: WKHTTPCookieStore) async {
+        guard isWordPressComSignedIn, let wordpressComUser else {
+            return
+        }
+
+        do {
+            try await wpcomClient.loadWordPressComAuthCookies(
+                username: wordpressComUser.username,
+                into: cookieStore
+            )
+        } catch {
+            os_log("WordPress.com preview cookie load failed: %{public}@", log: recordingLog, type: .error, error.localizedDescription)
+        }
+
+        guard let siteID else { return }
+        do {
+            try await wpcomClient.loadAtomicReadAccessCookies(siteID: siteID, into: cookieStore)
+        } catch {
+            os_log("Atomic preview cookie load failed for site %{public}d: %{public}@", log: recordingLog, type: .error, siteID, error.localizedDescription)
+        }
+    }
+
+    @MainActor
+    func resolvedWordPressAgentPreviewURL(_ url: URL, siteID: Int?) async -> URL {
+        let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+        guard let siteID else {
+            return previewURL
+        }
+
+        do {
+            let options = try await wpcomClient.fetchSitePreviewOptions(siteID: siteID)
+            return WordPressAgentPreviewURLResolver.previewURL(
+                for: previewURL,
+                sitePreviewOptions: options
+            ) ?? previewURL
+        } catch {
+            os_log("WordPress.com preview option load failed for site %{public}d: %{public}@", log: recordingLog, type: .error, siteID, error.localizedDescription)
+            return previewURL
+        }
     }
 
     @MainActor

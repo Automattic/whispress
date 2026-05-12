@@ -40,6 +40,12 @@ final class AppNetworkSessionProvider: @unchecked Sendable {
         try await currentSession().upload(for: request, from: bodyData)
     }
 
+    func isolatedSession() -> URLSession {
+        lock.lock()
+        defer { lock.unlock() }
+        return Self.makeSession(settings: settings)
+    }
+
     private func currentSession() -> URLSession {
         lock.lock()
         defer { lock.unlock() }
