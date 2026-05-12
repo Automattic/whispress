@@ -8,15 +8,17 @@ struct WordPressAgentWindowView: View {
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
-    @State private var isAllSitesExpanded = false
+    @AppStorage("wordpress_agent_starred_sites_expanded") private var isStarredSitesExpanded = true
+    @AppStorage("wordpress_agent_all_sites_expanded") private var isAllSitesExpanded = true
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
     @FocusState private var isComposerFocused: Bool
 
-    private let recentSiteLimit = 5
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
+    private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
+    private static let pasteableImageContentTypes: [UTType] = [.fileURL, .image]
 
     private var selectedConversation: WordPressAgentConversation? {
         appState.selectedWordPressAgentConversation
@@ -52,37 +54,18 @@ struct WordPressAgentWindowView: View {
         Dictionary(uniqueKeysWithValues: appState.wordpressComSites.map { ($0.id, $0) })
     }
 
-    private var recentSites: [WPCOMSite] {
+    private var starredSites: [WPCOMSite] {
         let sitesByID = siteByID
-        var seenSiteIDs = Set<Int>()
-        var orderedSites: [WPCOMSite] = []
-
-        func appendSite(_ siteID: Int?) {
-            guard let siteID,
-                  seenSiteIDs.insert(siteID).inserted,
-                  let site = sitesByID[siteID] else {
-                return
-            }
-            orderedSites.append(site)
-        }
-
-        appState.recentWordPressAgentSiteIDs.forEach { appendSite($0) }
-        appendSite(appState.selectedWordPressComSiteID)
-        appState.sortedWordPressAgentConversations.forEach { appendSite($0.key.siteID) }
-        appState.wordpressComSites.prefix(recentSiteLimit).forEach { appendSite($0.id) }
-
-        return Array(orderedSites.prefix(recentSiteLimit))
+        return appState.starredWordPressAgentSiteIDs.compactMap { sitesByID[$0] }
     }
 
-    private var visibleRecentSites: [WPCOMSite] {
-        guard !normalizedSearch.isEmpty else { return recentSites }
-        return recentSites.filter(siteMatchesSearch)
+    private var visibleStarredSites: [WPCOMSite] {
+        guard !normalizedSearch.isEmpty else { return starredSites }
+        return starredSites.filter(siteMatchesSearch)
     }
 
-    private var dropdownSites: [WPCOMSite] {
-        let recentSiteIDs = Set(recentSites.map(\.id))
+    private var allSites: [WPCOMSite] {
         return appState.wordpressComSites
-            .filter { !recentSiteIDs.contains($0.id) }
             .filter { normalizedSearch.isEmpty || siteMatchesSearch($0) }
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
@@ -97,22 +80,22 @@ struct WordPressAgentWindowView: View {
         selectedConversation?.isSending == true
     }
 
-    private var remainingSiteCount: Int {
-        max(0, appState.wordpressComSites.count - recentSites.count)
+    private var allSitesCount: Int {
+        normalizedSearch.isEmpty ? appState.wordpressComSites.count : allSites.count
+    }
+
+    private var starredSitesCount: Int {
+        normalizedSearch.isEmpty ? starredSites.count : visibleStarredSites.count
+    }
+
+    private var shouldShowStarredSites: Bool {
+        isStarredSitesExpanded || !normalizedSearch.isEmpty
     }
 
     private func siteMatchesSearch(_ site: WPCOMSite) -> Bool {
         site.displayName.localizedCaseInsensitiveContains(normalizedSearch)
         || (site.slug ?? "").localizedCaseInsensitiveContains(normalizedSearch)
         || (site.url ?? "").localizedCaseInsensitiveContains(normalizedSearch)
-    }
-
-    private var latestConversationBySiteID: [Int: WordPressAgentConversation] {
-        var conversationsBySiteID: [Int: WordPressAgentConversation] = [:]
-        for conversation in appState.sortedWordPressAgentConversations where conversationsBySiteID[conversation.key.siteID] == nil {
-            conversationsBySiteID[conversation.key.siteID] = conversation
-        }
-        return conversationsBySiteID
     }
 
     private var visibleConversations: [WordPressAgentConversation] {
@@ -131,7 +114,7 @@ struct WordPressAgentWindowView: View {
                 .frame(width: 292)
 
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(AgentPalette.separator)
                 .frame(width: 1)
 
             contentArea
@@ -208,44 +191,82 @@ struct WordPressAgentWindowView: View {
         .frame(height: 40)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.72))
+                .fill(AgentPalette.searchField)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                        .stroke(AgentPalette.controlStroke, lineWidth: 1)
                 )
         )
     }
 
     private var sitesSection: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
-            SidebarSectionHeader(title: "Last")
-
-            if visibleRecentSites.isEmpty {
-                SidebarEmptyText(appState.isWordPressComSignedIn ? "No recent matching sites" : "Sign in to WordPress.com")
-                    .padding(.horizontal, 8)
-            } else {
-                LazyVStack(spacing: 2) {
-                    let conversationsBySiteID = latestConversationBySiteID
-                    ForEach(visibleRecentSites) { site in
-                        Button {
-                            appState.selectWordPressAgentSite(site.id)
-                            isComposerFocused = true
-                        } label: {
-                            SiteSidebarRow(
-                                site: site,
-                                isSelected: site.id == activeSiteID,
-                                lastUsedDate: conversationsBySiteID[site.id]?.lastUpdated
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
+            starredSitesDropdown
 
             if appState.isWordPressComSignedIn {
                 allSitesDropdown
             }
         }
+    }
+
+    private var starredSitesDropdown: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isStarredSitesExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: shouldShowStarredSites ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 12)
+
+                    Text("Starred")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    Spacer()
+
+                    Text("\(starredSitesCount)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if shouldShowStarredSites {
+                if visibleStarredSites.isEmpty {
+                    SidebarEmptyText(starredEmptyText)
+                        .padding(.horizontal, 8)
+                } else {
+                    LazyVStack(spacing: 2) {
+                        ForEach(visibleStarredSites) { site in
+                            SiteSidebarRow(
+                                site: site,
+                                isSelected: site.id == activeSiteID,
+                                isStarred: appState.isWordPressAgentSiteStarred(site.id),
+                                onSelect: {
+                                    appState.selectWordPressAgentSite(site.id)
+                                    isComposerFocused = true
+                                },
+                                onToggleStar: {
+                                    appState.toggleWordPressAgentSiteStar(site.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var starredEmptyText: String {
+        if !appState.isWordPressComSignedIn {
+            return "Sign in to WordPress.com"
+        }
+        return normalizedSearch.isEmpty ? "No starred sites" : "No starred matching sites"
     }
 
     private var allSitesDropdown: some View {
@@ -265,7 +286,7 @@ struct WordPressAgentWindowView: View {
 
                     Spacer()
 
-                    Text("\(normalizedSearch.isEmpty ? remainingSiteCount : dropdownSites.count)")
+                    Text("\(allSitesCount)")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -276,25 +297,24 @@ struct WordPressAgentWindowView: View {
             .buttonStyle(.plain)
 
             if shouldShowDropdownSites {
-                if dropdownSites.isEmpty {
+                if allSites.isEmpty {
                     SidebarEmptyText("No matching sites")
                         .padding(.horizontal, 8)
                 } else {
                     LazyVStack(spacing: 2) {
-                        let conversationsBySiteID = latestConversationBySiteID
-                        ForEach(dropdownSites) { site in
-                            Button {
-                                appState.selectWordPressAgentSite(site.id)
-                                isAllSitesExpanded = false
-                                isComposerFocused = true
-                            } label: {
-                                SiteSidebarRow(
-                                    site: site,
-                                    isSelected: site.id == activeSiteID,
-                                    lastUsedDate: conversationsBySiteID[site.id]?.lastUpdated
-                                )
-                            }
-                            .buttonStyle(.plain)
+                        ForEach(allSites) { site in
+                            SiteSidebarRow(
+                                site: site,
+                                isSelected: site.id == activeSiteID,
+                                isStarred: appState.isWordPressAgentSiteStarred(site.id),
+                                onSelect: {
+                                    appState.selectWordPressAgentSite(site.id)
+                                    isComposerFocused = true
+                                },
+                                onToggleStar: {
+                                    appState.toggleWordPressAgentSiteStar(site.id)
+                                }
+                            )
                         }
                     }
                 }
@@ -303,10 +323,12 @@ struct WordPressAgentWindowView: View {
     }
 
     private var conversationsSection: some View {
-        LazyVStack(alignment: .leading, spacing: 6) {
+        let conversations = visibleConversations
+
+        return VStack(alignment: .leading, spacing: 6) {
             SidebarSectionHeader(title: "Recent")
 
-            if visibleConversations.isEmpty {
+            if conversations.isEmpty {
                 if appState.isRefreshingWordPressAgentConversations {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -319,8 +341,8 @@ struct WordPressAgentWindowView: View {
                         .padding(.horizontal, 8)
                 }
             } else {
-                LazyVStack(spacing: 2) {
-                    ForEach(visibleConversations) { conversation in
+                VStack(spacing: 2) {
+                    ForEach(conversations) { conversation in
                         Button {
                             appState.selectWordPressAgentConversation(conversation.id)
                             appState.selectedWordPressComSiteID = conversation.key.siteID
@@ -334,15 +356,52 @@ struct WordPressAgentWindowView: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if normalizedSearch.isEmpty {
+                        conversationPaginationRow
+                    }
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private var conversationPaginationRow: some View {
+        Button {
+            if !appState.isLoadingMoreWordPressAgentConversations {
+                appState.loadMoreWordPressAgentConversationsFromUI()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if appState.isLoadingMoreWordPressAgentConversations {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text(appState.isLoadingMoreWordPressAgentConversations
+                    ? "Loading previous conversations..."
+                    : "Load previous conversations")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(AgentPalette.softControl.opacity(
+                        appState.isLoadingMoreWordPressAgentConversations ? 0.72 : 0.55
+                    ))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isRefreshingWordPressAgentConversations
+            || appState.isLoadingMoreWordPressAgentConversations)
+    }
+
     private var accountFooter: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(AgentPalette.separator)
                 .frame(height: 1)
 
             Button {
@@ -550,6 +609,10 @@ struct WordPressAgentWindowView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, 4)
                             }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(transcriptBottomAnchorID)
                         }
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
@@ -558,19 +621,45 @@ struct WordPressAgentWindowView: View {
                         .padding(.bottom, 28)
                     }
                     .onAppear {
-                        if let lastMessageID = selectedConversation.messages.last?.id {
-                            proxy.scrollTo(lastMessageID, anchor: .bottom)
-                        }
+                        scrollTranscriptToBottom(proxy, animated: false)
                     }
                     .onChange(of: selectedConversation.messages.count) { _ in
-                        if let lastMessageID = selectedConversation.messages.last?.id {
-                            proxy.scrollTo(lastMessageID, anchor: .bottom)
-                        }
+                        scrollTranscriptToBottom(proxy)
+                    }
+                    .onChange(of: selectedConversation.isSending) { _ in
+                        scrollTranscriptToBottom(proxy)
+                    }
+                    .onChange(of: selectedConversation.errorMessage) { _ in
+                        scrollTranscriptToBottom(proxy)
                     }
                 }
             }
         } else {
             emptyWorkspace
+        }
+    }
+
+    private func scrollTranscriptToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
+            proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                scroll()
+            }
+        } else {
+            scroll()
+        }
+
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    scroll()
+                }
+            } else {
+                scroll()
+            }
         }
     }
 
@@ -619,6 +708,9 @@ struct WordPressAgentWindowView: View {
                     .lineLimit(1...5)
                     .focused($isComposerFocused)
                     .onSubmit(sendDraftMessage)
+                    .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+                        pasteImagesFromClipboard()
+                    }
                     .disabled(isComposerInputDisabled)
 
                 HStack(spacing: 14) {
@@ -656,11 +748,11 @@ struct WordPressAgentWindowView: View {
                     } label: {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(canSendMessage ? .white : .secondary)
+                            .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
                             .frame(width: 36, height: 36)
                             .background(
                                 Circle()
-                                    .fill(canSendMessage ? Color.black : Color.black.opacity(0.08))
+                                    .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
                             )
                     }
                     .buttonStyle(.plain)
@@ -675,7 +767,7 @@ struct WordPressAgentWindowView: View {
                     .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                            .stroke(AgentPalette.controlStroke, lineWidth: 1)
                     )
             )
             .frame(maxWidth: 820)
@@ -690,6 +782,16 @@ struct WordPressAgentWindowView: View {
         .onChange(of: appState.wordpressAgentPreview?.id) { _ in
             guard shouldRestoreComposerFocusAfterSend else { return }
             restoreComposerFocusSoon(clearPending: false)
+        }
+        .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+            pasteImagesFromClipboard()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pasteImageIntoWordPressAgentComposer)) { notification in
+            guard isComposerFocused,
+                  let request = notification.object as? WordPressAgentComposerPasteRequest else {
+                return
+            }
+            request.handled = pasteImagesFromClipboardIfAvailable()
         }
     }
 
@@ -749,10 +851,135 @@ struct WordPressAgentWindowView: View {
 
         guard panel.runModal() == .OK else { return }
 
+        appendPendingImageURLs(panel.urls)
+    }
+
+    private func pasteImagesFromClipboard() {
+        _ = pasteImagesFromClipboardIfAvailable()
+    }
+
+    private func pasteImagesFromClipboardIfAvailable() -> Bool {
+        guard !isComposerDisabled else { return false }
+
+        do {
+            let pastedImageURLs = try Self.imageFileURLs(from: NSPasteboard.general)
+            guard !pastedImageURLs.isEmpty else { return false }
+            appendPendingImageURLs(pastedImageURLs)
+            isComposerFocused = true
+            return true
+        } catch {
+            showImagePasteError(error)
+            return true
+        }
+    }
+
+    private func appendPendingImageURLs(_ urls: [URL]) {
         var existingURLs = Set(pendingImageURLs)
-        for url in panel.urls where existingURLs.insert(url).inserted {
+        for url in urls where existingURLs.insert(url).inserted {
             pendingImageURLs.append(url)
         }
+    }
+
+    private static func imageFileURLs(from pasteboard: NSPasteboard) throws -> [URL] {
+        let existingFileURLs = existingImageFileURLs(from: pasteboard)
+        if !existingFileURLs.isEmpty {
+            return existingFileURLs
+        }
+
+        return try writeImageDataFromPasteboard(pasteboard)
+    }
+
+    private static func existingImageFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) ?? []
+        let urls = objects.compactMap { object -> URL? in
+            if let url = object as? URL {
+                return url
+            }
+            if let url = object as? NSURL {
+                return url as URL
+            }
+            return nil
+        }
+
+        let legacyFileURLs = (pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] ?? [])
+            .map(URL.init(fileURLWithPath:))
+
+        let fileURLStringURLs = pasteboard.string(forType: .fileURL)
+            .flatMap(URL.init(string:))
+            .map { [$0] } ?? []
+
+        var seenPaths = Set<String>()
+        let uniqueURLs = (urls + legacyFileURLs + fileURLStringURLs).filter { url in
+            guard url.isFileURL else { return false }
+            return seenPaths.insert(url.standardizedFileURL.path).inserted
+        }
+
+        return ImageImportProcessor.supportedImageFileURLs(from: uniqueURLs)
+    }
+
+    private struct PasteboardImagePayload {
+        let data: Data
+        let fileExtension: String
+    }
+
+    private static func writeImageDataFromPasteboard(_ pasteboard: NSPasteboard) throws -> [URL] {
+        var payloads = (pasteboard.pasteboardItems ?? []).compactMap(imagePayload)
+
+        if payloads.isEmpty,
+           let image = NSImage(pasteboard: pasteboard),
+           let pngData = pngData(from: image) {
+            payloads = [PasteboardImagePayload(data: pngData, fileExtension: "png")]
+        }
+
+        guard !payloads.isEmpty else { return [] }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WPWorkspacePastedImages", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        return try payloads.map { payload in
+            let filename = "pasted-image-\(String(UUID().uuidString.prefix(8)).lowercased()).\(payload.fileExtension)"
+            let url = directory.appendingPathComponent(filename)
+            try payload.data.write(to: url, options: .atomic)
+            return url
+        }
+    }
+
+    private static func imagePayload(from item: NSPasteboardItem) -> PasteboardImagePayload? {
+        let preferredTypes: [(NSPasteboard.PasteboardType, String)] = [
+            (NSPasteboard.PasteboardType("public.png"), "png"),
+            (NSPasteboard.PasteboardType("public.jpeg"), "jpg"),
+            (NSPasteboard.PasteboardType("public.tiff"), "tiff"),
+            (NSPasteboard.PasteboardType("com.compuserve.gif"), "gif"),
+            (NSPasteboard.PasteboardType("org.webmproject.webp"), "webp")
+        ]
+
+        for (type, fileExtension) in preferredTypes {
+            if let data = item.data(forType: type), !data.isEmpty {
+                return PasteboardImagePayload(data: data, fileExtension: fileExtension)
+            }
+        }
+
+        return nil
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private func showImagePasteError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not paste image."
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func site(for siteID: Int) -> WPCOMSite? {
@@ -769,6 +996,8 @@ struct WordPressAgentWindowView: View {
 private struct WordPressAgentPreviewPanel: View {
     let preview: WordPressAgentPreview
     let onClose: () -> Void
+
+    @State private var previewReloadTrigger = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -798,6 +1027,18 @@ private struct WordPressAgentPreviewPanel: View {
                 Spacer(minLength: 10)
 
                 Button {
+                    previewReloadTrigger += 1
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Refresh preview")
+
+                Button {
                     NSWorkspace.shared.open(preview.url)
                 } label: {
                     Image(systemName: "arrow.up.right.square")
@@ -814,10 +1055,10 @@ private struct WordPressAgentPreviewPanel: View {
             .background(Color(nsColor: .windowBackgroundColor))
 
             Rectangle()
-                .fill(Color.black.opacity(0.08))
+                .fill(AgentPalette.separator)
                 .frame(height: 1)
 
-            WordPressAgentWebPreview(url: preview.url)
+            WordPressAgentWebPreview(url: preview.url, reloadTrigger: previewReloadTrigger)
                 .id(preview.id)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -926,11 +1167,17 @@ private final class PreviewResizeHandleView: NSView {
         super.draw(dirtyRect)
 
         if isHovered || dragStartX != nil {
-            NSColor.black.withAlphaComponent(0.045).setFill()
+            let hoverFill = effectiveAppearance.isDarkMode
+                ? NSColor.white.withAlphaComponent(0.04)
+                : NSColor.black.withAlphaComponent(0.045)
+            hoverFill.setFill()
             bounds.fill()
         }
 
-        NSColor.black.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.1).setFill()
+        let separatorFill = effectiveAppearance.isDarkMode
+            ? NSColor.white.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.10)
+            : NSColor.black.withAlphaComponent(isHovered || dragStartX != nil ? 0.18 : 0.10)
+        separatorFill.setFill()
         NSRect(x: floor(bounds.midX), y: 0, width: 1, height: bounds.height).fill()
 
         NSColor.secondaryLabelColor
@@ -960,6 +1207,7 @@ private final class PreviewResizeHandleView: NSView {
 
 private struct WordPressAgentWebPreview: NSViewRepresentable {
     let url: URL
+    let reloadTrigger: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -978,6 +1226,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.load(url, in: webView)
+        context.coordinator.reloadIfNeeded(reloadTrigger, in: webView)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -988,12 +1237,19 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private var loadedURL: URL?
+        private var lastReloadTrigger = 0
 
         func load(_ url: URL, in webView: WKWebView) {
             let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
             guard loadedURL != previewURL else { return }
             loadedURL = previewURL
             webView.load(URLRequest(url: previewURL))
+        }
+
+        func reloadIfNeeded(_ trigger: Int, in webView: WKWebView) {
+            guard trigger != lastReloadTrigger else { return }
+            lastReloadTrigger = trigger
+            webView.reloadFromOrigin()
         }
 
         func webView(
@@ -1053,12 +1309,62 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     }
 }
 
-private enum AgentPalette {
-    static let sidebar = Color(red: 0.972, green: 0.958, blue: 0.974)
-    static let sidebarSelection = Color.black.opacity(0.06)
+enum AgentPalette {
+    static let sidebar = dynamicColor(
+        light: NSColor(calibratedRed: 0.972, green: 0.958, blue: 0.974, alpha: 1),
+        dark: NSColor(calibratedRed: 0.120, green: 0.116, blue: 0.128, alpha: 1)
+    )
+    static let sidebarSelection = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
     static let workspace = Color(nsColor: .textBackgroundColor)
     static let composer = Color(nsColor: .windowBackgroundColor)
-    static let softControl = Color.black.opacity(0.055)
+    static let softControl = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.055),
+        dark: NSColor.white.withAlphaComponent(0.07)
+    )
+    static let searchField = dynamicColor(
+        light: NSColor.white.withAlphaComponent(0.72),
+        dark: NSColor.white.withAlphaComponent(0.07)
+    )
+    static let separator = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
+    static let controlStroke = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.06),
+        dark: NSColor.white.withAlphaComponent(0.10)
+    )
+    static let disabledControl = dynamicColor(
+        light: NSColor.black.withAlphaComponent(0.08),
+        dark: NSColor.white.withAlphaComponent(0.08)
+    )
+    static let primaryActionFill = dynamicColor(
+        light: .black,
+        dark: .white
+    )
+    static let primaryActionIcon = dynamicColor(
+        light: .white,
+        dark: .black
+    )
+    static let starFill = dynamicColor(
+        light: NSColor(calibratedRed: 0.86, green: 0.55, blue: 0.02, alpha: 1),
+        dark: NSColor(calibratedRed: 1.00, green: 0.70, blue: 0.18, alpha: 1)
+    )
+    static let secondaryText = Color(nsColor: .secondaryLabelColor)
+
+    private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.isDarkMode ? dark : light
+        })
+    }
+}
+
+private extension NSAppearance {
+    var isDarkMode: Bool {
+        bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
 }
 
 private struct SidebarSectionHeader: View {
@@ -1092,35 +1398,47 @@ private struct SidebarEmptyText: View {
 private struct SiteSidebarRow: View {
     let site: WPCOMSite
     let isSelected: Bool
-    let lastUsedDate: Date?
+    let isStarred: Bool
+    let onSelect: () -> Void
+    let onToggleStar: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
+        HStack(spacing: 4) {
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    RemoteSiteIcon(site: site, size: 24, cornerRadius: 6)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(site.displayName)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(site.displayName)
+                            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                Text(site.slug ?? readableHost(from: site.url) ?? "Site \(site.id)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                        Text(site.slug ?? readableHost(from: site.url) ?? "Site \(site.id)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 4)
-
-            if let lastUsedDate {
-                Text(lastUsedDate, style: .relative)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .frame(maxWidth: 52, alignment: .trailing)
+            Button(action: onToggleStar) {
+                Image(systemName: isStarred ? "star.fill" : "star")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isStarred ? AgentPalette.starFill : AgentPalette.secondaryText)
+                    .frame(width: 28, height: 42)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(isStarred ? "Remove from Starred" : "Add to Starred")
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, 8)
+        .padding(.trailing, 4)
         .frame(height: 42)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1155,41 +1473,82 @@ private struct ConversationSidebarRow: View {
         site?.displayName ?? conversation.title
     }
 
+    private var lastUpdatedText: String {
+        Self.relativeTimestamp(from: conversation.lastUpdated)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             if let site {
                 RemoteSiteIcon(site: site, size: 22, cornerRadius: 6)
+                    .frame(width: 22, height: 22)
             } else {
                 WordPressComLogoMark()
                     .frame(width: 22, height: 22)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
 
                 HStack(spacing: 6) {
                     Text(subtitle)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(conversation.lastUpdated, style: .relative)
+                        .padding(.horizontal, 6)
+                        .frame(height: 16)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(AgentPalette.softControl.opacity(isSelected ? 0.65 : 0.42))
+                        )
+
+                    Text(lastUpdatedText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(height: 16)
+
+                    Spacer(minLength: 0)
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .frame(height: 50)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? AgentPalette.sidebarSelection : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+
+    private static func relativeTimestamp(from date: Date) -> String {
+        let interval = max(0, Date().timeIntervalSince(date))
+        if interval < 60 {
+            return "now"
+        }
+
+        let minute = 60.0
+        let hour = 60.0 * minute
+        let day = 24.0 * hour
+        let month = 30.0 * day
+        let year = 365.0 * day
+
+        if interval < hour {
+            return "\(max(1, Int(interval / minute))) min"
+        }
+        if interval < day {
+            return "\(max(1, Int(interval / hour))) h"
+        }
+        if interval < month {
+            return "\(max(1, Int(interval / day))) d"
+        }
+        if interval < year {
+            return "\(max(1, Int(interval / month))) mo"
+        }
+        return "\(max(1, Int(interval / year))) y"
     }
 }
 
@@ -1275,7 +1634,7 @@ private struct ComposerAttachmentPill: View {
         .frame(height: 40)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.045))
+                .fill(AgentPalette.softControl)
         )
     }
 }
@@ -1338,7 +1697,7 @@ private struct LocalImageThumbnail: View {
             }
         }
         .frame(width: width, height: height)
-        .background(Color.black.opacity(0.06))
+        .background(AgentPalette.softControl)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
@@ -1371,7 +1730,7 @@ private struct WordPressAgentMessageRow: View {
                 }
 
                 if !message.text.isEmpty {
-                    MarkdownMessageText(text: message.text, foregroundStyle: .white)
+                    MarkdownMessageText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -1460,16 +1819,127 @@ private struct WordPressAgentTypingRow: View {
 private struct MarkdownMessageText: View {
     let text: String
     let foregroundStyle: Color
+    var isOnDarkBackground = false
 
     var body: some View {
-        Text(Self.messageAttributedString(from: text))
-            .textSelection(.enabled)
-            .font(.system(size: 16))
-            .lineSpacing(4)
-            .foregroundStyle(foregroundStyle)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Self.messageFragments(from: text)) { fragment in
+                switch fragment {
+                case .text(_, let fragmentText):
+                    if !fragmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(Self.messageAttributedString(from: fragmentText))
+                            .textSelection(.enabled)
+                            .font(.system(size: 16))
+                            .lineSpacing(4)
+                            .foregroundStyle(foregroundStyle)
+                    }
+                case .image(_, let altText, let url):
+                    RemoteMarkdownImage(url: url, altText: altText)
+                case .table(_, let table):
+                    MarkdownTableView(
+                        table: table,
+                        foregroundStyle: foregroundStyle,
+                        isOnDarkBackground: isOnDarkBackground
+                    )
+                }
+            }
+        }
     }
 
-    private static func messageAttributedString(from text: String) -> AttributedString {
+    private enum MessageFragment: Identifiable {
+        case text(Int, String)
+        case image(Int, altText: String, url: URL)
+        case table(Int, MarkdownTable)
+
+        var id: Int {
+            switch self {
+            case .text(let id, _), .image(let id, _, _), .table(let id, _):
+                return id
+            }
+        }
+    }
+
+    private static func messageFragments(from text: String) -> [MessageFragment] {
+        let source = text as NSString
+        let lines = sourceLines(from: text)
+        guard !lines.isEmpty else {
+            return [.text(0, text)]
+        }
+
+        var fragments: [MessageFragment] = []
+        var cursor = 0
+        var lineIndex = 0
+
+        while lineIndex < lines.count {
+            if let block = markdownTableBlock(startingAt: lineIndex, in: lines) {
+                if block.range.location > cursor {
+                    let leadingRange = NSRange(location: cursor, length: block.range.location - cursor)
+                    appendTextAndImageFragments(from: source.substring(with: leadingRange), to: &fragments)
+                }
+
+                fragments.append(.table(fragments.count, block.table))
+                cursor = block.range.location + block.range.length
+                lineIndex = block.nextLineIndex
+            } else {
+                lineIndex += 1
+            }
+        }
+
+        if cursor < source.length {
+            let trailingRange = NSRange(location: cursor, length: source.length - cursor)
+            appendTextAndImageFragments(from: source.substring(with: trailingRange), to: &fragments)
+        }
+
+        return fragments.isEmpty ? [.text(0, text)] : fragments
+    }
+
+    private static func appendTextAndImageFragments(from text: String, to fragments: inout [MessageFragment]) {
+        guard let expression = markdownImageExpression else {
+            fragments.append(.text(fragments.count, text))
+            return
+        }
+
+        let source = text as NSString
+        let fullRange = NSRange(location: 0, length: source.length)
+        let matches = expression.matches(in: text, options: [], range: fullRange)
+        guard !matches.isEmpty else {
+            fragments.append(.text(fragments.count, text))
+            return
+        }
+
+        var cursor = 0
+
+        for match in matches {
+            guard match.range.location != NSNotFound else { continue }
+
+            if match.range.location > cursor {
+                let textRange = NSRange(location: cursor, length: match.range.location - cursor)
+                fragments.append(.text(fragments.count, source.substring(with: textRange)))
+            }
+
+            let originalMarkdown = source.substring(with: match.range)
+            let altText = substring(in: source, range: match.range(at: 1))
+            let rawURLString = substring(in: source, range: match.range(at: 2))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+
+            if let url = URL(string: rawURLString),
+               let scheme = url.scheme?.lowercased(),
+               ["http", "https"].contains(scheme) {
+                fragments.append(.image(fragments.count, altText: altText, url: url))
+            } else {
+                fragments.append(.text(fragments.count, originalMarkdown))
+            }
+
+            cursor = match.range.location + match.range.length
+        }
+
+        if cursor < source.length {
+            let textRange = NSRange(location: cursor, length: source.length - cursor)
+            fragments.append(.text(fragments.count, source.substring(with: textRange)))
+        }
+    }
+
+    fileprivate static func messageAttributedString(from text: String) -> AttributedString {
         var attributedText = (try? AttributedString(
             markdown: text,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -1495,6 +1965,599 @@ private struct MarkdownMessageText: View {
         }
 
         return attributedText
+    }
+
+    private static var markdownImageExpression: NSRegularExpression? {
+        try? NSRegularExpression(
+            pattern: #"!\[([^\]]*)\]\(\s*([^\s\)]+)(?:\s+"[^"]*")?\s*\)"#,
+            options: []
+        )
+    }
+
+    private static func substring(in source: NSString, range: NSRange) -> String {
+        guard range.location != NSNotFound else { return "" }
+        return source.substring(with: range)
+    }
+
+    private struct SourceLine {
+        let text: String
+        let range: NSRange
+    }
+
+    private static func sourceLines(from text: String) -> [SourceLine] {
+        let source = text as NSString
+        var lines: [SourceLine] = []
+        var location = 0
+
+        while location < source.length {
+            var lineEnd = location
+
+            while lineEnd < source.length {
+                let character = source.character(at: lineEnd)
+                if character == 10 || character == 13 {
+                    break
+                }
+                lineEnd += 1
+            }
+
+            var enclosingEnd = lineEnd
+            if enclosingEnd < source.length {
+                let character = source.character(at: enclosingEnd)
+                enclosingEnd += 1
+                if character == 13,
+                   enclosingEnd < source.length,
+                   source.character(at: enclosingEnd) == 10 {
+                    enclosingEnd += 1
+                }
+            }
+
+            lines.append(SourceLine(
+                text: source.substring(with: NSRange(location: location, length: lineEnd - location)),
+                range: NSRange(location: location, length: enclosingEnd - location)
+            ))
+            location = enclosingEnd
+        }
+
+        return lines
+    }
+
+    private static func markdownTableBlock(
+        startingAt lineIndex: Int,
+        in lines: [SourceLine]
+    ) -> (table: MarkdownTable, range: NSRange, nextLineIndex: Int)? {
+        guard lineIndex + 1 < lines.count else { return nil }
+
+        let headerCells = markdownTableCells(in: lines[lineIndex].text)
+        guard headerCells.count >= 2,
+              let alignments = markdownTableAlignments(in: lines[lineIndex + 1].text),
+              alignments.count == headerCells.count else {
+            return nil
+        }
+
+        var rows: [[String]] = []
+        var nextLineIndex = lineIndex + 2
+
+        while nextLineIndex < lines.count {
+            let line = lines[nextLineIndex].text
+            guard !line.trimmingCharacters(in: .whitespaces).isEmpty,
+                  line.contains("|") else {
+                break
+            }
+
+            let cells = markdownTableCells(in: line)
+            guard cells.count >= 2 else {
+                break
+            }
+
+            rows.append(normalizedMarkdownTableRow(cells, columnCount: headerCells.count))
+            nextLineIndex += 1
+        }
+
+        let firstLine = lines[lineIndex]
+        let lastLine = lines[nextLineIndex - 1]
+        return (
+            table: MarkdownTable(
+                header: headerCells,
+                alignments: alignments,
+                rows: rows
+            ),
+            range: NSRange(
+                location: firstLine.range.location,
+                length: lastLine.range.location + lastLine.range.length - firstLine.range.location
+            ),
+            nextLineIndex: nextLineIndex
+        )
+    }
+
+    private static func markdownTableCells(in line: String) -> [String] {
+        let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+        guard trimmedLine.contains("|") else { return [] }
+
+        var cells: [String] = []
+        var currentCell = ""
+        var isEscaped = false
+
+        for character in trimmedLine {
+            if isEscaped {
+                if character == "|" {
+                    currentCell.append(character)
+                } else {
+                    currentCell.append("\\")
+                    currentCell.append(character)
+                }
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else if character == "|" {
+                cells.append(currentCell)
+                currentCell = ""
+            } else {
+                currentCell.append(character)
+            }
+        }
+
+        if isEscaped {
+            currentCell.append("\\")
+        }
+        cells.append(currentCell)
+
+        if trimmedLine.hasPrefix("|"), !cells.isEmpty {
+            cells.removeFirst()
+        }
+        if trimmedLine.hasSuffix("|"), !cells.isEmpty {
+            cells.removeLast()
+        }
+
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private static func markdownTableAlignments(in line: String) -> [MarkdownTable.ColumnAlignment]? {
+        let cells = markdownTableCells(in: line)
+        guard cells.count >= 2 else { return nil }
+
+        var alignments: [MarkdownTable.ColumnAlignment] = []
+
+        for cell in cells {
+            let trimmedCell = cell.trimmingCharacters(in: .whitespaces)
+            let hasLeadingColon = trimmedCell.hasPrefix(":")
+            let hasTrailingColon = trimmedCell.hasSuffix(":")
+            let dashContent = trimmedCell
+                .drop(while: { $0 == ":" })
+                .dropLast(hasTrailingColon ? 1 : 0)
+
+            guard dashContent.count >= 3,
+                  dashContent.allSatisfy({ $0 == "-" }) else {
+                return nil
+            }
+
+            if hasLeadingColon && hasTrailingColon {
+                alignments.append(.center)
+            } else if hasTrailingColon {
+                alignments.append(.trailing)
+            } else {
+                alignments.append(.leading)
+            }
+        }
+
+        return alignments
+    }
+
+    private static func normalizedMarkdownTableRow(_ cells: [String], columnCount: Int) -> [String] {
+        guard cells.count != columnCount else { return cells }
+
+        if cells.count < columnCount {
+            return cells + Array(repeating: "", count: columnCount - cells.count)
+        }
+
+        let leadingCells = cells.prefix(columnCount - 1)
+        let trailingCell = cells.dropFirst(columnCount - 1).joined(separator: " | ")
+        return Array(leadingCells) + [trailingCell]
+    }
+}
+
+private struct MarkdownTable: Equatable {
+    enum ColumnAlignment: Equatable {
+        case leading
+        case center
+        case trailing
+    }
+
+    let header: [String]
+    let alignments: [ColumnAlignment]
+    let rows: [[String]]
+
+    var columnCount: Int {
+        header.count
+    }
+}
+
+private struct MarkdownTableView: View {
+    let table: MarkdownTable
+    let foregroundStyle: Color
+    let isOnDarkBackground: Bool
+
+    private var borderColor: Color {
+        isOnDarkBackground ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
+    }
+
+    private var headerBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.14) : Color.black.opacity(0.05)
+    }
+
+    private var rowBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.06) : Color.black.opacity(0.02)
+    }
+
+    private var alternateRowBackground: Color {
+        isOnDarkBackground ? Color.white.opacity(0.03) : Color.clear
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(0..<table.columnCount, id: \.self) { columnIndex in
+                        cell(
+                            text: table.header[columnIndex],
+                            columnIndex: columnIndex,
+                            rowIndex: 0,
+                            isHeader: true
+                        )
+                    }
+                }
+
+                ForEach(table.rows.indices, id: \.self) { rowIndex in
+                    GridRow {
+                        let row = normalizedRow(table.rows[rowIndex])
+                        ForEach(0..<table.columnCount, id: \.self) { columnIndex in
+                            cell(
+                                text: row[columnIndex],
+                                columnIndex: columnIndex,
+                                rowIndex: rowIndex + 1,
+                                isHeader: false
+                            )
+                        }
+                    }
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func cell(
+        text: String,
+        columnIndex: Int,
+        rowIndex: Int,
+        isHeader: Bool
+    ) -> some View {
+        Text(MarkdownMessageText.messageAttributedString(from: text))
+            .textSelection(.enabled)
+            .font(.system(size: 14, weight: isHeader ? .semibold : .regular))
+            .lineSpacing(3)
+            .foregroundStyle(foregroundStyle)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(width: columnWidth(for: columnIndex), alignment: alignment(for: columnIndex))
+            .frame(minHeight: 34, alignment: alignment(for: columnIndex))
+            .background(backgroundColor(rowIndex: rowIndex, isHeader: isHeader))
+            .overlay(alignment: .trailing) {
+                if columnIndex < table.columnCount - 1 {
+                    Rectangle()
+                        .fill(borderColor)
+                        .frame(width: 1)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if rowIndex < table.rows.count {
+                    Rectangle()
+                        .fill(borderColor)
+                        .frame(height: 1)
+                }
+            }
+    }
+
+    private func normalizedRow(_ row: [String]) -> [String] {
+        if row.count == table.columnCount {
+            return row
+        }
+
+        if row.count < table.columnCount {
+            return row + Array(repeating: "", count: table.columnCount - row.count)
+        }
+
+        let leadingCells = row.prefix(table.columnCount - 1)
+        let trailingCell = row.dropFirst(table.columnCount - 1).joined(separator: " | ")
+        return Array(leadingCells) + [trailingCell]
+    }
+
+    private func backgroundColor(rowIndex: Int, isHeader: Bool) -> Color {
+        if isHeader {
+            return headerBackground
+        }
+
+        return rowIndex.isMultiple(of: 2) ? alternateRowBackground : rowBackground
+    }
+
+    private func alignment(for columnIndex: Int) -> Alignment {
+        guard columnIndex < table.alignments.count else {
+            return .leading
+        }
+
+        switch table.alignments[columnIndex] {
+        case .leading:
+            return .leading
+        case .center:
+            return .center
+        case .trailing:
+            return .trailing
+        }
+    }
+
+    private func columnWidth(for columnIndex: Int) -> CGFloat {
+        let values = [table.header[columnIndex]]
+            + table.rows.compactMap { row in
+                columnIndex < row.count ? row[columnIndex] : nil
+            }
+        let longestText = values.map(visibleCharacterCount(in:)).max() ?? 0
+        let width = CGFloat(longestText) * 7.5 + 28
+        return min(max(width, columnIndex == 0 ? 44 : 72), 220)
+    }
+
+    private func visibleCharacterCount(in markdown: String) -> Int {
+        markdown
+            .replacingOccurrences(of: #"[*_`~\[\]\(\)]"#, with: "", options: .regularExpression)
+            .count
+    }
+}
+
+private struct RemoteMarkdownImage: View {
+    let url: URL
+    let altText: String
+    private let maximumDisplaySize = CGSize(width: 520, height: 360)
+    @Environment(\.openURL) private var openURL
+    @StateObject private var imageLoader = CachedRemoteImageLoader()
+
+    var body: some View {
+        Button {
+            openURL(url)
+        } label: {
+            content
+        }
+        .buttonStyle(.plain)
+        .help(url.absoluteString)
+        .accessibilityLabel(accessibilityLabel)
+        .contextMenu {
+            Button {
+                copyImage()
+            } label: {
+                Label("Copy Image", systemImage: "photo.on.rectangle")
+            }
+
+            Button {
+                copyImageURL()
+            } label: {
+                Label("Copy Image URL", systemImage: "link")
+            }
+
+            Divider()
+
+            Button {
+                saveImageAs()
+            } label: {
+                Label("Save Image As...", systemImage: "square.and.arrow.down")
+            }
+
+            Button {
+                openURL(url)
+            } label: {
+                Label("Open Image", systemImage: "safari")
+            }
+        }
+        .onAppear {
+            imageLoader.load(url)
+        }
+        .onChange(of: url) { newURL in
+            imageLoader.load(newURL)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let image = imageLoader.image {
+            loadedImage(image)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(AgentPalette.searchField)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(AgentPalette.controlStroke, lineWidth: 1)
+                    )
+
+                if imageLoader.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 24, weight: .medium))
+
+                        if !altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(altText)
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                }
+            }
+            .frame(width: maximumDisplaySize.width, height: 180)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        let trimmedAltText = altText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedAltText.isEmpty ? "Image" : trimmedAltText
+    }
+
+    private func loadedImage(_ image: NSImage) -> some View {
+        let displaySize = fittedDisplaySize(for: image)
+
+        return Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(width: displaySize.width, height: displaySize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(AgentPalette.controlStroke, lineWidth: 1)
+            )
+    }
+
+    private func fittedDisplaySize(for image: NSImage) -> CGSize {
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            return maximumDisplaySize
+        }
+
+        let scale = min(
+            maximumDisplaySize.width / imageSize.width,
+            maximumDisplaySize.height / imageSize.height,
+            1
+        )
+
+        return CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+    }
+
+    private func copyImage() {
+        if let image = imageLoader.image {
+            Self.writeImageToPasteboard(image)
+            return
+        }
+
+        let cachedData = imageLoader.imageData
+        Task {
+            do {
+                let data = try await Self.loadImageData(from: url, cachedData: cachedData)
+                guard let image = NSImage(data: data) else {
+                    throw URLError(.cannotDecodeContentData)
+                }
+                await MainActor.run {
+                    Self.writeImageToPasteboard(image)
+                }
+            } catch {
+                await MainActor.run {
+                    showImageActionError(title: "Could not copy image.", error: error)
+                }
+            }
+        }
+    }
+
+    private func copyImageURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+
+    private func saveImageAs() {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = suggestedFilename
+
+        if let contentType = suggestedContentType {
+            panel.allowedContentTypes = [contentType]
+        }
+
+        guard panel.runModal() == .OK,
+              let destinationURL = panel.url else {
+            return
+        }
+
+        let cachedData = imageLoader.imageData
+        Task {
+            do {
+                let data = try await Self.loadImageData(from: url, cachedData: cachedData)
+                try data.write(to: destinationURL, options: .atomic)
+            } catch {
+                await MainActor.run {
+                    showImageActionError(title: "Could not save image.", error: error)
+                }
+            }
+        }
+    }
+
+    private var suggestedFilename: String {
+        let decodedLastPathComponent = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        let trimmedLastPathComponent = decodedLastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLastPathComponent.isEmpty {
+            return trimmedLastPathComponent
+        }
+
+        let baseName = sanitizedFilenameComponent(from: altText) ?? "image"
+        let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        return pathExtension.isEmpty ? "\(baseName).png" : "\(baseName).\(pathExtension)"
+    }
+
+    private var suggestedContentType: UTType? {
+        guard !url.pathExtension.isEmpty,
+              let type = UTType(filenameExtension: url.pathExtension),
+              type.conforms(to: .image) else {
+            return nil
+        }
+        return type
+    }
+
+    private func sanitizedFilenameComponent(from text: String) -> String? {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return nil }
+
+        let forbiddenCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+        let sanitizedText = trimmedText
+            .components(separatedBy: forbiddenCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+
+        guard !sanitizedText.isEmpty else { return nil }
+        return String(sanitizedText.prefix(80))
+    }
+
+    private static func loadImageData(from url: URL, cachedData: Data?) async throws -> Data {
+        if let cachedData {
+            return cachedData
+        }
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 20
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        return data
+    }
+
+    private static func writeImageToPasteboard(_ image: NSImage) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+    }
+
+    private func showImageActionError(title: String, error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
 
@@ -1544,9 +2607,11 @@ private struct RemoteAvatar: View {
 @MainActor
 private final class CachedRemoteImageLoader: ObservableObject {
     @Published private(set) var image: NSImage?
+    @Published private(set) var imageData: Data?
     @Published private(set) var isLoading = false
 
     private static let cache = NSCache<NSURL, NSImage>()
+    private static let dataCache = NSCache<NSURL, NSData>()
     private var loadedURL: URL?
     private var task: Task<Void, Never>?
 
@@ -1556,12 +2621,14 @@ private final class CachedRemoteImageLoader: ObservableObject {
         task?.cancel()
         loadedURL = url
         image = nil
+        imageData = nil
         isLoading = false
 
         guard let url else { return }
 
         if let cachedImage = Self.cache.object(forKey: url as NSURL) {
             image = cachedImage
+            imageData = Self.dataCache.object(forKey: url as NSURL) as Data?
             return
         }
 
@@ -1587,11 +2654,14 @@ private final class CachedRemoteImageLoader: ObservableObject {
                 }
 
                 Self.cache.setObject(decodedImage, forKey: url as NSURL)
+                Self.dataCache.setObject(data as NSData, forKey: url as NSURL)
                 self?.image = decodedImage
+                self?.imageData = data
                 self?.isLoading = false
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.image = nil
+                self?.imageData = nil
                 self?.isLoading = false
             }
         }

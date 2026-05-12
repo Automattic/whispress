@@ -75,13 +75,21 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id = "ID"
+        case blogID = "blog_id"
         case name
         case url = "URL"
+        case primaryDomain = "primary_domain"
         case slug
         case icon
     }
 
-    init(id: Int, name: String, url: String?, slug: String?, icon: WPCOMSiteIcon? = nil) {
+    init(
+        id: Int,
+        name: String,
+        url: String?,
+        slug: String?,
+        icon: WPCOMSiteIcon? = nil
+    ) {
         self.id = id
         self.name = name
         self.url = url
@@ -95,13 +103,39 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
             id = intID
         } else if let stringID = try? container.decode(String.self, forKey: .id), let intID = Int(stringID) {
             id = intID
+        } else if let intID = try? container.decode(Int.self, forKey: .blogID) {
+            id = intID
+        } else if let stringID = try? container.decode(String.self, forKey: .blogID), let intID = Int(stringID) {
+            id = intID
         } else {
             throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "Missing site ID")
         }
         name = (try? container.decode(String.self, forKey: .name)) ?? ""
-        url = try? container.decode(String.self, forKey: .url)
-        slug = try? container.decode(String.self, forKey: .slug)
+        let decodedURL = try? container.decode(String.self, forKey: .url)
+        let primaryDomain = try? container.decode(String.self, forKey: .primaryDomain)
+        url = Self.normalizedURLString(decodedURL ?? primaryDomain)
+        slug = (try? container.decode(String.self, forKey: .slug)) ?? primaryDomain
         icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(slug, forKey: .slug)
+        try container.encodeIfPresent(icon, forKey: .icon)
+    }
+
+    private static func normalizedURLString(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        if URLComponents(string: value)?.scheme != nil {
+            return value
+        }
+        return "https://\(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
     }
 }
 
@@ -392,7 +426,7 @@ struct WPCOMAgentResponse: Equatable {
     let toolCalls: [WPCOMAgentToolCall]
 }
 
-struct WPCOMUploadedMedia: Decodable, Equatable {
+struct WPCOMUploadedMedia: Codable, Equatable {
     let id: Int
     let urlString: String
     let file: String?
@@ -474,6 +508,17 @@ struct WPCOMUploadedMedia: Decodable, Equatable {
         slug = try? container.decode(String.self, forKey: .slug)
         mimeType = (try? container.decode(String.self, forKey: .mimeType))
             ?? (try? container.decode(String.self, forKey: .mimeTypeCamel))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(urlString, forKey: .urlString)
+        try container.encodeIfPresent(file, forKey: .file)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(linkString, forKey: .link)
+        try container.encodeIfPresent(slug, forKey: .slug)
     }
 
     private static func decodeFlexibleInt<Key: CodingKey>(
@@ -972,7 +1017,7 @@ final class WPCOMClient: NSObject {
     private let redirectURI = "wpworkspace://oauth/callback"
     private let callbackScheme = "wpworkspace"
     private let tokenStorageAccount = "wpcom_oauth_state"
-    private let session = URLSession(configuration: .ephemeral)
+    private let sessionProvider = AppNetworkSessionProvider.shared
     private var authSession: ASWebAuthenticationSession?
 
     private var clientID: String {
@@ -1055,11 +1100,8 @@ final class WPCOMClient: NSObject {
     }
 
     func fetchSites() async throws -> [WPCOMSite] {
-        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
-        components.queryItems = [
-            URLQueryItem(name: "fields", value: "ID,name,URL,slug,icon")
-        ]
-        let data = try await authenticatedData(for: components.url!)
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/ai/agent/dolly/sites")!
+        let data = try await authenticatedData(for: url)
         let response = try JSONDecoder().decode(SitesResponse.self, from: data)
         return response.sites
     }
@@ -1073,11 +1115,17 @@ final class WPCOMClient: NSObject {
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
     }
 
-    func fetchAgentConversationSummaries(agentID: String = "dolly") async throws -> [WPCOMAgentConversationSummary] {
+    func fetchAgentConversationSummaries(
+        agentID: String = "dolly",
+        pageNumber: Int = 1,
+        itemsPerPage: Int = 20
+    ) async throws -> [WPCOMAgentConversationSummary] {
         let historyBotID = Self.historyBotID(for: agentID)
         var components = URLComponents(string: "https://public-api.wordpress.com/wpcom/v2/ai/chats/\(historyBotID)")!
         components.queryItems = [
-            URLQueryItem(name: "truncation_method", value: "last_message")
+            URLQueryItem(name: "truncation_method", value: "last_message"),
+            URLQueryItem(name: "page_number", value: "\(pageNumber)"),
+            URLQueryItem(name: "items_per_page", value: "\(itemsPerPage)")
         ]
         let data = try await authenticatedData(for: components.url!)
         return try JSONDecoder().decode([WPCOMAgentConversationSummary].self, from: data)
@@ -1146,7 +1194,7 @@ final class WPCOMClient: NSObject {
             boundary: boundary
         )
 
-        let (data, response) = try await session.upload(for: request, from: body)
+        let (data, response) = try await sessionProvider.upload(for: request, from: body)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(WPCOMTranscribeResponse.self, from: data)
     }
@@ -1229,7 +1277,7 @@ final class WPCOMClient: NSObject {
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         let decoded = try JSONDecoder().decode(AgentRPCResponse.self, from: data)
         if let error = decoded.error {
@@ -1310,7 +1358,7 @@ final class WPCOMClient: NSObject {
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
 
         let body = try makeMultipartBody(fields: fields, files: files, boundary: boundary)
-        let (data, response) = try await session.upload(for: request, from: body)
+        let (data, response) = try await sessionProvider.upload(for: request, from: body)
         try validate(response: response, data: data)
 
         let decoded = try JSONDecoder().decode(MediaUploadResponse.self, from: data)
@@ -1341,10 +1389,25 @@ final class WPCOMClient: NSObject {
     }
 
     func editURL(for guideline: WPCOMGuideline, site: WPCOMSite) -> URL {
-        if let link = guideline.link, let url = URL(string: link) {
+        if let url = Self.wpAdminEditURL(postID: guideline.id, site: site) {
             return url
         }
         return URL(string: "https://wordpress.com/post/\(site.editorSitePath)/\(guideline.id)")!
+    }
+
+    private static func wpAdminEditURL(postID: Int, site: WPCOMSite) -> URL? {
+        let baseURLString = site.url ?? site.slug.map { "https://\($0)" }
+        guard let baseURLString,
+              var components = URLComponents(string: baseURLString) else {
+            return nil
+        }
+
+        components.path = "/wp-admin/post.php"
+        components.queryItems = [
+            URLQueryItem(name: "post", value: "\(postID)"),
+            URLQueryItem(name: "action", value: "edit")
+        ]
+        return components.url
     }
 
     private func authorize(url: URL) async throws -> URL {
@@ -1410,7 +1473,7 @@ final class WPCOMClient: NSObject {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Self.formURLEncoded(fields)
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         let tokenResponse = try JSONDecoder().decode(TokenResponse.self, from: data)
         let expirationDate = tokenResponse.expiresIn.map { Date().addingTimeInterval($0) }
@@ -1425,7 +1488,7 @@ final class WPCOMClient: NSObject {
     private func authenticatedData(for url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
         return data
     }

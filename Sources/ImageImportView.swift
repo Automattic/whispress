@@ -167,7 +167,7 @@ struct ImageImportView: View {
 
             if appState.isWordPressComSignedIn {
                 Picker("Site", selection: $selectedSiteID) {
-                    ForEach(appState.wordpressComSites) { site in
+                    ForEach(appState.wordpressComSitesSortedByStarred) { site in
                         Text(site.displayName).tag(Optional(site.id))
                     }
                 }

@@ -3,6 +3,7 @@ APP_NAME ?= WP Workspace Dev
 PRODUCT_NAME ?= WP Workspace
 BUNDLE_ID ?= com.automattic.wpworkspace.dev
 WPCOM_OAUTH_CLIENT_SECRET_FILE ?=
+WPCOM_OAUTH_CLIENT_ID ?=
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 CODESIGN_IDENTITY ?= -
@@ -70,6 +71,9 @@ endif
 	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
 		if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
 			secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
+		fi; \
+		if [ -n "$(WPCOM_OAUTH_CLIENT_ID)" ]; then \
+			plutil -replace WPCOMOAuthClientID -string "$(WPCOM_OAUTH_CLIENT_ID)" "$(CONTENTS)/Info.plist"; \
 		fi; \
 		plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)"

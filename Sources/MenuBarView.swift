@@ -154,96 +154,6 @@ struct MenuBarView: View {
 
             Divider()
 
-            Menu("Hold Shortcut") {
-                Button {
-                    _ = appState.setShortcut(.disabled, for: .hold)
-                } label: {
-                    if appState.holdShortcut.isDisabled {
-                        Text("✓ Disabled")
-                    } else {
-                        Text("  Disabled")
-                    }
-                }
-                .disabled(appState.toggleShortcut.isDisabled)
-
-                ForEach(ShortcutPreset.allCases) { preset in
-                    Button {
-                        _ = appState.setShortcut(preset.binding, for: .hold)
-                    } label: {
-                        if appState.holdShortcut == preset.binding {
-                            Text("✓ \(preset.title)")
-                        } else {
-                            Text("  \(preset.title)")
-                        }
-                    }
-                    .disabled(preset.binding == appState.toggleShortcut)
-                }
-
-                if let savedCustomShortcut = appState.savedCustomShortcut(for: .hold) {
-                    Divider()
-                    Button {
-                        _ = appState.setShortcut(savedCustomShortcut, for: .hold)
-                    } label: {
-                        if appState.holdShortcut == savedCustomShortcut {
-                            Text("✓ Custom: \(savedCustomShortcut.displayName)")
-                        } else {
-                            Text("  Custom: \(savedCustomShortcut.displayName)")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Customize…") {
-                    appState.selectedSettingsTab = .keyBindings
-                    NotificationCenter.default.post(name: .showSettings, object: nil)
-                }
-            }
-
-            Menu("Toggle Shortcut") {
-                Button {
-                    _ = appState.setShortcut(.disabled, for: .toggle)
-                } label: {
-                    if appState.toggleShortcut.isDisabled {
-                        Text("✓ Disabled")
-                    } else {
-                        Text("  Disabled")
-                    }
-                }
-                .disabled(appState.holdShortcut.isDisabled)
-
-                ForEach(ShortcutPreset.allCases) { preset in
-                    Button {
-                        _ = appState.setShortcut(preset.binding, for: .toggle)
-                    } label: {
-                        if appState.toggleShortcut == preset.binding {
-                            Text("✓ \(preset.title)")
-                        } else {
-                            Text("  \(preset.title)")
-                        }
-                    }
-                    .disabled(preset.binding == appState.holdShortcut)
-                }
-
-                if let savedCustomShortcut = appState.savedCustomShortcut(for: .toggle) {
-                    Divider()
-                    Button {
-                        _ = appState.setShortcut(savedCustomShortcut, for: .toggle)
-                    } label: {
-                        if appState.toggleShortcut == savedCustomShortcut {
-                            Text("✓ Custom: \(savedCustomShortcut.displayName)")
-                        } else {
-                            Text("  Custom: \(savedCustomShortcut.displayName)")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Customize…") {
-                    appState.selectedSettingsTab = .keyBindings
-                    NotificationCenter.default.post(name: .showSettings, object: nil)
-                }
-            }
-
             Menu("Microphone") {
                 Button {
                     appState.selectedMicrophoneID = "default"
@@ -267,19 +177,11 @@ struct MenuBarView: View {
                 }
             }
 
-            Button("Re-run Setup...") {
-                NotificationCenter.default.post(name: .showSetup, object: nil)
-            }
-
             Button("Settings") {
                 NotificationCenter.default.post(name: .showSettings, object: nil)
             }
 
             Divider()
-
-            Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
-                appState.toggleDebugOverlay()
-            }
 
             Button("Quit WP Workspace") {
                 NSApplication.shared.terminate(nil)
@@ -317,7 +219,7 @@ struct MenuBarView: View {
 
                     Divider()
 
-                    ForEach(appState.wordpressComSites) { site in
+                    ForEach(appState.wordpressComSitesSortedByStarred) { site in
                         Button {
                             appState.setWordPressComAppSiteOverride(
                                 bundleIdentifier: bundleIdentifier,

@@ -50,6 +50,36 @@ private final class AgentUtilityOverlayPanel: NSPanel {
     }
 }
 
+private final class WordPressAgentWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if Self.isPasteKeyEvent(event), requestImagePasteIntoComposer() {
+            return
+        }
+
+        super.sendEvent(event)
+    }
+
+    private func requestImagePasteIntoComposer() -> Bool {
+        let request = WordPressAgentComposerPasteRequest()
+        NotificationCenter.default.post(name: .pasteImageIntoWordPressAgentComposer, object: request)
+        return request.handled
+    }
+
+    private static func isPasteKeyEvent(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+
+        let flags = event.modifierFlags
+        guard flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control),
+              !flags.contains(.shift) else {
+            return false
+        }
+
+        return event.keyCode == 9 || event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+}
+
 private final class StatusItemDropView: NSView {
     static let preferredSize = NSSize(width: NSStatusBar.system.thickness, height: NSStatusBar.system.thickness)
 
@@ -774,23 +804,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(submenuItem(title: "Hold Shortcut", submenu: shortcutMenu(for: .hold)))
-        menu.addItem(submenuItem(title: "Toggle Shortcut", submenu: shortcutMenu(for: .toggle)))
-        menu.addItem(submenuItem(title: "Quick Ask Shortcut", submenu: shortcutMenu(for: .agentUtilityOverlay)))
         menu.addItem(submenuItem(title: "Microphone", submenu: microphoneMenu()))
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Re-run Setup...") {
-            NotificationCenter.default.post(name: .showSetup, object: nil)
-        })
         menu.addItem(actionItem("Settings") {
             NotificationCenter.default.post(name: .showSettings, object: nil)
         })
 
         menu.addItem(.separator())
-        menu.addItem(actionItem(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") { [weak self] in
-            self?.appState.toggleDebugOverlay()
-        })
         menu.addItem(actionItem("Quit WP Workspace", keyEquivalent: "q") {
             NSApplication.shared.terminate(nil)
         })
@@ -1182,7 +1203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(appState)
         let hostingView = NSHostingView(rootView: agentView)
 
-        let window = NSWindow(
+        let window = WordPressAgentWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
