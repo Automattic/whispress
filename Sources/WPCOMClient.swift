@@ -260,26 +260,43 @@ struct WPCOMAppContextPayload: Encodable {
 }
 
 struct WPCOMAgentClientContextPayload: Encodable {
+    let constructorArguments: WPCOMAgentConstructorArgumentsPayload
     let selectedSiteID: Int
-    let appName: String?
-    let bundleIdentifier: String?
-    let windowTitle: String?
-    let selectedText: String?
-    let currentActivity: String
-    let client: String
-    let clientVersion: String
-    let uploadedFiles: [WPCOMAgentUploadedFileContext]
+    let wpworkspace: WPCOMAgentWPWorkspaceContextPayload?
 
     private enum CodingKeys: String, CodingKey {
+        case constructorArguments
         case selectedSiteID = "selectedSiteId"
-        case appName
-        case bundleIdentifier
-        case windowTitle
-        case selectedText
-        case currentActivity
-        case client
-        case clientVersion
-        case uploadedFiles
+        case wpworkspace
+    }
+}
+
+struct WPCOMAgentConstructorArgumentsPayload: Encodable, Equatable {
+    let client: String
+}
+
+struct WPCOMAgentWPWorkspaceContextPayload: Encodable, Equatable {
+    let appName: String?
+    let currentActivity: String?
+    let clientVersion: String?
+    let preview: WPCOMAgentPreviewContextPayload?
+}
+
+struct WPCOMAgentPreviewContextPayload: Encodable, Equatable {
+    let isOpen: Bool
+    let siteID: Int?
+    let openedURL: String
+    let currentURL: String
+    let title: String?
+    let isLoading: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case isOpen
+        case siteID = "siteId"
+        case openedURL = "openedUrl"
+        case currentURL = "currentUrl"
+        case title
+        case isLoading
     }
 }
 
@@ -568,26 +585,6 @@ struct WPCOMUploadedMedia: Codable, Equatable {
         case "tif", "tiff": return "image/tiff"
         default: return "image/jpeg"
         }
-    }
-}
-
-struct WPCOMAgentUploadedFileContext: Encodable, Equatable {
-    let id: Int
-    let url: String
-    let title: String?
-    let fileName: String?
-    let fileType: String
-    let mimeType: String
-    let name: String?
-
-    init(media: WPCOMUploadedMedia) {
-        id = media.id
-        url = media.urlString
-        title = media.title ?? media.displayName
-        fileName = media.file
-        fileType = media.resolvedMimeType
-        mimeType = media.resolvedMimeType
-        name = media.displayName
     }
 }
 

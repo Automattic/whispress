@@ -492,6 +492,16 @@ struct WordPressAgentWindowView: View {
                             Task { @MainActor in
                                 appState.closeWordPressAgentPreview()
                             }
+                        },
+                        onPageUpdate: { previewID, currentURL, title, isLoading in
+                            Task { @MainActor in
+                                appState.updateWordPressAgentPreviewPage(
+                                    previewID: previewID,
+                                    currentURL: currentURL,
+                                    title: title,
+                                    isLoading: isLoading
+                                )
+                            }
                         }
                     )
                     .frame(width: resolvedPreviewWidth)
@@ -996,6 +1006,7 @@ struct WordPressAgentWindowView: View {
 private struct WordPressAgentPreviewPanel: View {
     let preview: WordPressAgentPreview
     let onClose: () -> Void
+    let onPageUpdate: (UUID, URL?, String?, Bool) -> Void
 
     @State private var previewReloadTrigger = 0
 
@@ -1017,7 +1028,7 @@ private struct WordPressAgentPreviewPanel: View {
                         .font(.system(size: 15, weight: .semibold))
                         .lineLimit(1)
 
-                    Text(preview.url.absoluteString)
+                    Text(preview.currentURL.absoluteString)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1039,7 +1050,7 @@ private struct WordPressAgentPreviewPanel: View {
                 .help("Refresh preview")
 
                 Button {
-                    NSWorkspace.shared.open(preview.url)
+                    NSWorkspace.shared.open(preview.currentURL)
                 } label: {
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 15, weight: .medium))
@@ -1058,7 +1069,12 @@ private struct WordPressAgentPreviewPanel: View {
                 .fill(AgentPalette.separator)
                 .frame(height: 1)
 
-            WordPressAgentWebPreview(url: preview.url, reloadTrigger: previewReloadTrigger)
+            WordPressAgentWebPreview(
+                previewID: preview.id,
+                url: preview.url,
+                reloadTrigger: previewReloadTrigger,
+                onPageUpdate: onPageUpdate
+            )
                 .id(preview.id)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -1206,17 +1222,21 @@ private final class PreviewResizeHandleView: NSView {
 }
 
 private struct WordPressAgentWebPreview: NSViewRepresentable {
+    let previewID: UUID
     let url: URL
     let reloadTrigger: Int
+    let onPageUpdate: (UUID, URL?, String?, Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(previewID: previewID, onPageUpdate: onPageUpdate)
     }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        context.coordinator.previewID = previewID
+        context.coordinator.onPageUpdate = onPageUpdate
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
@@ -1225,6 +1245,8 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.previewID = previewID
+        context.coordinator.onPageUpdate = onPageUpdate
         context.coordinator.load(url, in: webView)
         context.coordinator.reloadIfNeeded(reloadTrigger, in: webView)
     }
@@ -1236,20 +1258,66 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        var previewID: UUID
+        var onPageUpdate: (UUID, URL?, String?, Bool) -> Void
         private var loadedURL: URL?
         private var lastReloadTrigger = 0
+
+        init(previewID: UUID, onPageUpdate: @escaping (UUID, URL?, String?, Bool) -> Void) {
+            self.previewID = previewID
+            self.onPageUpdate = onPageUpdate
+        }
 
         func load(_ url: URL, in webView: WKWebView) {
             let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
             guard loadedURL != previewURL else { return }
             loadedURL = previewURL
+            loadPreviewURL(previewURL, in: webView)
+        }
+
+        private func navigate(_ url: URL, in webView: WKWebView) {
+            let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+            loadPreviewURL(previewURL, in: webView)
+        }
+
+        private func loadPreviewURL(_ previewURL: URL, in webView: WKWebView) {
+            reportPageUpdate(url: previewURL, title: nil, isLoading: true)
             webView.load(URLRequest(url: previewURL))
         }
 
         func reloadIfNeeded(_ trigger: Int, in webView: WKWebView) {
             guard trigger != lastReloadTrigger else { return }
             lastReloadTrigger = trigger
+            reportPageUpdate(webView, isLoading: true)
             webView.reloadFromOrigin()
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            reportPageUpdate(webView, isLoading: true)
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            reportPageUpdate(webView, isLoading: true)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            reportPageUpdate(webView, isLoading: false)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            reportPageUpdate(webView, isLoading: false)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            reportPageUpdate(webView, isLoading: false)
         }
 
         func webView(
@@ -1270,7 +1338,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             if let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) {
                 if previewURL.absoluteString != url.absoluteString || navigationAction.targetFrame == nil {
                     decisionHandler(.cancel)
-                    load(previewURL, in: webView)
+                    navigate(previewURL, in: webView)
                     return
                 }
 
@@ -1291,11 +1359,20 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
             if let url = navigationAction.request.url {
-                load(url, in: webView)
+                navigate(url, in: webView)
             } else {
+                reportPageUpdate(webView, isLoading: true)
                 webView.load(navigationAction.request)
             }
             return nil
+        }
+
+        private func reportPageUpdate(_ webView: WKWebView, isLoading: Bool) {
+            reportPageUpdate(url: webView.url, title: webView.title, isLoading: isLoading)
+        }
+
+        private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
+            onPageUpdate(previewID, url, title, isLoading)
         }
 
         private static func isWebKitInternalURL(_ url: URL) -> Bool {
