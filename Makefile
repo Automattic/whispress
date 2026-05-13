@@ -15,6 +15,7 @@ APP_EXECUTABLE = $(MACOS_DIR)/$(PRODUCT_NAME)
 APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
 ZIP_PATH = $(BUILD_DIR)/$(APP_NAME).zip
 DMG_PATH = $(BUILD_DIR)/$(APP_NAME).dmg
+DMG_SPEC = $(BUILD_DIR)/dmg-spec.json
 NOTARIZE = Tools/notarize.sh
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
@@ -101,9 +102,12 @@ $(ICON_ICNS): $(ICON_SOURCE)
 # .DS_Store layout directly via `hdiutil` + the `ds-store` library, no AppleScript
 # or Finder session required. That matters on headless CI agents, where any tool
 # that drives Finder via osascript times out after ~120s.
-dmg: all
-	@rm -f "$(DMG_PATH)"
-	@mkdir -p $(BUILD_DIR)
+dmg: $(DMG_PATH)
+
+$(BUILD_DIR):
+	@mkdir -p "$@"
+
+$(DMG_SPEC): Makefile | $(BUILD_DIR)
 	@printf '%s\n' \
 		'{' \
 		'  "title": "$(APP_NAME)",' \
@@ -115,13 +119,16 @@ dmg: all
 		'    { "x": 180, "y": 170, "type": "file", "path": "$(CURDIR)/$(APP_BUNDLE)", "hide-extension": true },' \
 		'    { "x": 480, "y": 170, "type": "link", "path": "/Applications" }' \
 		'  ]' \
-		'}' > $(BUILD_DIR)/dmg-spec.json
-	@echo "Creating DMG..."
-	@npx --yes appdmg@0.6.6 $(BUILD_DIR)/dmg-spec.json "$(DMG_PATH)"
-	@rm -f $(BUILD_DIR)/dmg-spec.json
-	@echo "Created $(DMG_PATH)"
+		'}' > "$@"
 
-codesign-dmg: dmg
+$(DMG_PATH): $(DMG_SPEC) notarize-app
+	@rm -f "$@"
+	@echo "Creating DMG..."
+	@npx --yes appdmg@0.6.6 "$(DMG_SPEC)" "$@"
+	@rm -f "$(DMG_SPEC)"
+	@echo "Created $@"
+
+codesign-dmg: $(DMG_PATH)
 	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(DMG_PATH)"
 
 # Notarize the .app in place. Stapling rewrites the bundle, so any
@@ -140,9 +147,9 @@ notarize-dmg: codesign-dmg
 	$(NOTARIZE) "$(DMG_PATH)"
 
 # Full release: notarize+staple .app, ZIP it, build+sign+notarize+staple DMG.
-# Order matters: zip pulls in notarize-app; notarize-dmg pulls in dmg, which
-# stages the (already stapled) .app into the DMG before the DMG itself is
-# signed and notarized.
+# Order matters: zip pulls in notarize-app, and the DMG file target also depends
+# on notarize-app so the staged bundle is always the stapled app before the DMG
+# itself is signed and notarized.
 release: zip notarize-dmg
 	@echo "Release artifacts:"
 	@echo "  $(ZIP_PATH)"
