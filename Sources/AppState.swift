@@ -2929,34 +2929,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return await runLocalAgentFrontendToolCall(toolCall, siteID: siteID)
         }
 
-        do {
-            let result = try localWorkspaceToolResult(
-                toolName: toolName,
-                arguments: toolCall.arguments,
-                siteID: siteID
-            )
-            return WordPressAgentFrontendToolExecution(
-                toolResult: WPCOMAgentToolResult(
-                    toolCallID: toolCall.toolCallID,
-                    toolID: toolCall.toolID,
-                    result: result,
-                    error: nil
-                ),
-                shouldReturnToAgent: true,
-                agentMessage: nil
-            )
-        } catch {
-            return WordPressAgentFrontendToolExecution(
-                toolResult: WPCOMAgentToolResult(
-                    toolCallID: toolCall.toolCallID,
-                    toolID: toolCall.toolID,
-                    result: nil,
-                    error: error.localizedDescription
-                ),
-                shouldReturnToAgent: true,
-                agentMessage: nil
-            )
-        }
+        return WordPressAgentFrontendToolExecution(
+            toolResult: WPCOMAgentToolResult(
+                toolCallID: toolCall.toolCallID,
+                toolID: toolCall.toolID,
+                result: nil,
+                error: "WP Workspace only provides run_local_agent for local workspace tasks."
+            ),
+            shouldReturnToAgent: true,
+            agentMessage: nil
+        )
     }
 
     private func runLocalAgentFrontendToolCall(
@@ -3233,226 +3215,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return "Claude completed without output."
         }
         return trimmedStdout
-    }
-
-    private func localWorkspaceToolResult(
-        toolName: String,
-        arguments: [String: WPCOMAgentJSONValue],
-        siteID: Int
-    ) throws -> WPCOMAgentJSONValue {
-        switch toolName {
-        case "list_local_projects":
-            return try listLocalProjectsToolResult(siteID: siteID)
-        case "list_local_directory":
-            return try listLocalDirectoryToolResult(arguments: arguments, siteID: siteID)
-        case "search_local_files":
-            return try searchLocalFilesToolResult(arguments: arguments, siteID: siteID)
-        case "read_local_file":
-            return try readLocalFileToolResult(arguments: arguments, siteID: siteID)
-        default:
-            throw LocalWorkspaceToolFailure(message: "WP Workspace does not provide a local workspace tool named \(toolName).")
-        }
-    }
-
-    private func listLocalProjectsToolResult(siteID: Int) throws -> WPCOMAgentJSONValue {
-        guard let workspace = enabledLocalWorkspace(for: siteID) else {
-            throw LocalWorkspaceToolFailure(message: "No local workspace has been explicitly created and enabled for this site.")
-        }
-
-        return .object([
-            "workspace": .object([
-                "id": .string(workspace.id.uuidString),
-                "name": .string(workspace.name),
-                "site_id": .number(Double(workspace.siteID))
-            ]),
-            "projects": .array(workspace.projects.map(Self.localProjectJSON))
-        ])
-    }
-
-    private func listLocalDirectoryToolResult(
-        arguments: [String: WPCOMAgentJSONValue],
-        siteID: Int
-    ) throws -> WPCOMAgentJSONValue {
-        let resolution = try localProjectResolution(arguments: arguments, siteID: siteID)
-        defer {
-            if resolution.didStartSecurityScope {
-                resolution.rootURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let relativePath = try Self.normalizedRelativePath(
-            arguments.stringValue(forPossibleKeys: ["path", "relative_path"]) ?? "."
-        )
-        let directoryURL = try Self.validatedLocalURL(rootURL: resolution.rootURL, relativePath: relativePath)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            throw LocalWorkspaceToolFailure(message: "\(relativePath) is not a local directory.")
-        }
-
-        let entries = try FileManager.default.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-            options: [.skipsPackageDescendants]
-        )
-        let rootURL = resolution.rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let entryValues = entries
-            .filter { !Self.isIgnoredLocalWorkspaceDirectoryName($0.lastPathComponent) }
-            .compactMap { entry -> (name: String, isDirectory: Bool, value: WPCOMAgentJSONValue)? in
-                let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-                let isDirectory = values?.isDirectory == true
-                let relativeEntryPath = Self.relativePath(for: entry, rootURL: rootURL)
-                let size = values?.fileSize
-                return (
-                    entry.lastPathComponent,
-                    isDirectory,
-                    .object([
-                        "name": .string(entry.lastPathComponent),
-                        "path": .string(relativeEntryPath),
-                        "type": .string(isDirectory ? "directory" : "file"),
-                        "size": size.map { .number(Double($0)) } ?? .null
-                    ])
-                )
-            }
-            .sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory {
-                    return lhs.isDirectory
-                }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
-
-        let limitedEntries = entryValues.prefix(Self.localWorkspaceDirectoryEntryLimit).map(\.value)
-        return .object([
-            "project_id": .string(resolution.project.id.uuidString),
-            "project_name": .string(resolution.project.name),
-            "path": .string(relativePath),
-            "entries": .array(Array(limitedEntries)),
-            "truncated": .bool(entryValues.count > Self.localWorkspaceDirectoryEntryLimit)
-        ])
-    }
-
-    private func searchLocalFilesToolResult(
-        arguments: [String: WPCOMAgentJSONValue],
-        siteID: Int
-    ) throws -> WPCOMAgentJSONValue {
-        let query = arguments.stringValue(forPossibleKeys: ["query", "q", "text"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !query.isEmpty else {
-            throw LocalWorkspaceToolFailure(message: "Search needs a non-empty query.")
-        }
-
-        let maxResults = min(
-            max(arguments["max_results"]?.intValue ?? Self.localWorkspaceSearchDefaultLimit, 1),
-            Self.localWorkspaceSearchMaximumLimit
-        )
-        let resolution = try localProjectResolution(arguments: arguments, siteID: siteID)
-        defer {
-            if resolution.didStartSecurityScope {
-                resolution.rootURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let rootURL = resolution.rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        guard let enumerator = FileManager.default.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-            options: [.skipsPackageDescendants]
-        ) else {
-            throw LocalWorkspaceToolFailure(message: "Could not search local project \(resolution.project.name).")
-        }
-
-        var matches: [WPCOMAgentJSONValue] = []
-        var scannedFiles = 0
-        for case let url as URL in enumerator {
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            if values?.isDirectory == true {
-                if Self.isIgnoredLocalWorkspaceDirectoryName(url.lastPathComponent) {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-
-            scannedFiles += 1
-            if scannedFiles > Self.localWorkspaceSearchScannedFileLimit {
-                break
-            }
-
-            let relativePath = Self.relativePath(for: url, rootURL: rootURL)
-            guard !Self.isBlockedLocalWorkspaceFile(relativePath: relativePath) else { continue }
-
-            if relativePath.localizedCaseInsensitiveContains(query) {
-                matches.append(.object([
-                    "path": .string(relativePath),
-                    "match_type": .string("path")
-                ]))
-            } else if Self.shouldSearchLocalWorkspaceFile(url, fileSize: values?.fileSize),
-                      let match = Self.firstTextMatch(in: url, query: query, relativePath: relativePath) {
-                matches.append(match)
-            }
-
-            if matches.count >= maxResults {
-                break
-            }
-        }
-
-        return .object([
-            "project_id": .string(resolution.project.id.uuidString),
-            "project_name": .string(resolution.project.name),
-            "query": .string(query),
-            "matches": .array(matches),
-            "truncated": .bool(matches.count >= maxResults)
-        ])
-    }
-
-    private func readLocalFileToolResult(
-        arguments: [String: WPCOMAgentJSONValue],
-        siteID: Int
-    ) throws -> WPCOMAgentJSONValue {
-        let resolution = try localProjectResolution(arguments: arguments, siteID: siteID)
-        defer {
-            if resolution.didStartSecurityScope {
-                resolution.rootURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let relativePath = try Self.normalizedRelativePath(
-            try requiredLocalWorkspaceArgument(
-                keys: ["path", "relative_path"],
-                arguments: arguments,
-                description: "file path"
-            )
-        )
-        guard !Self.isBlockedLocalWorkspaceFile(relativePath: relativePath) else {
-            throw LocalWorkspaceToolFailure(message: "WP Workspace blocks secret-like files in this local workspace POC.")
-        }
-
-        let fileURL = try Self.validatedLocalURL(rootURL: resolution.rootURL, relativePath: relativePath)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory),
-              !isDirectory.boolValue else {
-            throw LocalWorkspaceToolFailure(message: "\(relativePath) is not a readable local file.")
-        }
-
-        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-        let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-        guard size <= Self.localWorkspaceReadFileSizeLimit else {
-            throw LocalWorkspaceToolFailure(
-                message: "\(relativePath) is too large to read in the local workspace POC."
-            )
-        }
-
-        let data = try Data(contentsOf: fileURL)
-        guard let content = String(data: data, encoding: .utf8) else {
-            throw LocalWorkspaceToolFailure(message: "\(relativePath) is not a UTF-8 text file.")
-        }
-
-        return .object([
-            "project_id": .string(resolution.project.id.uuidString),
-            "project_name": .string(resolution.project.name),
-            "path": .string(relativePath),
-            "size": .number(Double(data.count)),
-            "content": .string(content)
-        ])
     }
 
     private func localProjectResolution(
@@ -3867,13 +3629,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         ISO8601DateFormatter().string(from: date)
     }
 
-    private static let localWorkspaceDirectoryEntryLimit = 200
-    private static let localWorkspaceSearchDefaultLimit = 25
-    private static let localWorkspaceSearchMaximumLimit = 50
-    private static let localWorkspaceSearchScannedFileLimit = 5_000
     private static let localWorkspaceBlockedFileScanLimit = 20_000
-    private static let localWorkspaceReadFileSizeLimit = 300_000
-    private static let localWorkspaceSearchFileSizeLimit = 1_000_000
     private static let localAgentProcessTimeoutSeconds = 180
     private static let localAgentGitTimeoutSeconds = 30
     private static let localAgentWriteApprovalTTLSeconds = 600
@@ -3889,26 +3645,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         "dist",
         "node_modules",
         "vendor"
-    ]
-    private static let searchableLocalWorkspaceFileExtensions: Set<String> = [
-        "css",
-        "cjs",
-        "html",
-        "htm",
-        "js",
-        "json",
-        "jsx",
-        "md",
-        "mjs",
-        "php",
-        "scss",
-        "swift",
-        "ts",
-        "tsx",
-        "txt",
-        "xml",
-        "yaml",
-        "yml"
     ]
     private static let blockedLocalWorkspaceFileNames: Set<String> = [
         ".env",
@@ -4038,51 +3774,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         """
     }
 
-    private static func localProjectJSON(_ project: WPLocalProject) -> WPCOMAgentJSONValue {
-        .object([
-            "id": .string(project.id.uuidString),
-            "name": .string(project.name),
-            "kind": .string(project.kind.rawValue),
-            "write_policy": .string(project.writePolicy.rawValue),
-            "root_name": .string(project.rootDisplayName)
-        ])
-    }
-
-    private static func normalizedRelativePath(_ rawPath: String) throws -> String {
-        let trimmedPath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else { return "." }
-        guard !trimmedPath.hasPrefix("/"),
-              !trimmedPath.contains("\0") else {
-            throw LocalWorkspaceToolFailure(message: "Local workspace paths must be relative to the project root.")
-        }
-
-        let parts = trimmedPath.split(separator: "/").map(String.init)
-        var normalizedParts: [String] = []
-        for part in parts {
-            if part == "." || part.isEmpty {
-                continue
-            }
-            guard part != ".." else {
-                throw LocalWorkspaceToolFailure(message: "Local workspace paths cannot leave the project root.")
-            }
-            normalizedParts.append(part)
-        }
-
-        return normalizedParts.isEmpty ? "." : normalizedParts.joined(separator: "/")
-    }
-
-    private static func validatedLocalURL(rootURL: URL, relativePath: String) throws -> URL {
-        let normalizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let targetURL = relativePath == "."
-            ? normalizedRootURL
-            : normalizedRootURL.appendingPathComponent(relativePath).standardizedFileURL.resolvingSymlinksInPath()
-        guard targetURL.path == normalizedRootURL.path
-                || targetURL.path.hasPrefix(normalizedRootURL.path + "/") else {
-            throw LocalWorkspaceToolFailure(message: "Local workspace paths cannot leave the project root.")
-        }
-        return targetURL
-    }
-
     private static func relativePath(for url: URL, rootURL: URL) -> String {
         let rootPath = rootURL.standardizedFileURL.resolvingSymlinksInPath().path
         let targetPath = url.standardizedFileURL.resolvingSymlinksInPath().path
@@ -4102,40 +3793,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             || fileName.hasPrefix(".env.")
             || fileName.hasSuffix(".pem")
             || fileName.hasSuffix(".key")
-    }
-
-    private static func shouldSearchLocalWorkspaceFile(_ url: URL, fileSize: Int?) -> Bool {
-        guard let fileSize,
-              fileSize <= localWorkspaceSearchFileSizeLimit else {
-            return false
-        }
-        let fileName = url.lastPathComponent
-        if fileName == ".gitignore" {
-            return true
-        }
-        return searchableLocalWorkspaceFileExtensions.contains(url.pathExtension.lowercased())
-    }
-
-    private static func firstTextMatch(
-        in url: URL,
-        query: String,
-        relativePath: String
-    ) -> WPCOMAgentJSONValue? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
-        for (index, line) in lines.enumerated() {
-            guard line.localizedCaseInsensitiveContains(query) else { continue }
-            let preview = String(line)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .prefix(240)
-            return .object([
-                "path": .string(relativePath),
-                "match_type": .string("content"),
-                "line": .number(Double(index + 1)),
-                "preview": .string(String(preview))
-            ])
-        }
-        return nil
     }
 
     private func responseWithFallback(
@@ -4176,26 +3833,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
              "wpworkspace__run_local_agent",
              "wpworkspace_run_local_agent":
             return "run_local_agent"
-        case "list_local_projects",
-             "wpworkspace/list_local_projects",
-             "wpworkspace__list_local_projects",
-             "wpworkspace_list_local_projects":
-            return "list_local_projects"
-        case "list_local_directory",
-             "wpworkspace/list_local_directory",
-             "wpworkspace__list_local_directory",
-             "wpworkspace_list_local_directory":
-            return "list_local_directory"
-        case "search_local_files",
-             "wpworkspace/search_local_files",
-             "wpworkspace__search_local_files",
-             "wpworkspace_search_local_files":
-            return "search_local_files"
-        case "read_local_file",
-             "wpworkspace/read_local_file",
-             "wpworkspace__read_local_file",
-             "wpworkspace_read_local_file":
-            return "read_local_file"
         default:
             return nil
         }
