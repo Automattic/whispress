@@ -2312,27 +2312,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         ].contains { normalizedMessage.contains($0) }
     }
 
-    private func localWorkspaceContext(siteID: Int) -> WPCOMAgentLocalWorkspaceContextPayload? {
-        guard let workspace = enabledLocalWorkspace(for: siteID) else { return nil }
-        return WPCOMAgentLocalWorkspaceContextPayload(
-            id: workspace.id.uuidString,
-            name: workspace.name,
-            siteID: workspace.siteID,
-            projects: workspace.projects.map { project in
-                WPCOMAgentLocalProjectContextPayload(
-                    id: project.id.uuidString,
-                    name: project.name,
-                    kind: project.kind.rawValue,
-                    writePolicy: project.writePolicy.rawValue,
-                    rootName: project.rootDisplayName
-                )
-            }
-        )
-    }
-
     private func messageWithLocalWorkspacePrimer(
         _ message: String,
-        localWorkspace: WPCOMAgentLocalWorkspaceContextPayload?
+        localWorkspace: WPSiteLocalWorkspace?
     ) -> String {
         guard let localWorkspace,
               !localWorkspace.projects.isEmpty else {
@@ -2340,7 +2322,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let projectLines = localWorkspace.projects.map { project in
-            "- \(project.name) (\(project.kind), id: \(project.id), root: \(project.rootName), policy: \(project.writePolicy))"
+            "- \(project.name) (\(project.kind.rawValue), id: \(project.id.uuidString), root: \(project.rootDisplayName), policy: \(project.writePolicy.rawValue))"
         }
         return """
         Local workspace context:
@@ -2588,9 +2570,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     ) async throws -> WPCOMAgentResponse {
         let clientVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         let freshlyUploadedMedia = try await wpcomClient.uploadMedia(siteID: siteID, fileURLs: attachments)
-        let localWorkspaceContext = localWorkspaceContext(siteID: siteID)
+        let localWorkspace = enabledLocalWorkspace(for: siteID)
         let agentMessage = Self.agentMessage(
-            messageWithLocalWorkspacePrimer(message, localWorkspace: localWorkspaceContext),
+            messageWithLocalWorkspacePrimer(message, localWorkspace: localWorkspace),
             includingImportedMediaReferences: preuploadedMedia
         )
         let frontendAbilities = wordpressAgentFrontendAbilities(for: siteID, message: message)
@@ -2611,8 +2593,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 preview: wordPressAgentPreviewContext(
                     siteID: siteID,
                     conversationID: conversationIDForPreview
-                ),
-                localWorkspace: localWorkspaceContext
+                )
             )
         )
         let response = try await sendWordPressAgentMessageWithMediaRetry(
@@ -2632,7 +2613,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             agentID: agentID,
             clientContext: clientContext,
             sessionID: sessionID,
-            frontendAbilities: frontendAbilities,
             conversationIDForPreview: conversationIDForPreview
         )
     }
@@ -2692,7 +2672,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private struct WordPressAgentFrontendToolExecution {
         let toolResult: WPCOMAgentToolResult
-        let shouldReturnToAgent: Bool
         let agentMessage: String?
     }
 
@@ -2702,7 +2681,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         agentID: String,
         clientContext: WPCOMAgentClientContextPayload,
         sessionID: String?,
-        frontendAbilities: [WPCOMAgentFrontendAbility],
         conversationIDForPreview: String?
     ) async throws -> WPCOMAgentResponse {
         var response = initialResponse
@@ -2725,14 +2703,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 fallbackAgentMessage = agentMessages.joined(separator: "\n")
             }
 
-            if executions.contains(where: { !$0.shouldReturnToAgent }) {
-                return responseWithFallback(
-                    response,
-                    fallbackAgentMessage: fallbackAgentMessage,
-                    preferFallback: true
-                )
-            }
-
             os_log(
                 .default,
                 log: wordPressAgentLog,
@@ -2749,8 +2719,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     toolResults: toolResults,
                     clientContext: clientContext,
                     sessionID: currentSessionID,
-                    taskID: response.taskID,
-                    frontendAbilities: frontendAbilities
+                    taskID: response.taskID
                 )
             } catch {
                 os_log(
@@ -2800,12 +2769,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         siteID: Int,
         conversationIDForPreview: String?
     ) async -> WordPressAgentFrontendToolExecution {
-        if let localWorkspaceToolName = Self.localWorkspaceFrontendToolName(toolCall.toolID) {
-            return await executeLocalWorkspaceFrontendToolCall(
-                toolCall,
-                siteID: siteID,
-                toolName: localWorkspaceToolName
-            )
+        if Self.isRunLocalAgentFrontendToolID(toolCall.toolID) {
+            return await runLocalAgentFrontendToolCall(toolCall, siteID: siteID)
         }
 
         guard Self.isPreviewFrontendToolID(toolCall.toolID) else {
@@ -2816,7 +2781,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     result: nil,
                     error: "WP Workspace does not provide a frontend ability named \(toolCall.toolID)."
                 ),
-                shouldReturnToAgent: true,
                 agentMessage: nil
             )
         }
@@ -2830,7 +2794,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     result: nil,
                     error: "Preview needs a valid http or https URL."
                 ),
-                shouldReturnToAgent: true,
                 agentMessage: nil
             )
         }
@@ -2864,7 +2827,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 ]),
                 error: nil
             ),
-            shouldReturnToAgent: true,
             agentMessage: message
         )
     }
@@ -2876,7 +2838,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private struct LocalWorkspaceProjectResolution {
-        let workspace: WPSiteLocalWorkspace
         let project: WPLocalProject
         let rootURL: URL
         let didStartSecurityScope: Bool
@@ -2904,7 +2865,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let siteID: Int
         let projectID: UUID
         let task: String
-        let createdAt: Date
         let expiresAt: Date
     }
 
@@ -2918,27 +2878,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let status: Int32
         let stdout: String
         let stderr: String
-    }
-
-    private func executeLocalWorkspaceFrontendToolCall(
-        _ toolCall: WPCOMAgentToolCall,
-        siteID: Int,
-        toolName: String
-    ) async -> WordPressAgentFrontendToolExecution {
-        if toolName == "run_local_agent" {
-            return await runLocalAgentFrontendToolCall(toolCall, siteID: siteID)
-        }
-
-        return WordPressAgentFrontendToolExecution(
-            toolResult: WPCOMAgentToolResult(
-                toolCallID: toolCall.toolCallID,
-                toolID: toolCall.toolID,
-                result: nil,
-                error: "WP Workspace only provides run_local_agent for local workspace tasks."
-            ),
-            shouldReturnToAgent: true,
-            agentMessage: nil
-        )
     }
 
     private func runLocalAgentFrontendToolCall(
@@ -3077,7 +3016,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     result: result,
                     error: nil
                 ),
-                shouldReturnToAgent: true,
                 agentMessage: agentMessage
             )
         } catch {
@@ -3090,7 +3028,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     result: nil,
                     error: error.localizedDescription
                 ),
-                shouldReturnToAgent: true,
                 agentMessage: message
             )
         }
@@ -3249,7 +3186,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         return LocalWorkspaceProjectResolution(
-            workspace: workspace,
             project: project,
             rootURL: rootURL,
             didStartSecurityScope: didStartSecurityScope
@@ -3342,7 +3278,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 siteID: siteID,
                 projectID: projectID,
                 task: task,
-                createdAt: now,
                 expiresAt: now.addingTimeInterval(TimeInterval(Self.localAgentWriteApprovalTTLSeconds))
             )
             localAgentWriteApprovals[approval.token] = approval
@@ -3825,17 +3760,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             || normalizedToolID == "wpworkspace_preview"
     }
 
-    private static func localWorkspaceFrontendToolName(_ toolID: String) -> String? {
+    private static func isRunLocalAgentFrontendToolID(_ toolID: String) -> Bool {
         let normalizedToolID = toolID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch normalizedToolID {
-        case "run_local_agent",
-             "wpworkspace/run_local_agent",
-             "wpworkspace__run_local_agent",
-             "wpworkspace_run_local_agent":
-            return "run_local_agent"
-        default:
-            return nil
-        }
+        return normalizedToolID == "run_local_agent"
+            || normalizedToolID == "wpworkspace/run_local_agent"
+            || normalizedToolID == "wpworkspace__run_local_agent"
+            || normalizedToolID == "wpworkspace_run_local_agent"
     }
 
     private static func normalizedPreviewURL(from rawValue: String) -> URL? {

@@ -280,37 +280,6 @@ struct WPCOMAgentWPWorkspaceContextPayload: Encodable, Equatable {
     let currentActivity: String?
     let clientVersion: String?
     let preview: WPCOMAgentPreviewContextPayload?
-    let localWorkspace: WPCOMAgentLocalWorkspaceContextPayload?
-}
-
-struct WPCOMAgentLocalWorkspaceContextPayload: Encodable, Equatable {
-    let id: String
-    let name: String
-    let siteID: Int
-    let projects: [WPCOMAgentLocalProjectContextPayload]
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case name
-        case siteID = "siteId"
-        case projects
-    }
-}
-
-struct WPCOMAgentLocalProjectContextPayload: Encodable, Equatable {
-    let id: String
-    let name: String
-    let kind: String
-    let writePolicy: String
-    let rootName: String
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case name
-        case kind
-        case writePolicy = "writePolicy"
-        case rootName = "rootName"
-    }
 }
 
 struct WPCOMAgentPreviewContextPayload: Encodable, Equatable {
@@ -395,16 +364,6 @@ enum WPCOMAgentJSONValue: Codable, Equatable {
         return nil
     }
 
-    var intValue: Int? {
-        switch self {
-        case .number(let value):
-            return Int(value)
-        case .string(let value):
-            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
-        default:
-            return nil
-        }
-    }
 }
 
 struct WPCOMAgentFrontendAbility: Encodable, Equatable {
@@ -1366,8 +1325,7 @@ final class WPCOMClient: NSObject {
         toolResults: [WPCOMAgentToolResult],
         clientContext: WPCOMAgentClientContextPayload,
         sessionID: String?,
-        taskID: String,
-        frontendAbilities _: [WPCOMAgentFrontendAbility] = []
+        taskID: String
     ) async throws -> WPCOMAgentResponse {
         let parts = toolCalls.map(AgentRequestPart.toolCall)
             + toolResults.map(AgentRequestPart.toolResult)
