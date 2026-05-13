@@ -280,6 +280,37 @@ struct WPCOMAgentWPWorkspaceContextPayload: Encodable, Equatable {
     let currentActivity: String?
     let clientVersion: String?
     let preview: WPCOMAgentPreviewContextPayload?
+    let localWorkspace: WPCOMAgentLocalWorkspaceContextPayload?
+}
+
+struct WPCOMAgentLocalWorkspaceContextPayload: Encodable, Equatable {
+    let id: String
+    let name: String
+    let siteID: Int
+    let projects: [WPCOMAgentLocalProjectContextPayload]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case siteID = "siteId"
+        case projects
+    }
+}
+
+struct WPCOMAgentLocalProjectContextPayload: Encodable, Equatable {
+    let id: String
+    let name: String
+    let kind: String
+    let writePolicy: String
+    let rootName: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case kind
+        case writePolicy = "writePolicy"
+        case rootName = "rootName"
+    }
 }
 
 struct WPCOMAgentPreviewContextPayload: Encodable, Equatable {
@@ -363,6 +394,17 @@ enum WPCOMAgentJSONValue: Codable, Equatable {
         }
         return nil
     }
+
+    var intValue: Int? {
+        switch self {
+        case .number(let value):
+            return Int(value)
+        case .string(let value):
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
 }
 
 struct WPCOMAgentFrontendAbility: Encodable, Equatable {
@@ -415,6 +457,206 @@ struct WPCOMAgentFrontendAbility: Encodable, Equatable {
             "annotations": .object([
                 "instructions": .string("Use when the user asks to open, show, inspect, preview, or keep a URL visible beside the chat."),
                 "readonly": .bool(false),
+                "destructive": .bool(false),
+                "idempotent": .bool(true)
+            ])
+        ])
+    )
+
+    static let runLocalAgent = WPCOMAgentFrontendAbility(
+        name: "wpworkspace/run_local_agent",
+        label: "Run Local Agent",
+        description: "Run a local coding agent task inside a project folder explicitly linked to the active WordPress Workspace site, then return the result to chat. Supports read-only research, proposed edits, approved edits, and direct edits when the project policy allows YOLO Edits.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "project_id": .object([
+                    "type": .string("string"),
+                    "description": .string("The linked local project ID from the local workspace context.")
+                ]),
+                "task": .object([
+                    "type": .string("string"),
+                    "description": .string("A concise local project task for the local agent to complete. Required for read_only, propose_changes, and apply_changes when the project policy is allow_edits. For apply_changes with approval_token, WP Workspace ignores this and uses the task tied to the approval token.")
+                ]),
+                "mode": .object([
+                    "type": .string("string"),
+                    "enum": .array([
+                        .string("read_only"),
+                        .string("propose_changes"),
+                        .string("apply_changes")
+                    ]),
+                    "description": .string("Use read_only for inspection. For projects with require_approval policy, use propose_changes before edits and apply_changes only after explicit user approval with approval_token. For projects with allow_edits policy, use apply_changes directly when the user requests edits.")
+                ]),
+                "approval_token": .object([
+                    "type": .string("string"),
+                    "description": .string("Short-lived token returned by propose_changes. Required for apply_changes on require_approval projects; omit for allow_edits projects.")
+                ])
+            ]),
+            "required": .array([.string("project_id")])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "success": .object(["type": .string("boolean")]),
+                "project_id": .object(["type": .string("string")]),
+                "project_name": .object(["type": .string("string")]),
+                "mode": .object(["type": .string("string")]),
+                "approval_required": .object(["type": .string("boolean")]),
+                "approval_token": .object(["type": .string("string")]),
+                "approval_expires_at": .object(["type": .string("string")]),
+                "changed_files": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")])
+                ]),
+                "diff_stat": .object(["type": .string("string")]),
+                "validation": .object(["type": .string("object")]),
+                "output": .object(["type": .string("string")])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use for questions that require linked local project files. For research, use mode read_only. For requested edits on require_approval projects, call propose_changes first and ask the user to approve the returned proposal, then call apply_changes with the returned approval_token. For requested edits on allow_edits projects, call apply_changes directly with the user's task. The app enforces project write policy, clean Git preflight, blocked-file checks, and diff validation, then returns the local agent result."),
+                "readonly": .bool(false),
+                "destructive": .bool(true),
+                "idempotent": .bool(false)
+            ])
+        ])
+    )
+
+    static let listLocalProjects = WPCOMAgentFrontendAbility(
+        name: "wpworkspace/list_local_projects",
+        label: "List Local Projects",
+        description: "List the local project folders explicitly linked to the active WordPress Workspace site.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([:])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "projects": .object([
+                    "type": .string("array"),
+                    "description": .string("Local projects available to this site-scoped workspace.")
+                ])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use before reading local files when you need the available project IDs for the active site."),
+                "readonly": .bool(true),
+                "destructive": .bool(false),
+                "idempotent": .bool(true)
+            ])
+        ])
+    )
+
+    static let listLocalDirectory = WPCOMAgentFrontendAbility(
+        name: "wpworkspace/list_local_directory",
+        label: "List Local Directory",
+        description: "List files and folders under a linked local project folder. Paths must be relative to the project root.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "project_id": .object([
+                    "type": .string("string"),
+                    "description": .string("The local project ID returned by wpworkspace/list_local_projects.")
+                ]),
+                "path": .object([
+                    "type": .string("string"),
+                    "description": .string("Optional relative directory path. Defaults to the project root.")
+                ])
+            ]),
+            "required": .array([.string("project_id")])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "entries": .object(["type": .string("array")])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use to inspect a linked local project directory before reading specific files."),
+                "readonly": .bool(true),
+                "destructive": .bool(false),
+                "idempotent": .bool(true)
+            ])
+        ])
+    )
+
+    static let searchLocalFiles = WPCOMAgentFrontendAbility(
+        name: "wpworkspace/search_local_files",
+        label: "Search Local Files",
+        description: "Search relative file paths and text contents inside a linked local project folder.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "project_id": .object([
+                    "type": .string("string"),
+                    "description": .string("The local project ID returned by wpworkspace/list_local_projects.")
+                ]),
+                "query": .object([
+                    "type": .string("string"),
+                    "description": .string("The text to search for in relative paths and source files.")
+                ]),
+                "max_results": .object([
+                    "type": .string("integer"),
+                    "description": .string("Optional maximum number of results. Defaults to 25.")
+                ])
+            ]),
+            "required": .array([.string("project_id"), .string("query")])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "matches": .object(["type": .string("array")])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use to find relevant files in a linked theme or plugin project before reading them."),
+                "readonly": .bool(true),
+                "destructive": .bool(false),
+                "idempotent": .bool(true)
+            ])
+        ])
+    )
+
+    static let readLocalFile = WPCOMAgentFrontendAbility(
+        name: "wpworkspace/read_local_file",
+        label: "Read Local File",
+        description: "Read a UTF-8 text file from a linked local project folder. Paths must be relative to the project root.",
+        category: "interface",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "project_id": .object([
+                    "type": .string("string"),
+                    "description": .string("The local project ID returned by wpworkspace/list_local_projects.")
+                ]),
+                "path": .object([
+                    "type": .string("string"),
+                    "description": .string("The relative file path to read.")
+                ])
+            ]),
+            "required": .array([.string("project_id"), .string("path")])
+        ]),
+        outputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "path": .object(["type": .string("string")]),
+                "content": .object(["type": .string("string")]),
+                "size": .object(["type": .string("integer")])
+            ])
+        ]),
+        meta: .object([
+            "annotations": .object([
+                "instructions": .string("Use to inspect a specific local source file after searching or listing the project."),
+                "readonly": .bool(true),
                 "destructive": .bool(false),
                 "idempotent": .bool(true)
             ])
@@ -791,6 +1033,26 @@ final class WPCOMClient: NSObject {
             AgentRequestPart(type: "data", text: nil, data: .frontendAbility(ability), file: nil, metadata: nil)
         }
 
+        static func frontendToolDefinition(_ ability: WPCOMAgentFrontendAbility) -> AgentRequestPart {
+            AgentRequestPart(
+                type: "data",
+                text: nil,
+                data: .frontendToolDefinition(
+                    AgentFrontendToolDefinitionData(
+                        toolId: ability.name,
+                        toolName: ability.name,
+                        description: ability.description,
+                        inputSchema: ability.inputSchema ?? .object([
+                            "type": .string("object"),
+                            "properties": .object([:])
+                        ])
+                    )
+                ),
+                file: nil,
+                metadata: .empty
+            )
+        }
+
         static func toolCall(_ toolCall: WPCOMAgentToolCall) -> AgentRequestPart {
             AgentRequestPart(
                 type: "data",
@@ -852,6 +1114,7 @@ final class WPCOMClient: NSObject {
     private enum AgentRequestData: Encodable {
         case clientContext(WPCOMAgentClientContextPayload)
         case frontendAbility(WPCOMAgentFrontendAbility)
+        case frontendToolDefinition(AgentFrontendToolDefinitionData)
         case toolCall(AgentToolCallData)
         case toolResult(AgentToolResultData)
 
@@ -861,6 +1124,8 @@ final class WPCOMClient: NSObject {
                 try AgentClientContextData(clientContext: context).encode(to: encoder)
             case .frontendAbility(let ability):
                 try ability.encode(to: encoder)
+            case .frontendToolDefinition(let definition):
+                try definition.encode(to: encoder)
             case .toolCall(let toolCall):
                 try toolCall.encode(to: encoder)
             case .toolResult(let result):
@@ -871,6 +1136,13 @@ final class WPCOMClient: NSObject {
 
     private struct AgentClientContextData: Encodable {
         let clientContext: WPCOMAgentClientContextPayload
+    }
+
+    private struct AgentFrontendToolDefinitionData: Encodable {
+        let toolId: String
+        let toolName: String
+        let description: String
+        let inputSchema: WPCOMAgentJSONValue
     }
 
     private struct AgentToolCallData: Encodable {
@@ -886,11 +1158,14 @@ final class WPCOMClient: NSObject {
     }
 
     private enum AgentRequestPartMetadata: Encodable {
+        case empty
         case file(AgentRequestFileMetadata)
         case toolError(String)
 
         func encode(to encoder: Encoder) throws {
             switch self {
+            case .empty:
+                try AgentEmptyMetadata().encode(to: encoder)
             case .file(let metadata):
                 try metadata.encode(to: encoder)
             case .toolError(let error):
@@ -898,6 +1173,8 @@ final class WPCOMClient: NSObject {
             }
         }
     }
+
+    private struct AgentEmptyMetadata: Encodable {}
 
     private struct AgentToolErrorMetadata: Encodable {
         let error: String
@@ -1205,8 +1482,10 @@ final class WPCOMClient: NSObject {
         uploadedMedia: [WPCOMUploadedMedia] = [],
         frontendAbilities: [WPCOMAgentFrontendAbility] = []
     ) async throws -> WPCOMAgentResponse {
+        let frontendToolDefinitions = Self.frontendToolDefinitions(from: frontendAbilities)
         let parts = [AgentRequestPart.text(message)]
             + uploadedMedia.map(AgentRequestPart.file)
+            + frontendToolDefinitions.map(AgentRequestPart.frontendToolDefinition)
             + frontendAbilities.map(AgentRequestPart.frontendAbility)
             + [AgentRequestPart.clientContext(clientContext)]
 
@@ -1226,11 +1505,10 @@ final class WPCOMClient: NSObject {
         clientContext: WPCOMAgentClientContextPayload,
         sessionID: String?,
         taskID: String,
-        frontendAbilities: [WPCOMAgentFrontendAbility] = []
+        frontendAbilities _: [WPCOMAgentFrontendAbility] = []
     ) async throws -> WPCOMAgentResponse {
         let parts = toolCalls.map(AgentRequestPart.toolCall)
             + toolResults.map(AgentRequestPart.toolResult)
-            + frontendAbilities.map(AgentRequestPart.frontendAbility)
             + [AgentRequestPart.clientContext(clientContext)]
 
         return try await sendAgentRequest(
@@ -1240,6 +1518,14 @@ final class WPCOMClient: NSObject {
             sessionID: sessionID,
             taskID: taskID
         )
+    }
+
+    private static func frontendToolDefinitions(
+        from abilities: [WPCOMAgentFrontendAbility]
+    ) -> [WPCOMAgentFrontendAbility] {
+        abilities.filter { ability in
+            ability.name != "wpworkspace/preview"
+        }
     }
 
     private func sendAgentRequest(
