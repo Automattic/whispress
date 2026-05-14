@@ -111,7 +111,7 @@ That builds a universal `WP Workspace.app`, verifies that the WordPress.com
 OAuth client secret was injected, and creates:
 
 ```text
-build/WPWorkspace-0.4.1.zip
+build/WPWorkspace-0.4.2.zip
 ```
 
 Inspect the zip before publishing. When it is ready, publish the GitHub Release:
