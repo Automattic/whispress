@@ -1424,11 +1424,10 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                     return
                 }
 
-                // Allow same-frame preview navigations, but do not copy WebKit's
-                // actual URL back into the visible header. WordPress.com preview
-                // frames can move through public-api proxy URLs and fragment-based
-                // return URLs; those are implementation details, not the URL the
-                // user asked the preview panel to open.
+                if navigationAction.targetFrame?.isMainFrame != false,
+                   Self.isDisplayablePreviewNavigationURL(url) {
+                    visiblePreviewURL = Self.redactedPreviewDisplayURL(url)
+                }
                 decisionHandler(.allow)
                 return
             }
@@ -1488,6 +1487,30 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             default:
                 return false
             }
+        }
+
+        private static func isDisplayablePreviewNavigationURL(_ url: URL) -> Bool {
+            guard !isWordPressComPreviewInfrastructureURL(url) else {
+                return false
+            }
+            return true
+        }
+
+        private static func isWordPressComPreviewInfrastructureURL(_ url: URL) -> Bool {
+            guard let host = url.host?.lowercased() else { return false }
+            let path = url.path.lowercased()
+
+            if host == "public-api.wordpress.com" {
+                return true
+            }
+
+            guard host == "wordpress.com" || host.hasSuffix(".wordpress.com") else {
+                return false
+            }
+
+            return path == "/wp-login.php"
+                || path.hasPrefix("/log-in")
+                || path.hasPrefix("/oauth")
         }
 
         private static func redactedPreviewDisplayURL(_ url: URL) -> URL {
