@@ -128,9 +128,10 @@ private final class StatusItemDropView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        guard isDropTargeted else { return }
-        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22).setFill()
-        bounds.insetBy(dx: 2, dy: 2).roundedRect(radius: 5).fill()
+        if isDropTargeted {
+            NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22).setFill()
+            bounds.insetBy(dx: 2, dy: 2).roundedRect(radius: 5).fill()
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -356,6 +357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarIconVisibilityObserver: NSObjectProtocol?
     private var localMenuBarDragMonitor: Any?
     private var globalMenuBarDragMonitor: Any?
+    private var appUpdateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -363,6 +365,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItemObservers()
         installAgentPreviewObserver()
         installMenuBarDragMonitors()
+        startAppUpdateChecks()
 
         NotificationCenter.default.addObserver(
             self,
@@ -411,6 +414,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let menuBarIconVisibilityObserver {
             NotificationCenter.default.removeObserver(menuBarIconVisibilityObserver)
         }
+        appUpdateCheckTimer?.invalidate()
+        appUpdateCheckTimer = nil
         removeMenuBarDragMonitors()
     }
 
@@ -505,12 +510,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installStatusItemObservers() {
-        statusIconCancellable = Publishers.CombineLatest3(
+        statusIconCancellable = Publishers.CombineLatest4(
             appState.$isRecording,
             appState.$isTranscribing,
-            appState.$isWordPressAgentEnabled
+            appState.$isWordPressAgentEnabled,
+            appState.$availableAppUpdate
         )
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] _, _, _, _ in
                 self?.updateStatusItemIcon()
             }
 
@@ -533,6 +539,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         globalMenuBarDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { [weak self] event in
             self?.handleMenuBarDragMonitorEvent(event)
+        }
+    }
+
+    private func startAppUpdateChecks() {
+        appState.checkForAppUpdates()
+        appUpdateCheckTimer?.invalidate()
+        appUpdateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+            self?.appState.checkForAppUpdates(force: true)
         }
     }
 
@@ -686,16 +700,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toolTip = appState.isWordPressAgentEnabled
             ? "Open WordPress Agent. Drop images to upload."
             : "WP Workspace. Drop images to upload."
+        let resolvedToolTip = appState.availableAppUpdate.map { update in
+            "WP Workspace \(update.version) is available. Right-click for update details."
+        } ?? toolTip
 
         if let statusItemView {
             statusItemView.statusImage = image
-            statusItemView.toolTip = toolTip
+            statusItemView.toolTip = resolvedToolTip
             return
         }
 
         guard let button = statusItem?.button else { return }
         button.image = image
-        button.toolTip = toolTip
+        button.toolTip = resolvedToolTip
     }
 
     private static func menuBarWordPressLogoImage() -> NSImage? {
@@ -727,6 +744,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         addDisabledItem("WP Workspace v\(appVersion)", to: menu)
+        if let availableAppUpdate = appState.availableAppUpdate {
+            let updateItem = actionItem(
+                "Download Update v\(availableAppUpdate.version)...",
+                imageName: "arrow.down.app.fill"
+            ) {
+                NSWorkspace.shared.open(availableAppUpdate.releaseURL)
+            }
+            menu.addItem(updateItem)
+        } else if appState.isCheckingForAppUpdate {
+            addDisabledItem("Checking for Updates...", to: menu)
+        }
         menu.addItem(.separator())
 
         if !appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil {
@@ -1563,7 +1591,19 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let conversationID = response.notification.request.content.userInfo["conversationID"] as? String
+        let userInfo = response.notification.request.content.userInfo
+        if userInfo["kind"] as? String == "appUpdate" {
+            let releaseURL = (userInfo["releaseURL"] as? String)
+                .flatMap(URL.init(string:))
+                ?? GitHubReleaseUpdateChecker.releasesPageURL
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(releaseURL)
+                completionHandler()
+            }
+            return
+        }
+
+        let conversationID = userInfo["conversationID"] as? String
         DispatchQueue.main.async { [weak self] in
             self?.showWordPressAgentWindow(conversationID: conversationID)
             completionHandler()
