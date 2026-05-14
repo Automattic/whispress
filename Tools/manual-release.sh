@@ -143,10 +143,7 @@ make \
 
 echo "Verifying app..."
 codesign --verify --deep --strict "$APP_PATH"
-SECRET_LENGTH=$(plutil -extract WPCOMOAuthClientSecret raw -o - "$APP_PATH/Contents/Info.plist" | wc -c | tr -d ' ')
-if [ "$SECRET_LENGTH" -eq 0 ]; then
-	die "Built app is missing WPCOMOAuthClientSecret."
-fi
+Tools/verify-oauth-secret.sh "$APP_PATH"
 
 echo "Packaging $ZIP_PATH..."
 rm -f "$ZIP_PATH"

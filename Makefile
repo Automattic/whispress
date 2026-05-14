@@ -17,6 +17,7 @@ ZIP_PATH = $(BUILD_DIR)/$(APP_NAME).zip
 DMG_PATH = $(BUILD_DIR)/$(APP_NAME).dmg
 DMG_SPEC = $(BUILD_DIR)/dmg-spec.json
 NOTARIZE = Tools/notarize.sh
+VERIFY_OAUTH_SECRET = Tools/verify-oauth-secret.sh
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
@@ -27,7 +28,7 @@ WPCOM_LOGO = Resources/WPCOM-Blueberry-Pill-Logo.svg
 MENU_BAR_LOGO = Resources/MenuBarWordPressLogo.svg
 FONT_RESOURCES = $(shell find Resources/Fonts -type f 2>/dev/null | LC_ALL=C sort)
 
-.PHONY: all clean run icon dmg codesign-dmg notarize-app notarize-dmg zip release
+.PHONY: all clean run icon dmg codesign-dmg notarize-app notarize-dmg verify-oauth-secret zip release
 
 all: $(APP_EXECUTABLE_TARGET)
 
@@ -131,10 +132,15 @@ $(DMG_PATH): $(DMG_SPEC) notarize-app
 codesign-dmg: $(DMG_PATH)
 	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(DMG_PATH)"
 
+# Verify the built .app has a non-empty WPCOMOAuthClientSecret in Info.plist.
+# Guards against shipping artifacts that built without the secret env/file set.
+verify-oauth-secret: $(APP_EXECUTABLE_TARGET)
+	@$(VERIFY_OAUTH_SECRET) "$(APP_BUNDLE)"
+
 # Notarize the .app in place. Stapling rewrites the bundle, so any
 # subsequent `codesign --force` on it would strip the ticket — keep
 # this step at the very end of the build chain for the .app.
-notarize-app: $(APP_EXECUTABLE_TARGET)
+notarize-app: verify-oauth-secret
 	$(NOTARIZE) "$(APP_BUNDLE)"
 
 # ZIP the (already stapled) .app for direct distribution alongside the DMG.
