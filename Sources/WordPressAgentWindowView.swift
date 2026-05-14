@@ -1264,6 +1264,11 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         var previewID: UUID
         var onPageUpdate: (UUID, URL?, String?, Bool) -> Void
         private var loadedURL: URL?
+        // Keep the user's requested URL separate from the URL WebKit actually
+        // loads. The effective URL can include frame-nonce and unmapped-host
+        // details that should stay internal to the preview frame.
+        private var visiblePreviewURL: URL?
+        private var internalEffectivePreviewURL: URL?
         private var lastReloadTrigger = 0
         private var lastReportedURL: URL?
         private var lastReportedTitle: String?
@@ -1293,7 +1298,10 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         private func loadPreviewURL(_ initialPreviewURL: URL, in webView: WKWebView) {
-            reportPageUpdate(url: initialPreviewURL, title: nil, isLoading: true)
+            let requestedPreviewURL = Self.redactedPreviewDisplayURL(initialPreviewURL)
+            visiblePreviewURL = requestedPreviewURL
+            internalEffectivePreviewURL = nil
+            reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
 
             loadTask?.cancel()
             let siteID = siteID
@@ -1317,7 +1325,8 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                     cookieStore: webView.configuration.websiteDataStore.httpCookieStore
                 )
                 guard !Task.isCancelled else { return }
-                self?.reportPageUpdate(url: previewURL, title: nil, isLoading: true)
+                self?.internalEffectivePreviewURL = previewURL
+                self?.reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
                 webView.load(URLRequest(url: previewURL))
             }
         }
@@ -1380,12 +1389,18 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             }
 
             if let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) {
+                if internalEffectivePreviewURL == url {
+                    decisionHandler(.allow)
+                    return
+                }
+
                 if previewURL.absoluteString != url.absoluteString || navigationAction.targetFrame == nil {
                     decisionHandler(.cancel)
                     navigate(previewURL, in: webView)
                     return
                 }
 
+                visiblePreviewURL = Self.redactedPreviewDisplayURL(url)
                 decisionHandler(.allow)
                 return
             }
@@ -1412,7 +1427,8 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         private func reportPageUpdate(_ webView: WKWebView, isLoading: Bool) {
-            reportPageUpdate(url: webView.url, title: webView.title, isLoading: isLoading)
+            let safeURL = visiblePreviewURL ?? webView.url.map(Self.redactedPreviewDisplayURL)
+            reportPageUpdate(url: safeURL, title: webView.title, isLoading: isLoading)
         }
 
         private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
@@ -1435,6 +1451,25 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 return false
             }
         }
+
+        private static func redactedPreviewDisplayURL(_ url: URL) -> URL {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let queryItems = components.queryItems else {
+                return url
+            }
+
+            let redactedQueryItems = queryItems.filter { item in
+                !Self.sensitivePreviewQueryItemNames.contains(item.name.lowercased())
+            }
+            components.queryItems = redactedQueryItems.isEmpty ? nil : redactedQueryItems
+            return components.url ?? url
+        }
+
+        private static let sensitivePreviewQueryItemNames: Set<String> = [
+            "frame-nonce",
+            "nonce",
+            "_wpnonce"
+        ]
     }
 }
 
