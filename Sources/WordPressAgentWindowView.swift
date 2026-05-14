@@ -2896,12 +2896,19 @@ private struct RemoteSiteIcon: View {
 
     var body: some View {
         RemoteRoundedImage(
-            url: site.iconURL ?? fallbackFaviconURL,
+            urls: iconCandidateURLs,
+            siteIconDiscoveryURL: site.restRootURL,
             fallbackText: site.displayName,
             size: size,
             cornerRadius: cornerRadius,
             backgroundColor: Color(red: 0.18, green: 0.42, blue: 0.72)
         )
+    }
+
+    private var iconCandidateURLs: [URL] {
+        var seen = Set<String>()
+        return (site.iconCandidateURLs + [fallbackFaviconURL].compactMap { $0 })
+            .filter { seen.insert($0.absoluteString).inserted }
     }
 
     private var fallbackFaviconURL: URL? {
@@ -2923,13 +2930,18 @@ private struct RemoteAvatar: View {
 
     var body: some View {
         RemoteRoundedImage(
-            url: url,
+            urls: url.map { [$0] } ?? [],
             fallbackText: fallbackText,
             size: size,
             cornerRadius: size / 2,
             backgroundColor: Color(red: 0.05, green: 0.72, blue: 0.58)
         )
     }
+}
+
+private struct RemoteImageSource: Equatable {
+    let urls: [URL]
+    let siteIconDiscoveryURL: URL?
 }
 
 @MainActor
@@ -2940,51 +2952,43 @@ private final class CachedRemoteImageLoader: ObservableObject {
 
     private static let cache = NSCache<NSURL, NSImage>()
     private static let dataCache = NSCache<NSURL, NSData>()
-    private var loadedURL: URL?
+    private var loadedSource: RemoteImageSource?
     private var task: Task<Void, Never>?
 
     func load(_ url: URL?) {
-        guard loadedURL != url else { return }
+        load(RemoteImageSource(urls: url.map { [$0] } ?? [], siteIconDiscoveryURL: nil))
+    }
+
+    func load(_ source: RemoteImageSource) {
+        guard loadedSource != source else { return }
 
         task?.cancel()
-        loadedURL = url
+        loadedSource = source
         image = nil
         imageData = nil
         isLoading = false
 
-        guard let url else { return }
-
-        if let cachedImage = Self.cache.object(forKey: url as NSURL) {
-            image = cachedImage
-            imageData = Self.dataCache.object(forKey: url as NSURL) as Data?
-            return
+        for url in source.urls {
+            if let cachedImage = Self.cache.object(forKey: url as NSURL) {
+                image = cachedImage
+                imageData = Self.dataCache.object(forKey: url as NSURL) as Data?
+                return
+            }
         }
 
+        guard !source.urls.isEmpty || source.siteIconDiscoveryURL != nil else { return }
+
         isLoading = true
-        var request = URLRequest(url: url)
-        request.cachePolicy = .returnCacheDataElseLoad
-        request.timeoutInterval = 12
 
         task = Task { [weak self] in
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let result = try await Self.loadFirstAvailableImage(from: source)
                 guard !Task.isCancelled else { return }
 
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200..<400).contains(httpResponse.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-
-                let decodedImage = NSImage(data: data)
-
-                guard let decodedImage else {
-                    throw URLError(.cannotDecodeContentData)
-                }
-
-                Self.cache.setObject(decodedImage, forKey: url as NSURL)
-                Self.dataCache.setObject(data as NSData, forKey: url as NSURL)
-                self?.image = decodedImage
-                self?.imageData = data
+                Self.cache.setObject(result.image, forKey: result.url as NSURL)
+                Self.dataCache.setObject(result.data as NSData, forKey: result.url as NSURL)
+                self?.image = result.image
+                self?.imageData = result.data
                 self?.isLoading = false
             } catch {
                 guard !Task.isCancelled else { return }
@@ -2998,15 +3002,135 @@ private final class CachedRemoteImageLoader: ObservableObject {
     deinit {
         task?.cancel()
     }
+
+    private struct ImageLoadResult {
+        let url: URL
+        let data: Data
+        let image: NSImage
+    }
+
+    private struct RESTIndexIconResponse: Decodable {
+        let siteIconURLString: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case siteIconURLString = "site_icon_url"
+        }
+    }
+
+    private static func loadFirstAvailableImage(from source: RemoteImageSource) async throws -> ImageLoadResult {
+        var attemptedURLs = Set<String>()
+        var lastError: Error?
+
+        for url in source.urls where attemptedURLs.insert(url.absoluteString).inserted {
+            do {
+                return try await loadImage(from: url)
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let discoveryURL = source.siteIconDiscoveryURL,
+           let discoveredURL = try await discoverSiteIconURL(from: discoveryURL),
+           attemptedURLs.insert(discoveredURL.absoluteString).inserted {
+            do {
+                return try await loadImage(from: discoveredURL)
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? URLError(.badURL)
+    }
+
+    private static func loadImage(from url: URL) async throws -> ImageLoadResult {
+        if let cachedImage = cache.object(forKey: url as NSURL),
+           let cachedData = dataCache.object(forKey: url as NSURL) as Data? {
+            return ImageLoadResult(url: url, data: cachedData, image: cachedImage)
+        }
+
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 12
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateImageResponse(response)
+
+        guard let image = NSImage(data: data) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+
+        return ImageLoadResult(url: url, data: data, image: image)
+    }
+
+    private static func discoverSiteIconURL(from url: URL) async throws -> URL? {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 8
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateImageResponse(response)
+
+        let responseBody = try JSONDecoder().decode(RESTIndexIconResponse.self, from: data)
+        guard let rawURLString = responseBody.siteIconURLString?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawURLString.isEmpty else {
+            return nil
+        }
+        return URL(string: rawURLString)
+    }
+
+    private static func validateImageResponse(_ response: URLResponse) throws {
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+    }
 }
 
 private struct RemoteRoundedImage: View {
-    let url: URL?
+    let urls: [URL]
+    let siteIconDiscoveryURL: URL?
     let fallbackText: String
     let size: CGFloat
     let cornerRadius: CGFloat
     let backgroundColor: Color
     @StateObject private var imageLoader = CachedRemoteImageLoader()
+
+    init(
+        url: URL?,
+        fallbackText: String,
+        size: CGFloat,
+        cornerRadius: CGFloat,
+        backgroundColor: Color
+    ) {
+        self.init(
+            urls: url.map { [$0] } ?? [],
+            siteIconDiscoveryURL: nil,
+            fallbackText: fallbackText,
+            size: size,
+            cornerRadius: cornerRadius,
+            backgroundColor: backgroundColor
+        )
+    }
+
+    init(
+        urls: [URL],
+        siteIconDiscoveryURL: URL? = nil,
+        fallbackText: String,
+        size: CGFloat,
+        cornerRadius: CGFloat,
+        backgroundColor: Color
+    ) {
+        self.urls = urls
+        self.siteIconDiscoveryURL = siteIconDiscoveryURL
+        self.fallbackText = fallbackText
+        self.size = size
+        self.cornerRadius = cornerRadius
+        self.backgroundColor = backgroundColor
+    }
+
+    private var source: RemoteImageSource {
+        RemoteImageSource(urls: urls, siteIconDiscoveryURL: siteIconDiscoveryURL)
+    }
 
     var body: some View {
         ZStack {
@@ -3027,10 +3151,10 @@ private struct RemoteRoundedImage: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .onAppear {
-            imageLoader.load(url)
+            imageLoader.load(source)
         }
-        .onChange(of: url) { newURL in
-            imageLoader.load(newURL)
+        .onChange(of: source) { newSource in
+            imageLoader.load(newSource)
         }
     }
 

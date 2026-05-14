@@ -732,6 +732,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
+    private var pendingMicrophonePermissionRoutesToWordPressAgent = false
     private var nextWordPressAgentConversationsPage = 1
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var elevenLabsSpeechTask: Task<Void, Never>?
@@ -3235,13 +3236,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func toggleRecording() {
+        toggleRecording(routeToWordPressAgent: false)
+    }
+
+    func toggleRecordingForWordPressAgentUtilityOverlay() {
+        toggleRecording(routeToWordPressAgent: true)
+    }
+
+    private func toggleRecording(routeToWordPressAgent: Bool) {
         os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
         cancelPendingShortcutStart()
         if isRecording {
             stopAndTranscribe()
         } else {
             shortcutSessionController.beginManual(mode: .toggle)
-            startRecording(triggerMode: .toggle)
+            startRecording(triggerMode: .toggle, routeToWordPressAgent: routeToWordPressAgent)
         }
     }
 
@@ -3420,7 +3429,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         scheduleReadyStatusReset(after: 2, matching: ["Fix Edit Mode modifier"])
     }
 
-    private func startRecording(triggerMode: RecordingTriggerMode) {
+    private func startRecording(triggerMode: RecordingTriggerMode, routeToWordPressAgent: Bool = false) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !isRecording && !isTranscribing else { return }
@@ -3433,9 +3442,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             manualCommandRequested: scheduledSelectionSnapshot == nil
                 ? hotkeyManager.currentPressedModifiers.contains(commandModeManualModifier.shortcutModifier)
                 : scheduledManualCommandInvocation,
+            routeToWordPressAgent: routeToWordPressAgent,
             startedAt: t0
         ) else { return }
-        guard ensureMicrophoneAccess() else { return }
+        guard ensureMicrophoneAccess(routeToWordPressAgent: routeToWordPressAgent) else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         beginRecording(triggerMode: triggerMode)
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
@@ -3445,12 +3455,65 @@ final class AppState: ObservableObject, @unchecked Sendable {
         triggerMode: RecordingTriggerMode,
         selectionSnapshot: AppSelectionSnapshot? = nil,
         manualCommandRequested: Bool? = nil,
+        routeToWordPressAgent: Bool = false,
         startedAt: CFAbsoluteTime? = nil
     ) -> Bool {
         activeRecordingTriggerMode = triggerMode
         currentSessionWordPressAgentConversationKey = nil
         currentSessionWordPressAgentConversationID = nil
         currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+
+        let shouldRouteToWordPressAgent =
+            routeToWordPressAgent || isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused
+
+        if shouldRouteToWordPressAgent {
+            guard isWordPressComSignedIn,
+                  let agentConversationKey = wordPressAgentWindowDictationKey() else {
+                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
+                statusText = "WordPress.com sign-in required"
+                activeRecordingTriggerMode = nil
+                currentSessionIntent = .dictation
+                currentSessionWordPressComSiteID = nil
+                currentSessionWordPressAgentConversationKey = nil
+                currentSessionWordPressAgentConversationID = nil
+                currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+                shortcutSessionController.reset()
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+                return false
+            }
+
+            let shouldStartNewAgentConversation = routeToWordPressAgent || isWordPressAgentUtilityOverlayFocused
+            let agentConversationID: String?
+            if shouldStartNewAgentConversation {
+                guard let newConversationID = startWordPressAgentConversation(
+                    siteID: agentConversationKey.siteID,
+                    agentID: agentConversationKey.agentID
+                ) else {
+                    activeRecordingTriggerMode = nil
+                    currentSessionIntent = .dictation
+                    currentSessionWordPressComSiteID = nil
+                    currentSessionWordPressAgentConversationKey = nil
+                    currentSessionWordPressAgentConversationID = nil
+                    currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+                    shortcutSessionController.reset()
+                    return false
+                }
+                agentConversationID = newConversationID
+            } else {
+                let agentConversationIndex = ensureWordPressAgentConversation(for: agentConversationKey)
+                agentConversationID = wordpressAgentConversations.indices.contains(agentConversationIndex)
+                    ? wordpressAgentConversations[agentConversationIndex].id
+                    : nil
+            }
+            currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = agentConversationKey.siteID
+            currentSessionWordPressAgentConversationKey = agentConversationKey
+            currentSessionWordPressAgentConversationID = agentConversationID
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = shouldStartNewAgentConversation
+            overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
+            return true
+        }
+
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
@@ -3467,34 +3530,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
-
-        if isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused {
-            guard isWordPressComSignedIn,
-                  let agentConversationKey = wordPressAgentWindowDictationKey() else {
-                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
-                statusText = "WordPress.com sign-in required"
-                activeRecordingTriggerMode = nil
-                currentSessionIntent = .dictation
-                currentSessionWordPressComSiteID = nil
-                currentSessionWordPressAgentConversationKey = nil
-                currentSessionWordPressAgentConversationID = nil
-                currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
-                shortcutSessionController.reset()
-                NotificationCenter.default.post(name: .showSettings, object: nil)
-                return false
-            }
-
-            let agentConversationIndex = ensureWordPressAgentConversation(for: agentConversationKey)
-            currentSessionIntent = .dictation
-            currentSessionWordPressComSiteID = agentConversationKey.siteID
-            currentSessionWordPressAgentConversationKey = agentConversationKey
-            currentSessionWordPressAgentConversationID = wordpressAgentConversations.indices.contains(agentConversationIndex)
-                ? wordpressAgentConversations[agentConversationIndex].id
-                : nil
-            currentSessionShouldOpenWordPressAgentWindowOnCompletion = isWordPressAgentUtilityOverlayFocused
-            overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
-            return true
-        }
 
         guard isWordPressComSignedIn,
               let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
@@ -3525,7 +3560,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    private func ensureMicrophoneAccess() -> Bool {
+    private func ensureMicrophoneAccess(routeToWordPressAgent: Bool = false) -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
         case .authorized:
@@ -3535,12 +3570,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 return false
             }
 
-            prepareForMicrophonePermissionPrompt(triggerMode: triggerMode)
+            prepareForMicrophonePermissionPrompt(
+                triggerMode: triggerMode,
+                routeToWordPressAgent: routeToWordPressAgent
+            )
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
                     guard let strongSelf = self else { return }
                     let pendingTriggerMode = strongSelf.pendingMicrophonePermissionTriggerMode
+                    let pendingRoutesToWordPressAgent = strongSelf.pendingMicrophonePermissionRoutesToWordPressAgent
                     strongSelf.pendingMicrophonePermissionTriggerMode = nil
+                    strongSelf.pendingMicrophonePermissionRoutesToWordPressAgent = false
                     strongSelf.isAwaitingMicrophonePermission = false
                     strongSelf.restartHotkeyMonitoring()
 
@@ -3548,7 +3588,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     if granted {
                         strongSelf.errorMessage = nil
                         if triggerMode == .toggle {
-                            guard strongSelf.prepareRecordingStart(triggerMode: .toggle) else { return }
+                            guard strongSelf.prepareRecordingStart(
+                                triggerMode: .toggle,
+                                routeToWordPressAgent: pendingRoutesToWordPressAgent
+                            ) else { return }
                             strongSelf.shortcutSessionController.beginManual(mode: .toggle)
                             strongSelf.beginRecording(triggerMode: .toggle)
                         } else {
@@ -3566,6 +3609,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.currentSessionIntent = .dictation
                         strongSelf.currentSessionWordPressComSiteID = nil
+                        strongSelf.currentSessionWordPressAgentConversationKey = nil
+                        strongSelf.currentSessionWordPressAgentConversationID = nil
+                        strongSelf.currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
                         strongSelf.shortcutSessionController.reset()
                         strongSelf.showMicrophonePermissionAlert()
                     }
@@ -3578,15 +3624,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = nil
+            currentSessionWordPressAgentConversationKey = nil
+            currentSessionWordPressAgentConversationID = nil
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+            pendingMicrophonePermissionRoutesToWordPressAgent = false
             shortcutSessionController.reset()
             showMicrophonePermissionAlert()
             return false
         }
     }
 
-    private func prepareForMicrophonePermissionPrompt(triggerMode: RecordingTriggerMode) {
+    private func prepareForMicrophonePermissionPrompt(
+        triggerMode: RecordingTriggerMode,
+        routeToWordPressAgent: Bool = false
+    ) {
         isAwaitingMicrophonePermission = true
         pendingMicrophonePermissionTriggerMode = triggerMode
+        pendingMicrophonePermissionRoutesToWordPressAgent = routeToWordPressAgent
         hotkeyManager.stop()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
@@ -3998,6 +4052,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             }
                             agentReply = try await self.callWordPressAgentMessage(
                                 message: agentMessage,
+                                conversationID: sessionWordPressAgentConversationID,
                                 key: sessionWordPressAgentConversationKey,
                                 context: appContext
                             )

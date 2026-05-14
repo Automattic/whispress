@@ -56,6 +56,9 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
     let url: String?
     let slug: String?
     let icon: WPCOMSiteIcon?
+    let siteIconURLString: String?
+    let blavatarURLString: String?
+    let faviconURLString: String?
 
     var displayName: String {
         if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -69,8 +72,39 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
     }
 
     var iconURL: URL? {
-        guard let iconURLString = icon?.bestURLString else { return nil }
-        return URL(string: iconURLString)
+        iconCandidateURLs.first
+    }
+
+    var iconCandidateURLs: [URL] {
+        let rawURLStrings = [
+            icon?.bestURLString,
+            siteIconURLString,
+            blavatarURLString,
+            faviconURLString
+        ]
+
+        var seen = Set<String>()
+        return rawURLStrings
+            .compactMap(Self.normalizedURLString)
+            .compactMap(URL.init(string:))
+            .filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    var restRootURL: URL? {
+        guard let urlString = url,
+              var components = URLComponents(string: urlString) else {
+            return nil
+        }
+
+        var path = components.path
+        if !path.hasSuffix("/") {
+            path += "/"
+        }
+        path += "wp-json/"
+        components.path = path
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -81,6 +115,13 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         case primaryDomain = "primary_domain"
         case slug
         case icon
+        case siteIconURL = "site_icon_url"
+        case siteIconURLUpper = "site_icon_URL"
+        case blavatarURL = "blavatar_url"
+        case blavatarURLUpper = "blavatar_URL"
+        case faviconURL = "favicon_url"
+        case faviconURLUpper = "favicon_URL"
+        case favicon
     }
 
     init(
@@ -88,13 +129,19 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         name: String,
         url: String?,
         slug: String?,
-        icon: WPCOMSiteIcon? = nil
+        icon: WPCOMSiteIcon? = nil,
+        siteIconURLString: String? = nil,
+        blavatarURLString: String? = nil,
+        faviconURLString: String? = nil
     ) {
         self.id = id
         self.name = name
         self.url = url
         self.slug = slug
         self.icon = icon
+        self.siteIconURLString = siteIconURLString
+        self.blavatarURLString = blavatarURLString
+        self.faviconURLString = faviconURLString
     }
 
     init(from decoder: Decoder) throws {
@@ -116,6 +163,16 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         url = Self.normalizedURLString(decodedURL ?? primaryDomain)
         slug = (try? container.decode(String.self, forKey: .slug)) ?? primaryDomain
         icon = try? container.decode(WPCOMSiteIcon.self, forKey: .icon)
+        siteIconURLString =
+            (try? container.decode(String.self, forKey: .siteIconURL))
+            ?? (try? container.decode(String.self, forKey: .siteIconURLUpper))
+        blavatarURLString =
+            (try? container.decode(String.self, forKey: .blavatarURL))
+            ?? (try? container.decode(String.self, forKey: .blavatarURLUpper))
+        faviconURLString =
+            (try? container.decode(String.self, forKey: .faviconURL))
+            ?? (try? container.decode(String.self, forKey: .faviconURLUpper))
+            ?? (try? container.decode(String.self, forKey: .favicon))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -125,6 +182,22 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(url, forKey: .url)
         try container.encodeIfPresent(slug, forKey: .slug)
         try container.encodeIfPresent(icon, forKey: .icon)
+        try container.encodeIfPresent(siteIconURLString, forKey: .siteIconURL)
+        try container.encodeIfPresent(blavatarURLString, forKey: .blavatarURL)
+        try container.encodeIfPresent(faviconURLString, forKey: .faviconURL)
+    }
+
+    func mergingMetadata(from metadata: WPCOMSite) -> WPCOMSite {
+        WPCOMSite(
+            id: id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? metadata.name : name,
+            url: url ?? metadata.url,
+            slug: slug ?? metadata.slug,
+            icon: icon ?? metadata.icon,
+            siteIconURLString: siteIconURLString ?? metadata.siteIconURLString,
+            blavatarURLString: blavatarURLString ?? metadata.blavatarURLString,
+            faviconURLString: faviconURLString ?? metadata.faviconURLString
+        )
     }
 
     private static func normalizedURLString(_ value: String?) -> String? {
@@ -142,11 +215,44 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
 struct WPCOMSiteIcon: Codable, Equatable {
     let img: String?
     let ico: String?
+    let url: String?
+    let src: String?
 
     var bestURLString: String? {
-        [img, ico]
+        [img, url, src, ico]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case img
+        case ico
+        case url
+        case src
+    }
+
+    init(img: String?, ico: String?, url: String? = nil, src: String? = nil) {
+        self.img = img
+        self.ico = ico
+        self.url = url
+        self.src = src
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let rawURLString = try? container.decode(String.self) {
+            img = rawURLString
+            ico = nil
+            url = nil
+            src = nil
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        img = try? container.decode(String.self, forKey: .img)
+        ico = try? container.decode(String.self, forKey: .ico)
+        url = try? container.decode(String.self, forKey: .url)
+        src = try? container.decode(String.self, forKey: .src)
     }
 }
 
@@ -1098,9 +1204,32 @@ final class WPCOMClient: NSObject {
 
     func fetchSites() async throws -> [WPCOMSite] {
         let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/ai/agent/dolly/sites")!
-        let data = try await authenticatedData(for: url)
-        let response = try JSONDecoder().decode(SitesResponse.self, from: data)
-        return response.sites
+        let agentSitesData = try await authenticatedData(for: url)
+        let agentSites = try JSONDecoder().decode(SitesResponse.self, from: agentSitesData).sites
+
+        do {
+            let metadataSites = try await fetchSiteMetadata()
+            let metadataByID = Dictionary(metadataSites.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return agentSites.map { site in
+                guard let metadata = metadataByID[site.id] else { return site }
+                return site.mergingMetadata(from: metadata)
+            }
+        } catch {
+            return agentSites
+        }
+    }
+
+    private func fetchSiteMetadata() async throws -> [WPCOMSite] {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/me/sites")!
+        components.queryItems = [
+            URLQueryItem(
+                name: "fields",
+                value: "ID,name,URL,slug,primary_domain,icon,site_icon_url,blavatar_url,favicon_url"
+            ),
+            URLQueryItem(name: "number", value: "1000")
+        ]
+        let data = try await authenticatedData(for: components.url!)
+        return try JSONDecoder().decode(SitesResponse.self, from: data).sites
     }
 
     func fetchCurrentUser() async throws -> WPCOMUser {
