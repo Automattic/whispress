@@ -144,6 +144,7 @@ struct AgentComposerTextView: NSViewRepresentable {
 
 private final class AgentComposerScrollView: NSScrollView {
     var contentHeightDidChange: ((CGFloat) -> Void)?
+    private var lastReportedContentHeight: CGFloat = 0
 
     override func layout() {
         super.layout()
@@ -173,7 +174,10 @@ private final class AgentComposerScrollView: NSScrollView {
             textView.setFrameSize(targetSize)
         }
 
-        contentHeightDidChange?(contentHeight)
+        if abs(contentHeight - lastReportedContentHeight) > 0.5 {
+            lastReportedContentHeight = contentHeight
+            contentHeightDidChange?(contentHeight)
+        }
     }
 
     private static func contentHeight(for textView: NSTextView, width: CGFloat) -> CGFloat {

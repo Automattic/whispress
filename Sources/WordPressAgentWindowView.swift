@@ -18,7 +18,6 @@ struct WordPressAgentWindowView: View {
 
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
-    private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
     private static let pasteableImageContentTypes: [UTType] = [.fileURL, .image]
 
     private var selectedConversation: WordPressAgentConversation? {
@@ -525,7 +524,13 @@ struct WordPressAgentWindowView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             workspaceHeader
-            transcript
+            WordPressAgentTranscriptView(
+                conversation: selectedConversation,
+                activeSite: activeSite,
+                activeWorkspaceTitle: activeWorkspaceTitle,
+                isSignedIn: appState.isWordPressComSignedIn
+            )
+            .equatable()
             composer
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
@@ -595,97 +600,6 @@ struct WordPressAgentWindowView: View {
         .padding(.trailing, 24)
         .padding(.top, 18)
         .padding(.bottom, 10)
-    }
-
-    @ViewBuilder
-    private var transcript: some View {
-        if let selectedConversation {
-            if selectedConversation.messages.isEmpty,
-               !selectedConversation.isSending,
-               selectedConversation.errorMessage == nil {
-                emptyWorkspace
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 24) {
-                            ForEach(selectedConversation.messages) { message in
-                                WordPressAgentMessageRow(message: message)
-                                    .equatable()
-                                    .id(message.id)
-                            }
-
-                            if selectedConversation.isSending {
-                                WordPressAgentTypingRow()
-                            }
-
-                            if let errorMessage = selectedConversation.errorMessage,
-                               shouldShowErrorSummary(errorMessage, in: selectedConversation) {
-                                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 4)
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id(transcriptBottomAnchorID)
-                        }
-                        .frame(maxWidth: 760)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 34)
-                        .padding(.top, 34)
-                        .padding(.bottom, 28)
-                    }
-                    .onAppear {
-                        scrollTranscriptToBottom(proxy, animated: false)
-                    }
-                    .onChange(of: selectedConversation.messages.count) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                    .onChange(of: selectedConversation.isSending) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                    .onChange(of: selectedConversation.errorMessage) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                }
-            }
-        } else {
-            emptyWorkspace
-        }
-    }
-
-    private func scrollTranscriptToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let scroll = {
-            proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
-        }
-
-        if animated {
-            withAnimation(.easeOut(duration: 0.18)) {
-                scroll()
-            }
-        } else {
-            scroll()
-        }
-
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    scroll()
-                }
-            } else {
-                scroll()
-            }
-        }
-    }
-
-    private func shouldShowErrorSummary(_ errorMessage: String, in conversation: WordPressAgentConversation) -> Bool {
-        let trimmedError = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedError.isEmpty else { return false }
-        guard let lastMessage = conversation.messages.last else { return true }
-        return lastMessage.role != .system
-            || lastMessage.text.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedError
     }
 
     private var emptyWorkspace: some View {
@@ -1849,6 +1763,141 @@ private struct LocalImageThumbnail: View {
         .frame(width: width, height: height)
         .background(AgentPalette.softControl)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+private struct WordPressAgentTranscriptView: View, Equatable {
+    let conversation: WordPressAgentConversation?
+    let activeSite: WPCOMSite?
+    let activeWorkspaceTitle: String
+    let isSignedIn: Bool
+
+    private static let bottomAnchorID = "wordpress-agent-transcript-bottom"
+
+    static func == (lhs: WordPressAgentTranscriptView, rhs: WordPressAgentTranscriptView) -> Bool {
+        lhs.conversation == rhs.conversation
+            && lhs.activeSite == rhs.activeSite
+            && lhs.activeWorkspaceTitle == rhs.activeWorkspaceTitle
+            && lhs.isSignedIn == rhs.isSignedIn
+    }
+
+    var body: some View {
+        if let conversation {
+            if conversation.messages.isEmpty,
+               !conversation.isSending,
+               conversation.errorMessage == nil {
+                emptyWorkspace
+            } else {
+                transcript(for: conversation)
+            }
+        } else {
+            emptyWorkspace
+        }
+    }
+
+    private var emptyWorkspace: some View {
+        VStack(spacing: 14) {
+            if let activeSite {
+                RemoteSiteIcon(site: activeSite, size: 54, cornerRadius: 14)
+            } else {
+                WordPressComLogoMark()
+                    .frame(width: 54, height: 54)
+            }
+
+            Text(activeWorkspaceTitle)
+                .font(.system(size: 24, weight: .semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+
+            Text(isSignedIn ? "New chat" : "WordPress.com sign-in needed")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 40)
+    }
+
+    private func transcript(for conversation: WordPressAgentConversation) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 24) {
+                    ForEach(conversation.messages) { message in
+                        WordPressAgentMessageRow(message: message)
+                            .equatable()
+                            .id(message.id)
+                    }
+
+                    if conversation.isSending {
+                        WordPressAgentTypingRow()
+                    }
+
+                    if let errorMessage = conversation.errorMessage,
+                       Self.shouldShowErrorSummary(errorMessage, in: conversation) {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchorID)
+                }
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 34)
+                .padding(.top, 34)
+                .padding(.bottom, 28)
+            }
+            .onAppear {
+                Self.scrollToBottom(proxy, animated: false)
+            }
+            .onChange(of: conversation.messages.count) { _ in
+                Self.scrollToBottom(proxy)
+            }
+            .onChange(of: conversation.isSending) { _ in
+                Self.scrollToBottom(proxy)
+            }
+            .onChange(of: conversation.errorMessage) { _ in
+                Self.scrollToBottom(proxy)
+            }
+        }
+    }
+
+    private static func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
+            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                scroll()
+            }
+        } else {
+            scroll()
+        }
+
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    scroll()
+                }
+            } else {
+                scroll()
+            }
+        }
+    }
+
+    private static func shouldShowErrorSummary(
+        _ errorMessage: String,
+        in conversation: WordPressAgentConversation
+    ) -> Bool {
+        let trimmedError = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedError.isEmpty else { return false }
+        guard let lastMessage = conversation.messages.last else { return true }
+        return lastMessage.role != .system
+            || lastMessage.text.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedError
     }
 }
 
