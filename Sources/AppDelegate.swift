@@ -1494,11 +1494,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appState.hasCompletedSetup = true
         setupWindow?.close()
         setupWindow = nil
-        NSApp.setActivationPolicy(.accessory)
         appState.startHotkeyMonitoring()
         appState.startAccessibilityPolling()
         if !AXIsProcessTrusted() {
             appState.showAccessibilityAlert()
+        }
+
+        if appState.isWordPressComSignedIn && appState.selectedWordPressComSiteID != nil {
+            showWordPressAgentWindow()
+        } else {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }

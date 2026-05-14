@@ -111,7 +111,7 @@ struct SetupView: View {
                                 .disabled(!canContinueFromCurrentStep)
                             }
                         } else {
-                            Button("Get Started") {
+                            Button("Open WordPress Agent") {
                                 onComplete()
                             }
                             .keyboardShortcut(.defaultAction)
@@ -698,7 +698,7 @@ struct SetupView: View {
             Text("You're All Set!")
                 .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("WP Workspace lives in your menu bar.")
+            Text("Open the WordPress Agent to get started. After you close it, WP Workspace keeps running in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
