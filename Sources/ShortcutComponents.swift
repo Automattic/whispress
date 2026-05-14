@@ -20,7 +20,7 @@ struct DictationShortcutEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if showsIntroText {
-                Text("Hold to record, tap to start and stop, or open Quick Ask. You can disable either dictation workflow if you only want one.")
+                Text("Hold to record, tap to start and stop, or open Quick Ask. You can disable any shortcut and use the menu bar when you do not want a global dictation key.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
