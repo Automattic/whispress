@@ -477,10 +477,10 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(WordPressWorkspaceBrand.blue)
 
-            Text("Upload Images")
+            Text("Add Images to Your Site")
                 .font(WordPressWorkspaceBrand.displayFont(size: 30))
 
-            Text("Choose an image to upload it to your site, copy the link, or open it in a WordPress Agent chat.")
+            Text("Try an upload now to see how Workspace adds images to your WordPress.com media library. You can copy the link or open the images in a WordPress Agent chat.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -493,7 +493,7 @@ struct SetupView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!appState.isWordPressComSignedIn || appState.selectedWordPressComSiteID == nil)
 
-            Text("You can also drop images onto the menu bar icon later.")
+            Text("Later, drop images onto the menu bar icon to upload without opening this window.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
