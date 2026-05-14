@@ -1310,6 +1310,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.userContentController.addUserScript(Coordinator.editModeChromeReductionUserScript)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         context.coordinator.previewID = previewID
         context.coordinator.onPageUpdate = onPageUpdate
@@ -1605,6 +1606,83 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             "nonce",
             "_wpnonce"
         ]
+
+        static let editModeChromeReductionUserScript = WKUserScript(
+            source: """
+            (() => {
+                const isPostEditor = () => /\\/wp-admin\\/(post|post-new)\\.php$/i.test(window.location.pathname);
+                if (!isPostEditor()) {
+                    return;
+                }
+
+                const styleID = "wpworkspace-compact-editor-style";
+                const css = `
+                    html.wp-toolbar,
+                    html.wp-toolbar body,
+                    body.wp-admin,
+                    body.admin-bar {
+                        padding-top: 0 !important;
+                        margin-top: 0 !important;
+                    }
+
+                    #wpadminbar,
+                    #wpcom-admin-bar,
+                    #adminmenuback,
+                    #adminmenuwrap,
+                    #adminmenumain,
+                    #wpfooter,
+                    #screen-meta,
+                    #screen-meta-links,
+                    .masterbar,
+                    .wpcom-masterbar,
+                    .wpcom-admin-bar,
+                    .wordpress-admin-bar {
+                        display: none !important;
+                    }
+
+                    #wpcontent,
+                    #wpbody,
+                    #wpbody-content {
+                        margin-left: 0 !important;
+                        padding-left: 0 !important;
+                    }
+
+                    .interface-interface-skeleton,
+                    .edit-post-layout,
+                    .edit-post-editor-regions__content {
+                        top: 0 !important;
+                    }
+                `;
+
+                const installStyle = () => {
+                    if (!isPostEditor() || document.getElementById(styleID)) {
+                        return;
+                    }
+                    const style = document.createElement("style");
+                    style.id = styleID;
+                    style.textContent = css;
+                    (document.head || document.documentElement).appendChild(style);
+                };
+
+                const markDocument = () => {
+                    if (!isPostEditor()) {
+                        return;
+                    }
+                    document.documentElement.classList.add("wpworkspace-compact-editor");
+                    document.body?.classList.add("wpworkspace-compact-editor");
+                };
+
+                installStyle();
+                markDocument();
+                new MutationObserver(() => {
+                    installStyle();
+                    markDocument();
+                }).observe(document.documentElement, { childList: true, subtree: true });
+            })();
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
 
         private static let previewPreparationHTML = """
         <!doctype html>
