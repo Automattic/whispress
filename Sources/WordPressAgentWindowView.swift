@@ -712,7 +712,7 @@ struct WordPressAgentWindowView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 12) {
+            VStack(spacing: 10) {
                 if !pendingImageURLs.isEmpty {
                     ComposerAttachmentStrip(fileURLs: pendingImageURLs) { url in
                         pendingImageURLs.removeAll { $0 == url }
@@ -721,14 +721,14 @@ struct WordPressAgentWindowView: View {
 
                 composerTextView
 
-                HStack(spacing: 14) {
+                HStack(spacing: 10) {
                     Button {
                         selectImages()
                         isComposerFocused = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 19, weight: .regular))
-                            .frame(width: 28, height: 28)
+                            .font(.system(size: 17, weight: .regular))
+                            .frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -742,8 +742,8 @@ struct WordPressAgentWindowView: View {
                         appState.toggleRecording()
                     } label: {
                         Image(systemName: appState.isRecording ? "stop.circle.fill" : "mic")
-                            .font(.system(size: 20, weight: .medium))
-                            .frame(width: 30, height: 30)
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 26, height: 26)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -755,9 +755,9 @@ struct WordPressAgentWindowView: View {
                         sendDraftMessage()
                     } label: {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 32, height: 32)
                             .background(
                                 Circle()
                                     .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
@@ -768,13 +768,14 @@ struct WordPressAgentWindowView: View {
                     .disabled(!canSendMessage)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(AgentPalette.composer)
                     .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
                             .stroke(AgentPalette.controlStroke, lineWidth: 1)
                     )
             )

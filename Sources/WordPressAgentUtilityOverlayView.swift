@@ -36,7 +36,7 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             if !pendingImageURLs.isEmpty {
                 UtilityOverlayAttachmentStrip(fileURLs: pendingImageURLs) { url in
                     pendingImageURLs.removeAll { $0 == url }
@@ -45,13 +45,13 @@ struct WordPressAgentUtilityOverlayView: View {
 
             composerTextView
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button {
                     selectImages()
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .regular))
-                        .frame(width: 28, height: 28)
+                        .font(.system(size: 17, weight: .regular))
+                        .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -62,27 +62,27 @@ struct WordPressAgentUtilityOverlayView: View {
                 Button {
                     appState.showWordPressAgentWindow()
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 5) {
                         Image(systemName: "globe")
-                            .font(.system(size: 17, weight: .medium))
+                            .font(.system(size: 15, weight: .medium))
                         Text(siteTitle)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .lineLimit(1)
                     }
-                    .frame(maxWidth: 176, alignment: .leading)
+                    .frame(maxWidth: 160, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Open WordPress Agent")
 
-                Spacer(minLength: 10)
+                Spacer(minLength: 8)
 
                 if selectedConversation?.isSending == true || appState.isTranscribing {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 24, height: 24)
                         .help("Working")
                 }
 
@@ -90,8 +90,8 @@ struct WordPressAgentUtilityOverlayView: View {
                     appState.toggleRecording()
                 } label: {
                     Image(systemName: appState.isRecording ? "stop.circle.fill" : "mic")
-                        .font(.system(size: 19, weight: .medium))
-                        .frame(width: 28, height: 28)
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -103,9 +103,9 @@ struct WordPressAgentUtilityOverlayView: View {
                     sendDraftMessage()
                 } label: {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 32, height: 32)
                         .background(
                             Circle()
                                 .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
@@ -116,8 +116,8 @@ struct WordPressAgentUtilityOverlayView: View {
                 .disabled(!canSendMessage)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(width: 560, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
