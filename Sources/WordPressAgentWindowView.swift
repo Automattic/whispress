@@ -1269,6 +1269,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         // details that should stay internal to the preview frame.
         private var visiblePreviewURL: URL?
         private var internalEffectivePreviewURL: URL?
+        private var isShowingPreparationBackground = false
         private var lastReloadTrigger = 0
         private var lastReportedURL: URL?
         private var lastReportedTitle: String?
@@ -1301,12 +1302,13 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             let requestedPreviewURL = Self.redactedPreviewDisplayURL(initialPreviewURL)
             visiblePreviewURL = requestedPreviewURL
             internalEffectivePreviewURL = nil
-            reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
 
             loadTask?.cancel()
             let siteID = siteID
             let appState = appState
             guard let appState else {
+                isShowingPreparationBackground = false
+                reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
                 webView.load(URLRequest(url: initialPreviewURL))
                 return
             }
@@ -1317,6 +1319,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             // 404 or wp-login page, and WebKit will show that stale-looking state
             // while the cookie bootstrap is still running. Resolve the preview
             // URL, copy cookies into WebKit, then make the first real load.
+            showPreparationBackground(in: webView, visibleURL: requestedPreviewURL)
             loadTask = Task { @MainActor [weak self, weak webView] in
                 guard let webView else { return }
                 let previewURL = await appState.resolvedWordPressAgentPreviewURL(initialPreviewURL, siteID: siteID)
@@ -1326,6 +1329,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 )
                 guard !Task.isCancelled else { return }
                 self?.internalEffectivePreviewURL = previewURL
+                self?.isShowingPreparationBackground = false
                 self?.reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
                 webView.load(URLRequest(url: previewURL))
             }
@@ -1344,14 +1348,26 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: true)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: true)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1361,6 +1377,10 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             withError error: Error
         ) {
             os_log("Failed WordPress Agent preview navigation: %{public}@", log: wordpressAgentPreviewLog, type: .error, error.localizedDescription)
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1370,6 +1390,10 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             withError error: Error
         ) {
             os_log("Failed provisional WordPress Agent preview navigation: %{public}@", log: wordpressAgentPreviewLog, type: .error, error.localizedDescription)
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1431,6 +1455,16 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             reportPageUpdate(url: safeURL, title: webView.title, isLoading: isLoading)
         }
 
+        private func showPreparationBackground(in webView: WKWebView, visibleURL: URL) {
+            isShowingPreparationBackground = true
+            reportPageUpdate(url: visibleURL, title: nil, isLoading: true)
+            webView.loadHTMLString(Self.previewPreparationHTML, baseURL: nil)
+        }
+
+        private func reportPreparationBackgroundUpdate() {
+            reportPageUpdate(url: visiblePreviewURL, title: nil, isLoading: true)
+        }
+
         private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
             guard lastReportedURL != url
                 || lastReportedTitle != title
@@ -1470,6 +1504,92 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             "nonce",
             "_wpnonce"
         ]
+
+        private static let previewPreparationHTML = """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="color-scheme" content="light dark">
+        <style>
+        :root {
+            color-scheme: light dark;
+            --background: #ffffff;
+            --foreground: #1e1e1e;
+            --muted: #787c82;
+            --ring: rgba(56, 88, 233, 0.28);
+            --accent: #3858e9;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --background: #101114;
+                --foreground: #f5f5f5;
+                --muted: #a7aaad;
+                --ring: rgba(96, 128, 255, 0.32);
+                --accent: #7b90ff;
+            }
+        }
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: var(--background);
+            color: var(--foreground);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+        }
+        body {
+            display: grid;
+            place-items: center;
+        }
+        .preview-loader {
+            display: grid;
+            justify-items: center;
+            gap: 14px;
+            text-align: center;
+            transform: translateY(-4vh);
+        }
+        .mark {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            border: 1px solid var(--ring);
+            display: grid;
+            place-items: center;
+            color: var(--accent);
+        }
+        .spinner {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 2px solid var(--ring);
+            border-top-color: var(--accent);
+            animation: spin 0.9s linear infinite;
+        }
+        .label {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0;
+        }
+        .detail {
+            font-size: 12px;
+            color: var(--muted);
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        </style>
+        </head>
+        <body>
+            <main class="preview-loader" aria-live="polite">
+                <div class="mark"><div class="spinner"></div></div>
+                <div>
+                    <div class="label">Preparing preview</div>
+                    <div class="detail">Checking access</div>
+                </div>
+            </main>
+        </body>
+        </html>
+        """
     }
 }
 
