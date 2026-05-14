@@ -244,6 +244,10 @@ struct GeneralSettingsView: View {
                 appSiteOverridesSection
             }
 
+            if !appState.wordpressComSites.isEmpty {
+                localWorkspaceSection
+            }
+
             if let message = appState.wordpressComStatusMessage {
                 Text(message)
                     .font(.caption)
@@ -464,6 +468,260 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var localWorkspaceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Local Workspace")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+            }
+
+            if let siteID = appState.selectedWordPressComSiteID {
+                let workspace = appState.localWorkspace(for: siteID)
+                if let workspace {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "folder.fill")
+                                .frame(width: 20)
+                                .foregroundStyle(Color.blue)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(siteName(siteID))
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                Text(localWorkspaceSubtitle(workspace))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Toggle(
+                                "Agent Access",
+                                isOn: Binding(
+                                    get: { appState.localWorkspace(for: siteID)?.isEnabled ?? false },
+                                    set: { appState.setLocalWorkspaceEnabled(siteID: siteID, isEnabled: $0) }
+                                )
+                            )
+                            .toggleStyle(.switch)
+                            .font(.caption)
+                            .help("Enable local project tools for this site")
+
+                            Button {
+                                appState.addLocalProjectToWorkspace(siteID: siteID)
+                            } label: {
+                                Label("Add Folder", systemImage: "folder.badge.plus")
+                            }
+
+                            Button {
+                                appState.removeLocalWorkspace(siteID: siteID)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Disconnect local workspace")
+                        }
+
+                        if workspace.projects.isEmpty {
+                            Text("Add a theme, plugin, or project folder to let the WordPress Agent route local file questions to Claude Code on this Mac.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(spacing: 8) {
+                                ForEach(workspace.projects) { project in
+                                    localWorkspaceProjectRow(project, siteID: siteID)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "folder.badge.plus")
+                                .frame(width: 20)
+                                .foregroundStyle(.secondary)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Connect a local project")
+                                    .font(.caption.weight(.semibold))
+                                Text("Link a theme, plugin, or project folder to \(siteName(siteID)). The connection is created only after you choose a folder.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer(minLength: 8)
+                        }
+
+                        Button {
+                            appState.createLocalWorkspaceForSelectedSite()
+                        } label: {
+                            Label("Connect Project", systemImage: "folder.badge.plus")
+                        }
+                    }
+                }
+            } else {
+                Text("Choose a default site before creating a local workspace.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func localWorkspaceProjectRow(_ project: WPLocalProject, siteID: Int) -> some View {
+        let healthCheck = appState.localProjectHealthCheck(for: project.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: localWorkspaceProjectIcon(project.kind))
+                    .frame(width: 20)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(project.name)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        localWorkspaceBadge(project.kind.label)
+                        localWorkspaceWritePolicyPicker(project, siteID: siteID)
+                    }
+                    Text(project.rootPath)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    appState.checkLocalProjectAgent(siteID: siteID, projectID: project.id)
+                } label: {
+                    if healthCheck?.state == .checking {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "checkmark.seal")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .help("Test Claude Code for this project")
+                .disabled(healthCheck?.state == .checking)
+
+                Button {
+                    appState.removeLocalProject(siteID: siteID, projectID: project.id)
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove project folder")
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: localProjectCheckIcon(healthCheck))
+                    .frame(width: 14)
+                    .foregroundStyle(localProjectCheckColor(healthCheck))
+                Text(localProjectCheckMessage(healthCheck))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        .cornerRadius(6)
+    }
+
+    private func localWorkspaceWritePolicyPicker(_ project: WPLocalProject, siteID: Int) -> some View {
+        Picker(
+            "Local agent access",
+            selection: Binding(
+                get: {
+                    appState.localWorkspace(for: siteID)?
+                        .projects
+                        .first(where: { $0.id == project.id })?
+                        .writePolicy ?? project.writePolicy
+                },
+                set: { writePolicy in
+                    appState.setLocalProjectWritePolicy(
+                        siteID: siteID,
+                        projectID: project.id,
+                        writePolicy: writePolicy
+                    )
+                }
+            )
+        ) {
+            ForEach(WPLocalWorkspaceWritePolicy.allCases, id: \.rawValue) { writePolicy in
+                Text(writePolicy.label).tag(writePolicy)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 132)
+        .help("Choose whether the local agent can request approved edits for this project.")
+    }
+
+    private func localWorkspaceSubtitle(_ workspace: WPSiteLocalWorkspace?) -> String {
+        guard let workspace else { return "No local workspace configured" }
+        let count = workspace.projects.count
+        let noun = count == 1 ? "project" : "projects"
+        let state = workspace.isEnabled ? "Agent access enabled" : "Agent access disabled"
+        return "\(state) - \(count) local \(noun)"
+    }
+
+    private func localWorkspaceBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.secondary.opacity(0.12))
+            .cornerRadius(4)
+    }
+
+    private func localWorkspaceProjectIcon(_ kind: WPLocalProjectKind) -> String {
+        switch kind {
+        case .theme:
+            return "paintpalette"
+        case .plugin:
+            return "puzzlepiece.extension"
+        case .other:
+            return "folder"
+        }
+    }
+
+    private func localProjectCheckIcon(_ check: WPLocalProjectHealthCheck?) -> String {
+        switch check?.state {
+        case .checking:
+            return "clock"
+        case .ready:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case nil:
+            return "circle.dashed"
+        }
+    }
+
+    private func localProjectCheckColor(_ check: WPLocalProjectHealthCheck?) -> Color {
+        switch check?.state {
+        case .checking:
+            return .secondary
+        case .ready:
+            return .green
+        case .failed:
+            return .orange
+        case nil:
+            return .secondary
+        }
+    }
+
+    private func localProjectCheckMessage(_ check: WPLocalProjectHealthCheck?) -> String {
+        check?.message ?? "Claude Code has not been tested for this project."
     }
 
     private var appSiteOverridesSection: some View {
