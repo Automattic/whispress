@@ -1850,14 +1850,31 @@ final class AppState: ObservableObject, @unchecked Sendable {
         starredWordPressAgentSiteIDs.contains(siteID)
     }
 
+    func seedDefaultWordPressAgentStarredSiteIfNeeded() {
+        guard UserDefaults.standard.object(forKey: wordpressAgentStarredSiteIDsStorageKey) == nil,
+              let siteID = selectedWordPressComSiteID,
+              siteID > 0,
+              wordpressComSites.contains(where: { $0.id == siteID }) else {
+            return
+        }
+
+        starWordPressAgentSite(siteID)
+    }
+
+    func starWordPressAgentSite(_ siteID: Int) {
+        guard siteID > 0, !isWordPressAgentSiteStarred(siteID) else { return }
+
+        var siteIDs = starredWordPressAgentSiteIDs.filter { $0 != siteID }
+        siteIDs.insert(siteID, at: 0)
+        starredWordPressAgentSiteIDs = siteIDs
+    }
+
     func toggleWordPressAgentSiteStar(_ siteID: Int) {
         guard siteID > 0 else { return }
         if isWordPressAgentSiteStarred(siteID) {
             starredWordPressAgentSiteIDs.removeAll { $0 == siteID }
         } else {
-            var siteIDs = starredWordPressAgentSiteIDs.filter { $0 != siteID }
-            siteIDs.insert(siteID, at: 0)
-            starredWordPressAgentSiteIDs = siteIDs
+            starWordPressAgentSite(siteID)
         }
     }
 

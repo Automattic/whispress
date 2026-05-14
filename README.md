@@ -28,7 +28,8 @@ and dictate when voice is the fastest way to get words down.
 WordPress Workspace is a thin Mac client:
 
 - Sign in with WordPress.com.
-- Choose the site you want to work with.
+- Choose the default site new chats, uploads, screenshots, and dictation should start with.
+- Switch sites from the WordPress Agent whenever the work belongs somewhere else.
 - Ask the WordPress Agent, capture a screenshot, upload images, transform
   selected text, or dictate text from anywhere on your Mac.
 

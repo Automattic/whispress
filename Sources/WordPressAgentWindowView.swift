@@ -9,7 +9,7 @@ struct WordPressAgentWindowView: View {
     @State private var pendingImageURLs: [URL] = []
     @State private var sidebarSearch = ""
     @AppStorage("wordpress_agent_starred_sites_expanded") private var isStarredSitesExpanded = true
-    @AppStorage("wordpress_agent_all_sites_expanded") private var isAllSitesExpanded = true
+    @AppStorage("wordpress_agent_all_sites_expanded") private var isAllSitesExpanded = false
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
@@ -122,7 +122,15 @@ struct WordPressAgentWindowView: View {
         .background(AgentPalette.workspace)
         .frame(minWidth: appState.wordpressAgentPreview == nil ? 900 : 1120, minHeight: 620)
         .task {
+            appState.seedDefaultWordPressAgentStarredSiteIfNeeded()
             await appState.refreshWordPressAgentConversationsIfNeeded()
+            appState.seedDefaultWordPressAgentStarredSiteIfNeeded()
+        }
+        .onChange(of: appState.selectedWordPressComSiteID) { _ in
+            appState.seedDefaultWordPressAgentStarredSiteIfNeeded()
+        }
+        .onChange(of: appState.wordpressComSites) { _ in
+            appState.seedDefaultWordPressAgentStarredSiteIfNeeded()
         }
     }
 
