@@ -13,6 +13,10 @@ empty :=
 space := $(empty) $(empty)
 APP_EXECUTABLE = $(MACOS_DIR)/$(PRODUCT_NAME)
 APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
+ZIP_PATH = $(BUILD_DIR)/$(APP_NAME).zip
+DMG_PATH = $(BUILD_DIR)/$(APP_NAME).dmg
+DMG_SPEC = $(BUILD_DIR)/dmg-spec.json
+NOTARIZE = Tools/notarize.sh
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
@@ -23,24 +27,9 @@ WPCOM_LOGO = Resources/WPCOM-Blueberry-Pill-Logo.svg
 MENU_BAR_LOGO = Resources/MenuBarWordPressLogo.svg
 FONT_RESOURCES = $(shell find Resources/Fonts -type f 2>/dev/null | LC_ALL=C sort)
 
-.PHONY: all clean run icon dmg codesign-dmg notarize
+.PHONY: all clean run icon dmg codesign-dmg notarize-app notarize-dmg zip release
 
 all: $(APP_EXECUTABLE_TARGET)
-	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
-	if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
-		secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
-	fi; \
-	if [ -n "$(WPCOM_OAUTH_CLIENT_ID)" ]; then \
-		plutil -replace WPCOMOAuthClientID -string "$(WPCOM_OAUTH_CLIENT_ID)" "$(CONTENTS)/Info.plist"; \
-	fi; \
-	plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"; \
-	codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)" >/dev/null; \
-	if [ -n "$(WPCOM_OAUTH_CLIENT_ID)" ]; then \
-		echo "Configured WordPress.com OAuth client ID in $(APP_BUNDLE)"; \
-	fi; \
-	if [ -n "$$secret" ]; then \
-		echo "Configured WordPress.com OAuth client secret in $(APP_BUNDLE)"; \
-	fi
 
 $(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(ICON_SOURCE) $(WPCOM_LOGO) $(MENU_BAR_LOGO) $(FONT_RESOURCES)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
@@ -80,6 +69,14 @@ endif
 	@cp $(MENU_BAR_LOGO) "$(RESOURCES)/"
 	@rm -rf "$(RESOURCES)/Fonts"
 	@cp -R Resources/Fonts "$(RESOURCES)/Fonts"
+	@secret="$${WPCOM_OAUTH_CLIENT_SECRET:-}"; \
+		if [ -n "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)" ]; then \
+			secret="$$(cat "$(WPCOM_OAUTH_CLIENT_SECRET_FILE)")"; \
+		fi; \
+		if [ -n "$(WPCOM_OAUTH_CLIENT_ID)" ]; then \
+			plutil -replace WPCOMOAuthClientID -string "$(WPCOM_OAUTH_CLIENT_ID)" "$(CONTENTS)/Info.plist"; \
+		fi; \
+		plutil -replace WPCOMOAuthClientSecret -string "$$secret" "$(CONTENTS)/Info.plist"
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements WPWorkspace.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
@@ -101,37 +98,62 @@ $(ICON_ICNS): $(ICON_SOURCE)
 	@rm -rf $(BUILD_DIR)/AppIcon.iconset
 	@echo "Generated $@"
 
-dmg: all
-	@rm -f "$(BUILD_DIR)/$(APP_NAME).dmg"
-	@rm -rf $(BUILD_DIR)/dmg-staging
-	@mkdir -p $(BUILD_DIR)/dmg-staging
-	@cp -R "$(APP_BUNDLE)" $(BUILD_DIR)/dmg-staging/
-	@osascript -e 'tell application "Finder" to make alias file to POSIX file "/Applications" at POSIX file "'"$$(cd $(BUILD_DIR)/dmg-staging && pwd)"'"'
-	@ALIAS=$$(find $(BUILD_DIR)/dmg-staging -maxdepth 1 -not -name '*.app' -not -name '.DS_Store' -type f | head -1) && mv "$$ALIAS" "$(BUILD_DIR)/dmg-staging/Applications"
-	@fileicon set "$(BUILD_DIR)/dmg-staging/Applications" /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ApplicationsFolderIcon.icns
+# Uses `appdmg` (npm) rather than `create-dmg` (brew) because appdmg writes the
+# .DS_Store layout directly via `hdiutil` + the `ds-store` library, no AppleScript
+# or Finder session required. That matters on headless CI agents, where any tool
+# that drives Finder via osascript times out after ~120s.
+dmg: $(DMG_PATH)
+
+$(BUILD_DIR):
+	@mkdir -p "$@"
+
+$(DMG_SPEC): Makefile | $(BUILD_DIR)
+	@printf '%s\n' \
+		'{' \
+		'  "title": "$(APP_NAME)",' \
+		'  "icon": "$(CURDIR)/$(ICON_ICNS)",' \
+		'  "icon-size": 128,' \
+		'  "format": "UDZO",' \
+		'  "window": { "position": { "x": 200, "y": 120 }, "size": { "width": 660, "height": 400 } },' \
+		'  "contents": [' \
+		'    { "x": 180, "y": 170, "type": "file", "path": "$(CURDIR)/$(APP_BUNDLE)", "hide-extension": true },' \
+		'    { "x": 480, "y": 170, "type": "link", "path": "/Applications" }' \
+		'  ]' \
+		'}' > "$@"
+
+$(DMG_PATH): $(DMG_SPEC) notarize-app
+	@rm -f "$@"
 	@echo "Creating DMG..."
-	@create-dmg \
-		--volname "$(APP_NAME)" \
-		--volicon "$(ICON_ICNS)" \
-		--window-pos 200 120 \
-		--window-size 660 400 \
-		--icon-size 128 \
-		--icon "$(APP_NAME).app" 180 170 \
-		--hide-extension "$(APP_NAME).app" \
-		--icon "Applications" 480 170 \
-		--no-internet-enable \
-		"$(BUILD_DIR)/$(APP_NAME).dmg" \
-		"$(BUILD_DIR)/dmg-staging"
-	@rm -rf $(BUILD_DIR)/dmg-staging
-	@echo "Created $(BUILD_DIR)/$(APP_NAME).dmg"
+	@npx --yes appdmg@0.6.6 "$(DMG_SPEC)" "$@"
+	@rm -f "$(DMG_SPEC)"
+	@echo "Created $@"
 
-codesign-dmg: dmg
-	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(BUILD_DIR)/$(APP_NAME).dmg"
+codesign-dmg: $(DMG_PATH)
+	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(DMG_PATH)"
 
-notarize:
-	xcrun notarytool submit "$(BUILD_DIR)/$(APP_NAME).dmg" \
-		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
-	xcrun stapler staple "$(BUILD_DIR)/$(APP_NAME).dmg"
+# Notarize the .app in place. Stapling rewrites the bundle, so any
+# subsequent `codesign --force` on it would strip the ticket — keep
+# this step at the very end of the build chain for the .app.
+notarize-app: $(APP_EXECUTABLE_TARGET)
+	$(NOTARIZE) "$(APP_BUNDLE)"
+
+# ZIP the (already stapled) .app for direct distribution alongside the DMG.
+zip: notarize-app
+	@rm -f "$(ZIP_PATH)"
+	@ditto -c -k --sequesterRsrc --keepParent "$(APP_BUNDLE)" "$(ZIP_PATH)"
+	@echo "Created $(ZIP_PATH)"
+
+notarize-dmg: codesign-dmg
+	$(NOTARIZE) "$(DMG_PATH)"
+
+# Full release: notarize+staple .app, ZIP it, build+sign+notarize+staple DMG.
+# Order matters: zip pulls in notarize-app, and the DMG file target also depends
+# on notarize-app so the staged bundle is always the stapled app before the DMG
+# itself is signed and notarized.
+release: zip notarize-dmg
+	@echo "Release artifacts:"
+	@echo "  $(ZIP_PATH)"
+	@echo "  $(DMG_PATH)"
 
 clean:
 	rm -rf $(BUILD_DIR)
