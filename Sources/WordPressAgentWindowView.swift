@@ -13,6 +13,7 @@ struct WordPressAgentWindowView: View {
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
+    @State private var composerTextHeight: CGFloat = 46
     @FocusState private var isComposerFocused: Bool
 
     private let workspaceMinimumWidth: CGFloat = 360
@@ -825,11 +826,14 @@ struct WordPressAgentWindowView: View {
                     get: { isComposerFocused },
                     set: { isComposerFocused = $0 }
                 ),
+                height: $composerTextHeight,
                 fontSize: 16,
+                minimumHeight: 46,
+                maximumHeight: 220,
                 isDisabled: isComposerInputDisabled,
                 onSubmit: sendDraftMessage
             )
-            .frame(height: 46)
+            .frame(height: composerTextHeight)
 
             if draftMessage.isEmpty {
                 Text("Ask WordPress Agent")

@@ -4,8 +4,11 @@ import SwiftUI
 struct AgentComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
+    @Binding var height: CGFloat
 
     let fontSize: CGFloat
+    let minimumHeight: CGFloat
+    let maximumHeight: CGFloat
     let isDisabled: Bool
     let onSubmit: () -> Void
 
@@ -26,6 +29,9 @@ struct AgentComposerTextView: NSViewRepresentable {
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.wantsLayer = true
         scrollView.contentView.layer?.masksToBounds = true
+        scrollView.contentHeightDidChange = { [weak coordinator = context.coordinator] contentHeight in
+            coordinator?.updateHeight(contentHeight: contentHeight)
+        }
 
         let textView = NSTextView()
         textView.drawsBackground = false
@@ -50,6 +56,7 @@ struct AgentComposerTextView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
 
         context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
         scrollView.documentView = textView
         return scrollView
     }
@@ -65,6 +72,7 @@ struct AgentComposerTextView: NSViewRepresentable {
         textView.font = .systemFont(ofSize: fontSize)
         textView.isEditable = !isDisabled
         textView.isSelectable = true
+        (scrollView as? AgentComposerScrollView)?.updateDocumentLayout()
 
         if isDisabled,
            textView.window?.firstResponder === textView {
@@ -78,6 +86,7 @@ struct AgentComposerTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: AgentComposerTextView
         weak var textView: NSTextView?
+        weak var scrollView: NSScrollView?
 
         init(_ parent: AgentComposerTextView) {
             self.parent = parent
@@ -87,6 +96,7 @@ struct AgentComposerTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             parent.isFocused = true
             parent.text = textView.string
+            (scrollView as? AgentComposerScrollView)?.updateDocumentLayout()
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -112,17 +122,40 @@ struct AgentComposerTextView: NSViewRepresentable {
             parent.onSubmit()
             return true
         }
+
+        func updateHeight(contentHeight: CGFloat) {
+            let nextHeight = min(max(contentHeight, parent.minimumHeight), parent.maximumHeight)
+            let shouldScroll = contentHeight > parent.maximumHeight + 0.5
+
+            if scrollView?.hasVerticalScroller != shouldScroll {
+                scrollView?.hasVerticalScroller = shouldScroll
+            }
+
+            guard abs(parent.height - nextHeight) > 0.5 else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if abs(self.parent.height - nextHeight) > 0.5 {
+                    self.parent.height = nextHeight
+                }
+            }
+        }
     }
 }
 
 private final class AgentComposerScrollView: NSScrollView {
+    var contentHeightDidChange: ((CGFloat) -> Void)?
+
     override func layout() {
         super.layout()
+        updateDocumentLayout()
+    }
 
+    func updateDocumentLayout() {
         guard let textView = documentView as? NSTextView else { return }
         let contentSize = contentView.bounds.size
         let documentWidth = max(contentSize.width, 1)
-        let documentHeight = max(textView.frame.height, contentSize.height)
+        let contentHeight = Self.contentHeight(for: textView, width: documentWidth)
+        let documentHeight = max(contentHeight, contentSize.height)
         let targetSize = NSSize(width: documentWidth, height: documentHeight)
 
         textView.minSize = NSSize(width: 0, height: contentSize.height)
@@ -136,8 +169,25 @@ private final class AgentComposerScrollView: NSScrollView {
         )
 
         if abs(textView.frame.width - targetSize.width) > 0.5
-            || textView.frame.height < targetSize.height {
+            || abs(textView.frame.height - targetSize.height) > 0.5 {
             textView.setFrameSize(targetSize)
         }
+
+        contentHeightDidChange?(contentHeight)
+    }
+
+    private static func contentHeight(for textView: NSTextView, width: CGFloat) -> CGFloat {
+        guard let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager else {
+            return textView.textContainerInset.height * 2
+        }
+
+        textContainer.containerSize = NSSize(
+            width: max(width, 1),
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return ceil(usedRect.height + (textView.textContainerInset.height * 2))
     }
 }

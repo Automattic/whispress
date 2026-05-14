@@ -10,6 +10,7 @@ struct WordPressAgentUtilityOverlayView: View {
 
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
+    @State private var composerTextHeight: CGFloat = 44
     @FocusState private var isPromptFocused: Bool
 
     private var selectedConversation: WordPressAgentConversation? {
@@ -156,11 +157,14 @@ struct WordPressAgentUtilityOverlayView: View {
                     get: { isPromptFocused },
                     set: { isPromptFocused = $0 }
                 ),
+                height: $composerTextHeight,
                 fontSize: 15,
+                minimumHeight: 44,
+                maximumHeight: 160,
                 isDisabled: isComposerDisabled,
                 onSubmit: sendDraftMessage
             )
-            .frame(height: 44)
+            .frame(height: composerTextHeight)
 
             if draftMessage.isEmpty {
                 Text("Ask WordPress Agent")
