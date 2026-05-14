@@ -59,12 +59,12 @@ struct AgentComposerTextView: NSViewRepresentable {
         textView.isEditable = !isDisabled
         textView.isSelectable = true
 
-        if isFocused,
-           textView.window?.firstResponder !== textView {
-            textView.window?.makeFirstResponder(textView)
-        } else if !isFocused,
-                  textView.window?.firstResponder === textView {
+        if isDisabled,
+           textView.window?.firstResponder === textView {
             textView.window?.makeFirstResponder(nil)
+        } else if isFocused,
+                  textView.window?.firstResponder !== textView {
+            textView.window?.makeFirstResponder(textView)
         }
     }
 
@@ -78,6 +78,7 @@ struct AgentComposerTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            parent.isFocused = true
             parent.text = textView.string
         }
 
