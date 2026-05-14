@@ -1294,21 +1294,22 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
 
         private func loadPreviewURL(_ initialPreviewURL: URL, in webView: WKWebView) {
             reportPageUpdate(url: initialPreviewURL, title: nil, isLoading: true)
-            webView.load(URLRequest(url: initialPreviewURL))
 
             loadTask?.cancel()
             let siteID = siteID
             let appState = appState
+            guard let appState else {
+                webView.load(URLRequest(url: initialPreviewURL))
+                return
+            }
+
             loadTask = Task { @MainActor [weak self, weak webView] in
                 guard let webView else { return }
-                var previewURL = initialPreviewURL
-                if let appState {
-                    previewURL = await appState.resolvedWordPressAgentPreviewURL(initialPreviewURL, siteID: siteID)
-                    await appState.prepareWordPressAgentPreviewCookies(
-                        siteID: siteID,
-                        cookieStore: webView.configuration.websiteDataStore.httpCookieStore
-                    )
-                }
+                let previewURL = await appState.resolvedWordPressAgentPreviewURL(initialPreviewURL, siteID: siteID)
+                await appState.prepareWordPressAgentPreviewCookies(
+                    siteID: siteID,
+                    cookieStore: webView.configuration.websiteDataStore.httpCookieStore
+                )
                 guard !Task.isCancelled else { return }
                 self?.reportPageUpdate(url: previewURL, title: nil, isLoading: true)
                 webView.load(URLRequest(url: previewURL))

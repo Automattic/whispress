@@ -42,7 +42,11 @@ struct WPCOMAuthState: Codable, Equatable {
     var expirationDate: Date?
 
     var authorizationHeaderValue: String {
-        "\(tokenType.isEmpty ? "Bearer" : tokenType) \(accessToken)"
+        let trimmedTokenType = tokenType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheme = trimmedTokenType.isEmpty || trimmedTokenType.lowercased() == "bearer"
+            ? "Bearer"
+            : trimmedTokenType
+        return "\(scheme) \(accessToken)"
     }
 
     var needsRefresh: Bool {
@@ -1349,40 +1353,62 @@ final class WPCOMClient: NSObject {
             throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
         }
 
-        let loginURL = URL(string: "https://wordpress.com/wp-login.php")!
-        let authorizationHeader = try await authorizationHeaderValue()
-        var request = URLRequest(url: loginURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 15
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json,text/html", forHTTPHeaderField: "Accept")
-        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
-        request.httpBody = Self.formURLEncodedBody([
-            "log": trimmedUsername,
-            "pwd": "",
-            "rememberme": "forever",
-            "authorization": authorizationHeader,
-            "redirect_to": "https://wordpress.com/"
-        ])
+        let existingCookies = await Self.allCookies(in: cookieStore)
+        if Self.hasWordPressComAuthCookie(username: trimmedUsername, in: existingCookies) {
+            return
+        }
 
-        let session = sessionProvider.isolatedSession()
+        let request = try await wordPressComAuthRequest(username: trimmedUsername)
+        let session = sessionProvider.isolatedSession(bypassesSystemProxy: true)
         defer { session.finishTasksAndInvalidate() }
         let (_, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw WPCOMClientError.invalidResponse("No HTTP response")
         }
+        let sessionCookies = session.configuration.httpCookieStorage?.cookies ?? []
+        let responseCookies = Self.cookies(from: httpResponse, for: request.url!)
+
         guard (200...399).contains(httpResponse.statusCode) else {
             throw WPCOMClientError.requestFailed(httpResponse.statusCode, "")
         }
 
-        let cookies = (session.configuration.httpCookieStorage?.cookies ?? []) + Self.cookies(from: httpResponse, for: loginURL)
+        let cookies = sessionCookies + responseCookies
         guard !cookies.isEmpty else {
             throw WPCOMClientError.invalidResponse("WordPress.com did not return preview authentication cookies.")
         }
-        await Self.setCookies(cookies, into: cookieStore)
-        guard await Self.hasWordPressComAuthCookie(username: trimmedUsername, in: cookieStore) else {
+        guard Self.hasWordPressComAuthCookie(username: trimmedUsername, in: cookies) else {
             throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
         }
+
+        let cookiesToCopy = cookies.filter { !Self.isEmptyWordPressComAuthCookie($0) }
+        await Self.setCookies(cookiesToCopy, into: cookieStore)
+        let webViewCookies = await Self.allCookies(in: cookieStore)
+        guard Self.hasWordPressComAuthCookie(username: trimmedUsername, in: webViewCookies) else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
+        }
+    }
+
+    private func wordPressComAuthRequest(username: String) async throws -> URLRequest {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
+        }
+
+        let loginURL = URL(string: "https://wordpress.com/wp-login.php")!
+        let authorizationHeader = try await authorizationHeaderValue()
+
+        var request = URLRequest(url: loginURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.wordPressAppUserAgent(), forHTTPHeaderField: "User-Agent")
+        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+        request.httpBody = Self.formURLEncodedBody([
+            "log": trimmedUsername,
+            "rememberme": "true",
+            "authorization": authorizationHeader
+        ])
+        return request
     }
 
     func loadAtomicReadAccessCookies(siteID: Int, into cookieStore: WKHTTPCookieStore) async throws {
@@ -1400,8 +1426,8 @@ final class WPCOMClient: NSObject {
     func fetchSitePreviewOptions(siteID: Int) async throws -> WPCOMSitePreviewOptions {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)")!
         components.queryItems = [
-            URLQueryItem(name: "fields", value: "options"),
-            URLQueryItem(name: "options", value: "unmapped_url,frame_nonce")
+            URLQueryItem(name: "fields", value: "ID,options"),
+            URLQueryItem(name: "options", value: "unmapped_url,frame_nonce,jetpack_frame_nonce")
         ]
         let data = try await authenticatedData(for: components.url!, timeoutInterval: 15)
         let response = try JSONDecoder().decode(SitePreviewOptionsResponse.self, from: data)
@@ -1827,6 +1853,11 @@ final class WPCOMClient: NSObject {
         return HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
     }
 
+    private static func wordPressAppUserAgent() -> String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        return "WP Workspace/\(version) wp-mac/\(version)"
+    }
+
     @MainActor
     private static func setCookies(_ cookies: [HTTPCookie], into cookieStore: WKHTTPCookieStore) async {
         for cookie in cookies {
@@ -1838,9 +1869,7 @@ final class WPCOMClient: NSObject {
         }
     }
 
-    @MainActor
-    private static func hasWordPressComAuthCookie(username: String, in cookieStore: WKHTTPCookieStore) async -> Bool {
-        let cookies = await allCookies(in: cookieStore)
+    private static func hasWordPressComAuthCookie(username: String, in cookies: [HTTPCookie]) -> Bool {
         return cookies.contains { cookie in
             guard cookie.name.hasPrefix("wordpress_logged_in"),
                   cookie.domain == "wordpress.com" || cookie.domain.hasSuffix(".wordpress.com") else {
@@ -1848,6 +1877,16 @@ final class WPCOMClient: NSObject {
             }
             return cookie.value.components(separatedBy: "%").first == username
         }
+    }
+
+    private static func isEmptyWordPressComAuthCookie(_ cookie: HTTPCookie) -> Bool {
+        guard cookie.domain == "wordpress.com" || cookie.domain.hasSuffix(".wordpress.com") else {
+            return false
+        }
+        return (cookie.name.hasPrefix("wordpress_logged_in")
+            || cookie.name == "wordpress"
+            || cookie.name == "wordpress_sec")
+            && cookie.value.isEmpty
     }
 
     @MainActor

@@ -2139,11 +2139,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             os_log("WordPress.com preview cookie load failed: %{public}@", log: recordingLog, type: .error, error.localizedDescription)
         }
 
-        guard let siteID else { return }
-        do {
-            try await wpcomClient.loadAtomicReadAccessCookies(siteID: siteID, into: cookieStore)
-        } catch {
-            os_log("Atomic preview cookie load failed for site %{public}d: %{public}@", log: recordingLog, type: .error, siteID, error.localizedDescription)
+        if let siteID {
+            do {
+                try await wpcomClient.loadAtomicReadAccessCookies(siteID: siteID, into: cookieStore)
+            } catch {
+                os_log("Atomic preview cookie unavailable for site %{public}d: %{public}@", log: recordingLog, type: .info, siteID, error.localizedDescription)
+            }
         }
     }
 

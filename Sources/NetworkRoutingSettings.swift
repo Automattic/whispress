@@ -40,10 +40,15 @@ final class AppNetworkSessionProvider: @unchecked Sendable {
         try await currentSession().upload(for: request, from: bodyData)
     }
 
-    func isolatedSession() -> URLSession {
+    func isolatedSession(bypassesSystemProxy: Bool? = nil) -> URLSession {
         lock.lock()
         defer { lock.unlock() }
-        return Self.makeSession(settings: settings)
+        guard let bypassesSystemProxy else {
+            return Self.makeSession(settings: settings)
+        }
+        var effectiveSettings = settings
+        effectiveSettings.bypassesSystemProxy = bypassesSystemProxy
+        return Self.makeSession(settings: effectiveSettings)
     }
 
     private func currentSession() -> URLSession {
