@@ -13,7 +13,7 @@ struct WordPressAgentWindowView: View {
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
-    @State private var composerTextHeight: CGFloat = 46
+    @State private var composerTextHeight: CGFloat = 24
     @FocusState private var isComposerFocused: Bool
 
     private let workspaceMinimumWidth: CGFloat = 360
@@ -712,7 +712,7 @@ struct WordPressAgentWindowView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 10) {
+            VStack(spacing: 4) {
                 if !pendingImageURLs.isEmpty {
                     ComposerAttachmentStrip(fileURLs: pendingImageURLs) { url in
                         pendingImageURLs.removeAll { $0 == url }
@@ -829,7 +829,7 @@ struct WordPressAgentWindowView: View {
                 ),
                 height: $composerTextHeight,
                 fontSize: 16,
-                minimumHeight: 46,
+                minimumHeight: 24,
                 maximumHeight: 220,
                 isDisabled: isComposerInputDisabled,
                 onSubmit: sendDraftMessage

@@ -10,7 +10,7 @@ struct WordPressAgentUtilityOverlayView: View {
 
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
-    @State private var composerTextHeight: CGFloat = 44
+    @State private var composerTextHeight: CGFloat = 22
     @FocusState private var isPromptFocused: Bool
 
     private var selectedConversation: WordPressAgentConversation? {
@@ -36,7 +36,7 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             if !pendingImageURLs.isEmpty {
                 UtilityOverlayAttachmentStrip(fileURLs: pendingImageURLs) { url in
                     pendingImageURLs.removeAll { $0 == url }
@@ -159,7 +159,7 @@ struct WordPressAgentUtilityOverlayView: View {
                 ),
                 height: $composerTextHeight,
                 fontSize: 15,
-                minimumHeight: 44,
+                minimumHeight: 22,
                 maximumHeight: 160,
                 isDisabled: isComposerDisabled,
                 onSubmit: sendDraftMessage
