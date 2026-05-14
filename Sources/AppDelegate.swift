@@ -1054,8 +1054,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
 
         if let agentUtilityOverlayWindow, agentUtilityOverlayWindow.isVisible {
-            agentUtilityOverlayWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            bringWindowToFront(agentUtilityOverlayWindow)
             appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow.isKeyWindow)
             return
         }
@@ -1063,8 +1062,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if agentUtilityOverlayWindow == nil {
             presentWordPressAgentUtilityOverlay()
         } else {
-            agentUtilityOverlayWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            if let agentUtilityOverlayWindow {
+                bringWindowToFront(agentUtilityOverlayWindow)
+            }
             appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow?.isKeyWindow == true)
         }
     }
@@ -1107,12 +1107,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
         positionAgentUtilityOverlay(window)
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
 
         agentUtilityOverlayWindow = window
-        appState.setWordPressAgentUtilityOverlayFocused(window.isKeyWindow)
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
@@ -1142,6 +1138,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
+
+        bringWindowToFront(window)
+        appState.setWordPressAgentUtilityOverlayFocused(window.isKeyWindow)
     }
 
     private func dismissWordPressAgentUtilityOverlay(restoreActivationPolicy: Bool = true) {
@@ -1170,6 +1169,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    private func bringWindowToFront(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
     private func showWordPressAgentWindow(conversationID: String? = nil) {
         dismissWordPressAgentUtilityOverlay(restoreActivationPolicy: false)
         NSApp.setActivationPolicy(.regular)
@@ -1182,8 +1190,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let agentWindow, agentWindow.isVisible {
             expandAgentWindowForPreviewIfNeeded()
-            agentWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            bringWindowToFront(agentWindow)
             appState.setWordPressAgentWindowFocused(agentWindow.isKeyWindow)
             return
         }
@@ -1191,8 +1198,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if agentWindow == nil {
             presentWordPressAgentWindow()
         } else {
-            agentWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            if let agentWindow {
+                bringWindowToFront(agentWindow)
+            }
             appState.setWordPressAgentWindowFocused(agentWindow?.isKeyWindow == true)
         }
     }
@@ -1218,10 +1226,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         agentWindow = window
         expandAgentWindowForPreviewIfNeeded(animated: false)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
-        appState.setWordPressAgentWindowFocused(window.isKeyWindow)
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
@@ -1251,6 +1255,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
+
+        bringWindowToFront(window)
+        appState.setWordPressAgentWindowFocused(window.isKeyWindow)
     }
 
     private func handleOpenedImageURLs(_ urls: [URL]) {
