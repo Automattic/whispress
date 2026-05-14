@@ -1424,7 +1424,11 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                     return
                 }
 
-                visiblePreviewURL = Self.redactedPreviewDisplayURL(url)
+                // Allow same-frame preview navigations, but do not copy WebKit's
+                // actual URL back into the visible header. WordPress.com preview
+                // frames can move through public-api proxy URLs and fragment-based
+                // return URLs; those are implementation details, not the URL the
+                // user asked the preview panel to open.
                 decisionHandler(.allow)
                 return
             }
