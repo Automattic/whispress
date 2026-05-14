@@ -902,8 +902,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = self?.appState.setShortcut(.disabled, for: role)
         }
         disabledItem.state = currentBinding.isDisabled ? .on : .off
-        disabledItem.isEnabled = role == .agentUtilityOverlay
-            || !(role == .hold ? appState.toggleShortcut : appState.holdShortcut).isDisabled
+        disabledItem.isEnabled = true
         menu.addItem(disabledItem)
 
         for preset in ShortcutPreset.allCases {

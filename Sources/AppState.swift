@@ -3042,10 +3042,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let nextHoldShortcut = role == .hold ? binding : holdShortcut
         let nextToggleShortcut = role == .toggle ? binding : toggleShortcut
         let nextAgentUtilityOverlayShortcut = role == .agentUtilityOverlay ? binding : agentUtilityOverlayShortcut
-        if role != .agentUtilityOverlay && nextHoldShortcut.isDisabled && nextToggleShortcut.isDisabled {
-            return "At least one shortcut must remain enabled."
-        }
-
         let nextShortcuts: [(role: ShortcutRole, binding: ShortcutBinding)] = [
             (.hold, nextHoldShortcut),
             (.toggle, nextToggleShortcut),
