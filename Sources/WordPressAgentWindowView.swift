@@ -1,7 +1,10 @@
 import AppKit
+import os.log
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
+
+private let wordpressAgentPreviewLog = OSLog(subsystem: "com.automattic.wpworkspace", category: "WordPressAgentPreview")
 
 struct WordPressAgentWindowView: View {
     @EnvironmentObject var appState: AppState
@@ -584,7 +587,7 @@ struct WordPressAgentWindowView: View {
                 return .handled
             }
 
-            guard let previewURL = WordPressAgentPreviewURLResolver.previewURL(forPossiblyBare: url) else {
+            guard let previewURL = WordPressAgentPreviewURLResolver.panelURL(forPossiblyBare: url) else {
                 NSWorkspace.shared.open(WordPressAgentPreviewURLResolver.defaultOpenURL(forPossiblyBare: url) ?? url)
                 return .handled
             }
@@ -1004,6 +1007,7 @@ private struct WordPressAgentPreviewPanel: View {
     let onPageUpdate: (UUID, URL?, String?, Bool) -> Void
 
     @State private var previewReloadTrigger = 0
+    @State private var requestedURLOverride: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1031,6 +1035,10 @@ private struct WordPressAgentPreviewPanel: View {
                 }
 
                 Spacer(minLength: 10)
+
+                if let postURLs = previewPostURLs {
+                    previewModeSwitch(postURLs: postURLs)
+                }
 
                 Button {
                     previewReloadTrigger += 1
@@ -1066,13 +1074,83 @@ private struct WordPressAgentPreviewPanel: View {
 
             WordPressAgentWebPreview(
                 previewID: preview.id,
-                url: preview.url,
+                url: requestedURLOverride ?? preview.url,
+                siteID: preview.siteID,
                 reloadTrigger: previewReloadTrigger,
                 onPageUpdate: onPageUpdate
             )
                 .id(preview.id)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: preview.id) { _ in
+            requestedURLOverride = nil
+        }
+    }
+
+    private var previewPostURLs: WordPressAgentPreviewPostURLs? {
+        WordPressAgentPreviewURLResolver.previewPostURLs(for: preview.currentURL)
+            ?? WordPressAgentPreviewURLResolver.previewPostURLs(for: requestedURLOverride ?? preview.url)
+    }
+
+    private var activePreviewViewMode: WordPressAgentPreviewViewMode? {
+        WordPressAgentPreviewURLResolver.viewMode(for: preview.currentURL)
+            ?? WordPressAgentPreviewURLResolver.viewMode(for: requestedURLOverride ?? preview.url)
+    }
+
+    private func previewModeSwitch(postURLs: WordPressAgentPreviewPostURLs) -> some View {
+        HStack(spacing: 0) {
+            previewModeButton(.preview, postURLs: postURLs)
+            previewModeButton(.edit, postURLs: postURLs)
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AgentPalette.separator, lineWidth: 1)
+        )
+    }
+
+    private func previewModeButton(
+        _ mode: WordPressAgentPreviewViewMode,
+        postURLs: WordPressAgentPreviewPostURLs
+    ) -> some View {
+        let isActive = activePreviewViewMode == mode
+        return Button {
+            requestedURLOverride = postURLs.url(for: mode)
+        } label: {
+            Image(systemName: previewModeIconName(mode))
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+        )
+        .help(previewModeHelp(mode))
+    }
+
+    private func previewModeIconName(_ mode: WordPressAgentPreviewViewMode) -> String {
+        switch mode {
+        case .preview:
+            return "eye"
+        case .edit:
+            return "square.and.pencil"
+        }
+    }
+
+    private func previewModeHelp(_ mode: WordPressAgentPreviewViewMode) -> String {
+        switch mode {
+        case .preview:
+            return "Show preview"
+        case .edit:
+            return "Edit post"
+        }
     }
 }
 
@@ -1217,8 +1295,11 @@ private final class PreviewResizeHandleView: NSView {
 }
 
 private struct WordPressAgentWebPreview: NSViewRepresentable {
+    @EnvironmentObject var appState: AppState
+
     let previewID: UUID
     let url: URL
+    let siteID: Int?
     let reloadTrigger: Int
     let onPageUpdate: (UUID, URL?, String?, Bool) -> Void
 
@@ -1229,24 +1310,26 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.userContentController.addUserScript(Coordinator.editModeChromeReductionUserScript)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         context.coordinator.previewID = previewID
         context.coordinator.onPageUpdate = onPageUpdate
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        context.coordinator.load(url, in: webView)
+        context.coordinator.load(url, siteID: siteID, appState: appState, in: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.previewID = previewID
         context.coordinator.onPageUpdate = onPageUpdate
-        context.coordinator.load(url, in: webView)
+        context.coordinator.load(url, siteID: siteID, appState: appState, in: webView)
         context.coordinator.reloadIfNeeded(reloadTrigger, in: webView)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.cancel()
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -1256,31 +1339,80 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         var previewID: UUID
         var onPageUpdate: (UUID, URL?, String?, Bool) -> Void
         private var loadedURL: URL?
+        // Keep the user's requested URL separate from the URL WebKit actually
+        // loads. The effective URL can include frame-nonce and unmapped-host
+        // details that should stay internal to the preview frame.
+        private var visiblePreviewURL: URL?
+        private var internalEffectivePreviewURL: URL?
+        private var isShowingPreparationBackground = false
         private var lastReloadTrigger = 0
         private var lastReportedURL: URL?
         private var lastReportedTitle: String?
         private var lastReportedIsLoading: Bool?
+        private weak var appState: AppState?
+        private var siteID: Int?
+        private var loadTask: Task<Void, Never>?
 
         init(previewID: UUID, onPageUpdate: @escaping (UUID, URL?, String?, Bool) -> Void) {
             self.previewID = previewID
             self.onPageUpdate = onPageUpdate
         }
 
-        func load(_ url: URL, in webView: WKWebView) {
-            let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
-            guard loadedURL != previewURL else { return }
-            loadedURL = previewURL
-            loadPreviewURL(previewURL, in: webView)
+        func load(_ url: URL, siteID: Int?, appState: AppState, in webView: WKWebView) {
+            self.siteID = siteID
+            self.appState = appState
+
+            let initialPreviewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
+            guard loadedURL != initialPreviewURL else { return }
+            loadedURL = initialPreviewURL
+            loadPreviewURL(initialPreviewURL, in: webView)
         }
 
         private func navigate(_ url: URL, in webView: WKWebView) {
-            let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+            let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
             loadPreviewURL(previewURL, in: webView)
         }
 
-        private func loadPreviewURL(_ previewURL: URL, in webView: WKWebView) {
-            reportPageUpdate(url: previewURL, title: nil, isLoading: true)
-            webView.load(URLRequest(url: previewURL))
+        private func loadPreviewURL(_ initialPreviewURL: URL, in webView: WKWebView) {
+            let requestedPreviewURL = Self.redactedPreviewDisplayURL(initialPreviewURL)
+            visiblePreviewURL = requestedPreviewURL
+            internalEffectivePreviewURL = nil
+
+            loadTask?.cancel()
+            let siteID = siteID
+            let appState = appState
+            guard let appState else {
+                isShowingPreparationBackground = false
+                reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
+                webView.load(URLRequest(url: initialPreviewURL))
+                return
+            }
+
+            // Do not start a speculative WebView navigation before auth prep.
+            // Draft previews are very sensitive to the first request: simple
+            // WordPress.com sites can answer an unauthenticated hit with a public
+            // 404 or wp-login page, and WebKit will show that stale-looking state
+            // while the cookie bootstrap is still running. Resolve the preview
+            // URL, copy cookies into WebKit, then make the first real load.
+            showPreparationBackground(in: webView, visibleURL: requestedPreviewURL)
+            loadTask = Task { @MainActor [weak self, weak webView] in
+                guard let webView else { return }
+                let previewURL = await appState.resolvedWordPressAgentPreviewURL(initialPreviewURL, siteID: siteID)
+                await appState.prepareWordPressAgentPreviewCookies(
+                    siteID: siteID,
+                    cookieStore: webView.configuration.websiteDataStore.httpCookieStore
+                )
+                guard !Task.isCancelled else { return }
+                self?.internalEffectivePreviewURL = previewURL
+                self?.isShowingPreparationBackground = false
+                self?.reportPageUpdate(url: requestedPreviewURL, title: nil, isLoading: true)
+                webView.load(URLRequest(url: previewURL))
+            }
+        }
+
+        func cancel() {
+            loadTask?.cancel()
+            loadTask = nil
         }
 
         func reloadIfNeeded(_ trigger: Int, in webView: WKWebView) {
@@ -1291,14 +1423,26 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: true)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: true)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1307,6 +1451,11 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             didFail navigation: WKNavigation!,
             withError error: Error
         ) {
+            os_log("Failed WordPress Agent preview navigation: %{public}@", log: wordpressAgentPreviewLog, type: .error, error.localizedDescription)
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1315,6 +1464,11 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             didFailProvisionalNavigation navigation: WKNavigation!,
             withError error: Error
         ) {
+            os_log("Failed provisional WordPress Agent preview navigation: %{public}@", log: wordpressAgentPreviewLog, type: .error, error.localizedDescription)
+            guard !isShowingPreparationBackground else {
+                reportPreparationBackgroundUpdate()
+                return
+            }
             reportPageUpdate(webView, isLoading: false)
         }
 
@@ -1333,13 +1487,22 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 return
             }
 
-            if let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) {
+            if let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) {
+                if internalEffectivePreviewURL == url {
+                    decisionHandler(.allow)
+                    return
+                }
+
                 if previewURL.absoluteString != url.absoluteString || navigationAction.targetFrame == nil {
                     decisionHandler(.cancel)
                     navigate(previewURL, in: webView)
                     return
                 }
 
+                if navigationAction.targetFrame?.isMainFrame != false,
+                   Self.isDisplayablePreviewNavigationURL(url) {
+                    visiblePreviewURL = Self.redactedPreviewDisplayURL(url)
+                }
                 decisionHandler(.allow)
                 return
             }
@@ -1366,7 +1529,18 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         private func reportPageUpdate(_ webView: WKWebView, isLoading: Bool) {
-            reportPageUpdate(url: webView.url, title: webView.title, isLoading: isLoading)
+            let safeURL = visiblePreviewURL ?? webView.url.map(Self.redactedPreviewDisplayURL)
+            reportPageUpdate(url: safeURL, title: webView.title, isLoading: isLoading)
+        }
+
+        private func showPreparationBackground(in webView: WKWebView, visibleURL: URL) {
+            isShowingPreparationBackground = true
+            reportPageUpdate(url: visibleURL, title: nil, isLoading: true)
+            webView.loadHTMLString(Self.previewPreparationHTML, baseURL: nil)
+        }
+
+        private func reportPreparationBackgroundUpdate() {
+            reportPageUpdate(url: visiblePreviewURL, title: nil, isLoading: true)
         }
 
         private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
@@ -1389,6 +1563,212 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 return false
             }
         }
+
+        private static func isDisplayablePreviewNavigationURL(_ url: URL) -> Bool {
+            guard !isWordPressComPreviewInfrastructureURL(url) else {
+                return false
+            }
+            return true
+        }
+
+        private static func isWordPressComPreviewInfrastructureURL(_ url: URL) -> Bool {
+            guard let host = url.host?.lowercased() else { return false }
+            let path = url.path.lowercased()
+
+            if host == "public-api.wordpress.com" {
+                return true
+            }
+
+            guard host == "wordpress.com" || host.hasSuffix(".wordpress.com") else {
+                return false
+            }
+
+            return path == "/wp-login.php"
+                || path.hasPrefix("/log-in")
+                || path.hasPrefix("/oauth")
+        }
+
+        private static func redactedPreviewDisplayURL(_ url: URL) -> URL {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let queryItems = components.queryItems else {
+                return url
+            }
+
+            let redactedQueryItems = queryItems.filter { item in
+                !Self.sensitivePreviewQueryItemNames.contains(item.name.lowercased())
+            }
+            components.queryItems = redactedQueryItems.isEmpty ? nil : redactedQueryItems
+            return components.url ?? url
+        }
+
+        private static let sensitivePreviewQueryItemNames: Set<String> = [
+            "frame-nonce",
+            "nonce",
+            "_wpnonce"
+        ]
+
+        static let editModeChromeReductionUserScript = WKUserScript(
+            source: """
+            (() => {
+                const isPostEditor = () => /\\/wp-admin\\/(post|post-new)\\.php$/i.test(window.location.pathname);
+                if (!isPostEditor()) {
+                    return;
+                }
+
+                const styleID = "wpworkspace-compact-editor-style";
+                const css = `
+                    html.wp-toolbar,
+                    html.wp-toolbar body,
+                    body.wp-admin,
+                    body.admin-bar {
+                        padding-top: 0 !important;
+                        margin-top: 0 !important;
+                    }
+
+                    #wpadminbar,
+                    #wpcom-admin-bar,
+                    #adminmenuback,
+                    #adminmenuwrap,
+                    #adminmenumain,
+                    #wpfooter,
+                    #screen-meta,
+                    #screen-meta-links,
+                    .masterbar,
+                    .wpcom-masterbar,
+                    .wpcom-admin-bar,
+                    .wordpress-admin-bar {
+                        display: none !important;
+                    }
+
+                    #wpcontent,
+                    #wpbody,
+                    #wpbody-content {
+                        margin-left: 0 !important;
+                        padding-left: 0 !important;
+                    }
+
+                    .interface-interface-skeleton,
+                    .edit-post-layout,
+                    .edit-post-editor-regions__content {
+                        top: 0 !important;
+                    }
+                `;
+
+                const installStyle = () => {
+                    if (!isPostEditor() || document.getElementById(styleID)) {
+                        return;
+                    }
+                    const style = document.createElement("style");
+                    style.id = styleID;
+                    style.textContent = css;
+                    (document.head || document.documentElement).appendChild(style);
+                };
+
+                const markDocument = () => {
+                    if (!isPostEditor()) {
+                        return;
+                    }
+                    document.documentElement.classList.add("wpworkspace-compact-editor");
+                    document.body?.classList.add("wpworkspace-compact-editor");
+                };
+
+                installStyle();
+                markDocument();
+                new MutationObserver(() => {
+                    installStyle();
+                    markDocument();
+                }).observe(document.documentElement, { childList: true, subtree: true });
+            })();
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+
+        private static let previewPreparationHTML = """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="color-scheme" content="light dark">
+        <style>
+        :root {
+            color-scheme: light dark;
+            --background: #ffffff;
+            --foreground: #1e1e1e;
+            --muted: #787c82;
+            --ring: rgba(56, 88, 233, 0.28);
+            --accent: #3858e9;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --background: #101114;
+                --foreground: #f5f5f5;
+                --muted: #a7aaad;
+                --ring: rgba(96, 128, 255, 0.32);
+                --accent: #7b90ff;
+            }
+        }
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: var(--background);
+            color: var(--foreground);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+        }
+        body {
+            display: grid;
+            place-items: center;
+        }
+        .preview-loader {
+            display: grid;
+            justify-items: center;
+            gap: 14px;
+            text-align: center;
+            transform: translateY(-4vh);
+        }
+        .mark {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            border: 1px solid var(--ring);
+            display: grid;
+            place-items: center;
+            color: var(--accent);
+        }
+        .spinner {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 2px solid var(--ring);
+            border-top-color: var(--accent);
+            animation: spin 0.9s linear infinite;
+        }
+        .label {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0;
+        }
+        .detail {
+            font-size: 12px;
+            color: var(--muted);
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        </style>
+        </head>
+        <body>
+            <main class="preview-loader" aria-live="polite">
+                <div class="mark"><div class="spinner"></div></div>
+                <div>
+                    <div class="label">Preparing preview</div>
+                    <div class="detail">Checking access</div>
+                </div>
+            </main>
+        </body>
+        </html>
+        """
     }
 }
 

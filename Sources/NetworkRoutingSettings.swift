@@ -40,6 +40,22 @@ final class AppNetworkSessionProvider: @unchecked Sendable {
         try await currentSession().upload(for: request, from: bodyData)
     }
 
+    func isolatedSession(bypassesSystemProxy: Bool? = nil) -> URLSession {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let bypassesSystemProxy else {
+            return Self.makeSession(settings: settings)
+        }
+
+        // Most callers should use `currentSession()` so they honor the global
+        // routing preference. This factory is for one-off infrastructure flows,
+        // especially the WordPress.com preview cookie bootstrap, that need a
+        // temporary routing override without changing the rest of the app.
+        var effectiveSettings = settings
+        effectiveSettings.bypassesSystemProxy = bypassesSystemProxy
+        return Self.makeSession(settings: effectiveSettings)
+    }
+
     private func currentSession() -> URLSession {
         lock.lock()
         defer { lock.unlock() }
@@ -53,6 +69,8 @@ final class AppNetworkSessionProvider: @unchecked Sendable {
     private static func makeConfiguration(settings: NetworkRoutingSettings) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         if settings.bypassesSystemProxy {
+            // An empty proxy dictionary is URLSession's escape hatch for "do not
+            // auto-discover or use the system proxy" for this configuration.
             configuration.connectionProxyDictionary = [:]
         }
         return configuration

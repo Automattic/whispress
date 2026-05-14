@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import WebKit
 
 enum WPCOMClientError: LocalizedError {
     case missingOAuthCredentials
@@ -41,7 +42,11 @@ struct WPCOMAuthState: Codable, Equatable {
     var expirationDate: Date?
 
     var authorizationHeaderValue: String {
-        "\(tokenType.isEmpty ? "Bearer" : tokenType) \(accessToken)"
+        let trimmedTokenType = tokenType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheme = trimmedTokenType.isEmpty || trimmedTokenType.lowercased() == "bearer"
+            ? "Bearer"
+            : trimmedTokenType
+        return "\(scheme) \(accessToken)"
     }
 
     var needsRefresh: Bool {
@@ -210,6 +215,11 @@ struct WPCOMSite: Codable, Identifiable, Equatable {
         }
         return "https://\(value.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
     }
+}
+
+struct WPCOMSitePreviewOptions: Equatable {
+    let unmappedURL: String?
+    let frameNonce: String?
 }
 
 struct WPCOMSiteIcon: Codable, Equatable {
@@ -500,7 +510,7 @@ struct WPCOMAgentFrontendAbility: Encodable, Equatable {
             "properties": .object([
                 "url": .object([
                     "type": .string("string"),
-                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WP Workspace will treat them as https URLs. WordPress wp-admin post edit links are shown as their public post URLs.")
+                    "description": .string("The absolute http or https URL to preview. Bare domains can be passed and WP Workspace will treat them as https URLs. WordPress wp-admin post edit links and frontend post ID URLs are opened with preview=true when possible.")
                 ]),
                 "title": .object([
                     "type": .string("string"),
@@ -852,6 +862,109 @@ final class WPCOMClient: NSObject {
 
     private struct SitesResponse: Decodable {
         let sites: [WPCOMSite]
+    }
+
+    private struct AtomicReadAccessCookiesResponse: Decodable {
+        let url: String?
+        let cookies: [AtomicReadAccessCookie]
+    }
+
+    private struct SitePreviewOptionsResponse: Decodable {
+        let options: SitePreviewOptions?
+    }
+
+    private struct SitePreviewOptions: Decodable {
+        let unmappedURL: String?
+        let frameNonce: String?
+        let jetpackFrameNonce: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case unmappedURL = "unmapped_url"
+            case frameNonce = "frame_nonce"
+            case jetpackFrameNonce = "jetpack_frame_nonce"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            unmappedURL = Self.decodeString(container, forKey: .unmappedURL)
+            frameNonce = Self.decodeString(container, forKey: .frameNonce)
+            jetpackFrameNonce = Self.decodeString(container, forKey: .jetpackFrameNonce)
+        }
+
+        var previewOptions: WPCOMSitePreviewOptions {
+            // Simple WordPress.com sites usually expose `frame_nonce`; Jetpack/Atomic
+            // responses can expose the same preview-frame token as `jetpack_frame_nonce`.
+            // The preview URL builder only needs one nonce, so prefer the generic name
+            // and fall back to the Jetpack-specific field when needed.
+            WPCOMSitePreviewOptions(unmappedURL: unmappedURL, frameNonce: frameNonce ?? jetpackFrameNonce)
+        }
+
+        private static func decodeString(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> String? {
+            guard let value = try? container.decode(String.self, forKey: key) else {
+                return nil
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private struct AtomicReadAccessCookie: Decodable {
+        let name: String
+        let value: String
+        let domain: String?
+        let path: String?
+        let expires: Date?
+        let secure: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case value
+            case domain
+            case path
+            case expires
+            case secure
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            value = try container.decode(String.self, forKey: .value)
+            domain = try? container.decode(String.self, forKey: .domain)
+            path = try? container.decode(String.self, forKey: .path)
+            secure = (try? container.decode(Bool.self, forKey: .secure)) ?? false
+
+            if let timestamp = try? container.decode(TimeInterval.self, forKey: .expires), timestamp > 0 {
+                expires = Date(timeIntervalSince1970: timestamp)
+            } else if let timestampString = try? container.decode(String.self, forKey: .expires),
+                      let timestamp = TimeInterval(timestampString),
+                      timestamp > 0 {
+                expires = Date(timeIntervalSince1970: timestamp)
+            } else {
+                expires = nil
+            }
+        }
+
+        func httpCookie(defaultDomain: String?) -> HTTPCookie? {
+            let resolvedDomain = domain?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackDomain = defaultDomain?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let cookieDomain = [resolvedDomain, fallbackDomain].compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
+                return nil
+            }
+
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .domain: cookieDomain,
+                .path: path?.isEmpty == false ? path! : "/"
+            ]
+            if let expires {
+                properties[.expires] = expires
+            }
+            if secure {
+                properties[.secure] = "TRUE"
+            }
+            return HTTPCookie(properties: properties)
+        }
     }
 
     private struct AgentRPCRequest: Encodable {
@@ -1237,8 +1350,129 @@ final class WPCOMClient: NSObject {
         components.queryItems = [
             URLQueryItem(name: "fields", value: "ID,display_name,username,email,avatar_URL,profile_URL")
         ]
-        let data = try await authenticatedData(for: components.url!)
+        let data = try await authenticatedData(for: components.url!, timeoutInterval: 15)
         return try JSONDecoder().decode(WPCOMUser.self, from: data)
+    }
+
+    func loadWordPressComAuthCookies(username: String, into cookieStore: WKHTTPCookieStore) async throws {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
+        }
+
+        // The preview WebView needs real WordPress.com browser cookies, not just the
+        // REST API bearer token used by native requests. Reuse an existing valid
+        // WebKit cookie so reloads and back/forward navigation do not repeatedly
+        // ask wp-login.php to mint another browser session.
+        let existingCookies = await Self.allCookies(in: cookieStore)
+        if Self.hasWordPressComAuthCookie(username: trimmedUsername, in: existingCookies) {
+            return
+        }
+
+        let request = try await wordPressComAuthRequest(username: trimmedUsername)
+
+        // Use a one-off URLSession that bypasses the system proxy only for this
+        // cookie-bootstrap request. We observed the macOS proxy path turning the
+        // mobile token login into a normal 200 login page response with empty
+        // `wordpress_logged_in`/`wordpress_sec` cookies. Direct routing returns
+        // the expected redirect plus real cookies. Keep the user's proxy setting
+        // for normal API traffic; this special case exists because wp-login.php is
+        // browser cookie infrastructure, not a normal JSON API endpoint.
+        let session = sessionProvider.isolatedSession(bypassesSystemProxy: true)
+        defer { session.finishTasksAndInvalidate() }
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw WPCOMClientError.invalidResponse("No HTTP response")
+        }
+
+        // URLSession may move Set-Cookie values into its private cookie storage
+        // before returning, while some responses still expose cookies in headers.
+        // Merge both sources and validate the combined set before copying anything
+        // into WebKit.
+        let sessionCookies = session.configuration.httpCookieStorage?.cookies ?? []
+        let responseCookies = Self.cookies(from: httpResponse, for: request.url!)
+
+        guard (200...399).contains(httpResponse.statusCode) else {
+            throw WPCOMClientError.requestFailed(httpResponse.statusCode, "")
+        }
+
+        let cookies = sessionCookies + responseCookies
+        guard !cookies.isEmpty else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return preview authentication cookies.")
+        }
+        guard Self.hasWordPressComAuthCookie(username: trimmedUsername, in: cookies) else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
+        }
+
+        // A failed bootstrap can return empty WordPress.com auth cookies. Do not
+        // copy those into the WebView, because an empty cookie with the same name
+        // can overwrite a previously usable browser session.
+        let cookiesToCopy = cookies.filter { !Self.isEmptyWordPressComAuthCookie($0) }
+        await Self.setCookies(cookiesToCopy, into: cookieStore)
+        let webViewCookies = await Self.allCookies(in: cookieStore)
+        guard Self.hasWordPressComAuthCookie(username: trimmedUsername, in: webViewCookies) else {
+            throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
+        }
+    }
+
+    private func wordPressComAuthRequest(username: String) async throws -> URLRequest {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUsername.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
+        }
+
+        let loginURL = URL(string: "https://wordpress.com/wp-login.php")!
+        let authorizationHeader = try await authorizationHeaderValue()
+
+        var request = URLRequest(url: loginURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.wordPressAppUserAgent(), forHTTPHeaderField: "User-Agent")
+        request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+
+        // WordPress.com mobile clients authenticate wp-login.php by sending the
+        // bearer token in form data. Keep the Authorization header too, but do not
+        // rely on it: login infrastructure can fail to pass HTTP_AUTHORIZATION
+        // through to PHP on wp-login.php. The empty password and redirect fields
+        // mirror the mobile-compatible path and keep this as a cookie bootstrap,
+        // not a password login attempt.
+        request.httpBody = Self.formURLEncodedBody([
+            "log": trimmedUsername,
+            "pwd": "",
+            "rememberme": "forever",
+            "authorization": authorizationHeader,
+            "redirect_to": "https://wordpress.com/"
+        ])
+        return request
+    }
+
+    func loadAtomicReadAccessCookies(siteID: Int, into cookieStore: WKHTTPCookieStore) async throws {
+        let url = URL(string: "https://public-api.wordpress.com/wpcom/v2/sites/\(siteID)/atomic-auth-proxy/read-access-cookies")!
+        let data = try await authenticatedData(for: url, timeoutInterval: 15)
+        let response = try JSONDecoder().decode(AtomicReadAccessCookiesResponse.self, from: data)
+        let defaultDomain = response.url.flatMap { URL(string: $0)?.host }
+        let cookies = response.cookies.compactMap { $0.httpCookie(defaultDomain: defaultDomain) }
+        guard !cookies.isEmpty else {
+            throw WPCOMClientError.invalidResponse("Atomic read access response did not include cookies.")
+        }
+        await Self.setCookies(cookies, into: cookieStore)
+    }
+
+    func fetchSitePreviewOptions(siteID: Int) async throws -> WPCOMSitePreviewOptions {
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)")!
+        // These options let us turn a public-looking post URL into the private
+        // preview URL WordPress.com expects: unmapped host first, then the frame
+        // nonce used by the preview shell. Request both nonce spellings because
+        // simple WordPress.com and Jetpack/Atomic sites have not always exposed
+        // the field under the same option name.
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "ID,options"),
+            URLQueryItem(name: "options", value: "unmapped_url,frame_nonce,jetpack_frame_nonce")
+        ]
+        let data = try await authenticatedData(for: components.url!, timeoutInterval: 15)
+        let response = try JSONDecoder().decode(SitePreviewOptionsResponse.self, from: data)
+        return response.options?.previewOptions ?? WPCOMSitePreviewOptions(unmappedURL: nil, frameNonce: nil)
     }
 
     func fetchAgentConversationSummaries(
@@ -1612,7 +1846,14 @@ final class WPCOMClient: NSObject {
     }
 
     private func authenticatedData(for url: URL) async throws -> Data {
+        try await authenticatedData(for: url, timeoutInterval: nil)
+    }
+
+    private func authenticatedData(for url: URL, timeoutInterval: TimeInterval?) async throws -> Data {
         var request = URLRequest(url: url)
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
         let (data, response) = try await sessionProvider.data(for: request)
         try validate(response: response, data: data)
@@ -1636,6 +1877,65 @@ final class WPCOMClient: NSObject {
         guard (200...299).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw WPCOMClientError.requestFailed(httpResponse.statusCode, body)
+        }
+    }
+
+    private static func formURLEncodedBody(_ fields: [String: String]) -> Data? {
+        var components = URLComponents()
+        components.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
+        return components.percentEncodedQuery?.data(using: .utf8)
+    }
+
+    private static func cookies(from response: HTTPURLResponse, for url: URL) -> [HTTPCookie] {
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+            guard let key = pair.key as? String, let value = pair.value as? String else { return }
+            result[key] = value
+        }
+        return HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+    }
+
+    private static func wordPressAppUserAgent() -> String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        return "WP Workspace/\(version) wp-mac/\(version)"
+    }
+
+    @MainActor
+    private static func setCookies(_ cookies: [HTTPCookie], into cookieStore: WKHTTPCookieStore) async {
+        for cookie in cookies {
+            await withCheckedContinuation { continuation in
+                cookieStore.setCookie(cookie) {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func hasWordPressComAuthCookie(username: String, in cookies: [HTTPCookie]) -> Bool {
+        return cookies.contains { cookie in
+            guard cookie.name.hasPrefix("wordpress_logged_in"),
+                  cookie.domain == "wordpress.com" || cookie.domain.hasSuffix(".wordpress.com") else {
+                return false
+            }
+            return cookie.value.components(separatedBy: "%").first == username
+        }
+    }
+
+    private static func isEmptyWordPressComAuthCookie(_ cookie: HTTPCookie) -> Bool {
+        guard cookie.domain == "wordpress.com" || cookie.domain.hasSuffix(".wordpress.com") else {
+            return false
+        }
+        return (cookie.name.hasPrefix("wordpress_logged_in")
+            || cookie.name == "wordpress"
+            || cookie.name == "wordpress_sec")
+            && cookie.value.isEmpty
+    }
+
+    @MainActor
+    private static func allCookies(in cookieStore: WKHTTPCookieStore) async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            cookieStore.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
         }
     }
 
