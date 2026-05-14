@@ -211,10 +211,11 @@ struct SetupView: View {
                     .frame(width: 88, height: 88)
                     .shadow(color: Color.black.opacity(0.12), radius: 12, y: 6)
 
-                Text("WordPress.com")
+                Text("Choose a default site")
                     .font(WordPressWorkspaceBrand.displayFont(size: 32))
+                    .multilineTextAlignment(.center)
 
-                Text("Sign in and choose the site you want to work with.")
+                Text("This is only the starting site for new chats, uploads, screenshots, and dictation. You can switch sites anytime in WordPress Agent.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -254,6 +255,10 @@ struct SetupView: View {
                     .disabled(!appState.isWordPressComSignedIn || appState.isRefreshingWordPressComSites)
 
                     if !appState.wordpressComSites.isEmpty {
+                        Text("Default Site")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
                         WordPressSiteSearchPicker(
                             sites: appState.wordpressComSitesSortedByStarred,
                             selectedSiteID: Binding(
