@@ -144,7 +144,7 @@ struct WordPressAgentWindowView: View {
                 sidebarTitleBar
                 sidebarSearchField
             }
-            .padding(.top, 48)
+            .padding(.top, 14)
             .padding(.horizontal, 20)
             .padding(.bottom, 12)
 
@@ -601,20 +601,6 @@ struct WordPressAgentWindowView: View {
 
     private var workspaceHeader: some View {
         HStack(spacing: 12) {
-            Button {
-                _ = appState.startWordPressAgentConversation(siteID: activeSiteID)
-                isComposerFocused = true
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 17, weight: .medium))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Start agent session")
-            .disabled(activeSiteID == nil)
-
             AgentHeaderPill(
                 site: activeSite,
                 conversation: selectedConversation
@@ -644,8 +630,7 @@ struct WordPressAgentWindowView: View {
         }
         .padding(.leading, 24)
         .padding(.trailing, 24)
-        .padding(.top, 18)
-        .padding(.bottom, 10)
+        .frame(height: 58)
     }
 
     private var emptyWorkspace: some View {
@@ -2052,16 +2037,9 @@ private struct AgentHeaderPill: View {
                     .frame(width: 28, height: 28)
             }
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(site?.displayName ?? conversation?.title ?? "WordPress Agent")
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
-
-                Text(conversation?.key.agentID ?? "dolly")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(site?.displayName ?? conversation?.title ?? "WordPress Agent")
+                .font(.system(size: 17, weight: .semibold))
+                .lineLimit(1)
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .semibold))
