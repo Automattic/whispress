@@ -32,9 +32,11 @@ if [ ! -f "$PLIST" ]; then
 fi
 
 # Command substitution strips the trailing newline plutil emits, so [ -z ] gives
-# the right answer for both the unset-key and empty-string cases.
+# the right answer for both the unset-key and empty-string cases. Strip all
+# whitespace before the test so a whitespace-only value also counts as missing:
+# the app trims it the same way at runtime (WPCOMClient.swift `clientSecret`).
 secret=$(plutil -extract WPCOMOAuthClientSecret raw -o - "$PLIST" 2>/dev/null || true)
-if [ -z "$secret" ]; then
+if [ -z "$(printf '%s' "$secret" | tr -d '[:space:]')" ]; then
 	echo "Error: $APP_BUNDLE is missing WPCOMOAuthClientSecret in Info.plist." >&2
 	echo "Set WPCOM_OAUTH_CLIENT_SECRET or pass WPCOM_OAUTH_CLIENT_SECRET_FILE before building." >&2
 	exit 1
