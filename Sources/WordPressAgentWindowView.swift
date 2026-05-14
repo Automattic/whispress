@@ -14,6 +14,7 @@ struct WordPressAgentWindowView: View {
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
     @State private var composerTextHeight: CGFloat = 24
+    @State private var isUpdateButtonHovered = false
     @FocusState private var isComposerFocused: Bool
 
     private let workspaceMinimumWidth: CGFloat = 360
@@ -412,35 +413,69 @@ struct WordPressAgentWindowView: View {
                 .fill(AgentPalette.separator)
                 .frame(height: 1)
 
-            Button {
-                appState.selectedSettingsTab = .wordpressCom
-                NotificationCenter.default.post(name: .showSettings, object: nil)
-            } label: {
-                HStack(spacing: 10) {
-                    RemoteAvatar(
-                        url: appState.wordpressComUser?.avatarURL,
-                        fallbackText: appState.wordpressComUser?.displayLabel ?? "WP",
-                        size: 32
-                    )
+            HStack(spacing: 10) {
+                Button {
+                    appState.selectedSettingsTab = .wordpressCom
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
+                } label: {
+                    HStack(spacing: 10) {
+                        RemoteAvatar(
+                            url: appState.wordpressComUser?.avatarURL,
+                            fallbackText: appState.wordpressComUser?.displayLabel ?? "WP",
+                            size: 32
+                        )
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(appState.wordpressComUser?.displayLabel ?? "WordPress.com")
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(appState.wordpressComUser?.displayLabel ?? "WordPress.com")
+                                .font(.system(size: 13, weight: .semibold))
+                                .lineLimit(1)
 
-                        Text(accountSubtitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            Text(accountSubtitle)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
                     }
-
-                    Spacer()
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let availableAppUpdate = appState.availableAppUpdate {
+                    Button {
+                        NSWorkspace.shared.open(availableAppUpdate.releaseURL)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.down.app.fill")
+                                .font(.system(size: 14, weight: .semibold))
+
+                            if isUpdateButtonHovered {
+                                Text("Update")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .lineLimit(1)
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: isUpdateButtonHovered ? 78 : 28, height: 28)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.accentColor)
+                        )
+                        .contentShape(Capsule(style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isHovering in
+                        isUpdateButtonHovered = isHovering
+                    }
+                    .animation(.spring(response: 0.22, dampingFraction: 0.82), value: isUpdateButtonHovered)
+                    .help("Download WP Workspace \(availableAppUpdate.version)")
+                    .accessibilityLabel("Download WP Workspace \(availableAppUpdate.version)")
+                }
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
         }
     }
 

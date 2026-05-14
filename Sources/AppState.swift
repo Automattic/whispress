@@ -409,6 +409,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let wordpressAgentStarredSiteIDsStorageKey = "wordpress_agent_starred_site_ids"
     private let wordpressComSitesCacheStorageKey = "wordpress_com_sites_cache"
     private let wordpressAgentConversationsCacheStorageKey = "wordpress_agent_conversations_cache"
+    private let lastNotifiedAppUpdateVersionStorageKey = "last_notified_app_update_version"
     private let networkRoutingSettingsStorageKey = "network_routing_settings"
     private let wordpressAgentConversationPageSize = 20
     private let wordpressAgentConversationsCacheDebounceNanoseconds: UInt64 = 350_000_000
@@ -537,6 +538,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published private(set) var isWordPressAgentWindowFocused = false
     @Published private(set) var isWordPressAgentUtilityOverlayFocused = false
     @Published var errorMessage: String?
+    @Published private(set) var availableAppUpdate: AvailableAppUpdate?
+    @Published private(set) var isCheckingForAppUpdate = false
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var hotkeyMonitoringErrorMessage: String?
@@ -726,6 +729,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var pendingShortcutStartMode: RecordingTriggerMode?
     private var pendingOverlayDismissToken: UUID?
     private var pendingWordPressAgentConversationsCacheTask: Task<Void, Never>?
+    private var appUpdateCheckTask: Task<Void, Never>?
     private var wordpressAgentConversationsCacheGeneration = 0
     private var shouldPersistWordPressAgentConversationsCache = true
     private var shouldMonitorHotkeys = false
@@ -899,8 +903,69 @@ final class AppState: ObservableObject, @unchecked Sendable {
     deinit {
         elevenLabsSpeechTask?.cancel()
         pendingWordPressAgentConversationsCacheTask?.cancel()
+        appUpdateCheckTask?.cancel()
         removeAudioDeviceObservers()
         removeAppActivationObserver()
+    }
+
+    func checkForAppUpdates(force: Bool = false) {
+        if !force, availableAppUpdate != nil {
+            return
+        }
+        guard appUpdateCheckTask == nil else { return }
+
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        isCheckingForAppUpdate = true
+        appUpdateCheckTask = Task { [weak self] in
+            do {
+                let update = try await GitHubReleaseUpdateChecker.availableUpdate(currentVersion: currentVersion)
+                await self?.finishAppUpdateCheck(update)
+            } catch {
+                await self?.finishFailedAppUpdateCheck()
+            }
+        }
+    }
+
+    @MainActor private func finishAppUpdateCheck(_ update: AvailableAppUpdate?) {
+        availableAppUpdate = update
+        if let update {
+            deliverAppUpdateNotificationIfNeeded(update)
+        }
+        isCheckingForAppUpdate = false
+        appUpdateCheckTask = nil
+    }
+
+    @MainActor private func finishFailedAppUpdateCheck() {
+        isCheckingForAppUpdate = false
+        appUpdateCheckTask = nil
+    }
+
+    private func deliverAppUpdateNotificationIfNeeded(_ update: AvailableAppUpdate) {
+        guard UserDefaults.standard.string(forKey: lastNotifiedAppUpdateVersionStorageKey) != update.version else {
+            return
+        }
+
+        UserDefaults.standard.set(update.version, forKey: lastNotifiedAppUpdateVersionStorageKey)
+
+        let content = UNMutableNotificationContent()
+        content.title = "WP Workspace Update Available"
+        content.body = "Version \(update.version) is ready to download."
+        content.sound = alertSoundsEnabled ? .default : nil
+        content.userInfo = [
+            "kind": "appUpdate",
+            "releaseURL": update.releaseURL.absoluteString
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: "app-update-\(update.version)",
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            UNUserNotificationCenter.current().add(request)
+        }
     }
 
     private func removeAudioDeviceObservers() {
