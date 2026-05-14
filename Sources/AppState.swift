@@ -1917,6 +1917,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             title: title,
             isLoading: isLoading
         )
+        guard updatedPreview != preview else { return }
+
         wordpressAgentPreview = updatedPreview
         if let selectedWordPressAgentConversationID {
             wordpressAgentPreviewsByConversationID[selectedWordPressAgentConversationID] = updatedPreview

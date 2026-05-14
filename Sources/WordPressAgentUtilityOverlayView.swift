@@ -42,13 +42,7 @@ struct WordPressAgentUtilityOverlayView: View {
                 }
             }
 
-            TextField("Ask WordPress Agent", text: $draftMessage, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 15))
-                .lineLimit(1...4)
-                .focused($isPromptFocused)
-                .onSubmit(sendDraftMessage)
-                .disabled(isComposerDisabled)
+            composerTextView
 
             HStack(spacing: 12) {
                 Button {
@@ -84,8 +78,9 @@ struct WordPressAgentUtilityOverlayView: View {
                 Spacer(minLength: 10)
 
                 if selectedConversation?.isSending == true || appState.isTranscribing {
-                    ProgressView()
-                        .controlSize(.small)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary)
                         .frame(width: 28, height: 28)
                         .help("Working")
                 }
@@ -143,7 +138,7 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     private var canSendMessage: Bool {
-        (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImageURLs.isEmpty)
+        (Self.containsNonWhitespace(draftMessage) || !pendingImageURLs.isEmpty)
         && !isComposerDisabled
     }
 
@@ -153,20 +148,52 @@ struct WordPressAgentUtilityOverlayView: View {
             || appState.isTranscribing
     }
 
+    private var composerTextView: some View {
+        ZStack(alignment: .topLeading) {
+            AgentComposerTextView(
+                text: $draftMessage,
+                isFocused: Binding(
+                    get: { isPromptFocused },
+                    set: { isPromptFocused = $0 }
+                ),
+                fontSize: 15,
+                isDisabled: isComposerDisabled,
+                onSubmit: sendDraftMessage
+            )
+            .frame(height: 44)
+
+            if draftMessage.isEmpty {
+                Text("Ask WordPress Agent")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
     private func sendDraftMessage() {
         guard canSendMessage else { return }
         let message = draftMessage
         let attachments = pendingImageURLs
+        draftMessage = ""
+        pendingImageURLs = []
         guard let conversationID = appState.submitWordPressAgentComposerMessage(
             message,
             attachments: attachments,
             siteID: activeSiteID,
             startsNewConversation: true
-        ) else { return }
+        ) else {
+            draftMessage = message
+            pendingImageURLs = attachments
+            return
+        }
 
-        draftMessage = ""
-        pendingImageURLs = []
         onSubmit(conversationID)
+    }
+
+    private static func containsNonWhitespace(_ text: String) -> Bool {
+        text.contains { !$0.isWhitespace && !$0.isNewline }
     }
 
     private func selectImages() {

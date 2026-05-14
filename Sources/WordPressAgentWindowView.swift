@@ -473,10 +473,13 @@ struct WordPressAgentWindowView: View {
                                 previewSidebarResizeStartWidth = resolvedPreviewWidth
                             }
                             let startWidth = previewSidebarResizeStartWidth ?? resolvedPreviewWidth
-                            previewSidebarWidth = min(
+                            let nextWidth = min(
                                 max(startWidth - translationX, previewMinimumWidth),
                                 maximumPreviewWidth
                             )
+                            if abs(nextWidth - previewSidebarWidth) >= 6 {
+                                previewSidebarWidth = nextWidth
+                            }
                         },
                         onDragEnded: {
                             previewSidebarWidth = clampedPreviewSidebarWidth(
@@ -566,8 +569,10 @@ struct WordPressAgentWindowView: View {
             )
 
             if selectedConversation?.isSending == true {
-                ProgressView()
-                    .controlSize(.small)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
             }
 
             Spacer()
@@ -604,6 +609,7 @@ struct WordPressAgentWindowView: View {
                         LazyVStack(spacing: 24) {
                             ForEach(selectedConversation.messages) { message in
                                 WordPressAgentMessageRow(message: message)
+                                    .equatable()
                                     .id(message.id)
                             }
 
@@ -712,16 +718,7 @@ struct WordPressAgentWindowView: View {
                     }
                 }
 
-                TextField("Ask WordPress Agent", text: $draftMessage, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 16))
-                    .lineLimit(1...5)
-                    .focused($isComposerFocused)
-                    .onSubmit(sendDraftMessage)
-                    .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
-                        pasteImagesFromClipboard()
-                    }
-                    .disabled(isComposerInputDisabled)
+                composerTextView
 
                 HStack(spacing: 14) {
                     Button {
@@ -806,7 +803,7 @@ struct WordPressAgentWindowView: View {
     }
 
     private var canSendMessage: Bool {
-        (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImageURLs.isEmpty)
+        (Self.containsNonWhitespace(draftMessage) || !pendingImageURLs.isEmpty)
         && !isComposerDisabled
     }
 
@@ -820,19 +817,55 @@ struct WordPressAgentWindowView: View {
         activeSiteID == nil || appState.isTranscribing
     }
 
+    private var composerTextView: some View {
+        ZStack(alignment: .topLeading) {
+            AgentComposerTextView(
+                text: $draftMessage,
+                isFocused: Binding(
+                    get: { isComposerFocused },
+                    set: { isComposerFocused = $0 }
+                ),
+                fontSize: 16,
+                isDisabled: isComposerInputDisabled,
+                onSubmit: sendDraftMessage
+            )
+            .frame(height: 46)
+
+            if draftMessage.isEmpty {
+                Text("Ask WordPress Agent")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+            pasteImagesFromClipboard()
+        }
+    }
+
     private func sendDraftMessage() {
         let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingImageURLs
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
-        guard appState.submitWordPressAgentComposerMessage(
-            trimmedMessage,
-            attachments: attachments,
-            siteID: activeSiteID
-        ) != nil else { return }
+        let message = draftMessage
         draftMessage = ""
         pendingImageURLs = []
+        guard appState.submitWordPressAgentComposerMessage(
+            message,
+            attachments: attachments,
+            siteID: activeSiteID
+        ) != nil else {
+            draftMessage = message
+            pendingImageURLs = attachments
+            return
+        }
         shouldRestoreComposerFocusAfterSend = true
         restoreComposerFocusSoon(clearPending: false)
+    }
+
+    private static func containsNonWhitespace(_ text: String) -> Bool {
+        text.contains { !$0.isWhitespace && !$0.isNewline }
     }
 
     private func restoreComposerFocusSoon(clearPending: Bool) {
@@ -1262,6 +1295,9 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         var onPageUpdate: (UUID, URL?, String?, Bool) -> Void
         private var loadedURL: URL?
         private var lastReloadTrigger = 0
+        private var lastReportedURL: URL?
+        private var lastReportedTitle: String?
+        private var lastReportedIsLoading: Bool?
 
         init(previewID: UUID, onPageUpdate: @escaping (UUID, URL?, String?, Bool) -> Void) {
             self.previewID = previewID
@@ -1372,6 +1408,14 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
+            guard lastReportedURL != url
+                || lastReportedTitle != title
+                || lastReportedIsLoading != isLoading else {
+                return
+            }
+            lastReportedURL = url
+            lastReportedTitle = title
+            lastReportedIsLoading = isLoading
             onPageUpdate(previewID, url, title, isLoading)
         }
 
@@ -1540,8 +1584,8 @@ private struct ConversationSidebarRow: View {
 
     private var title: String {
         if let firstUserMessage = conversation.messages.first(where: { $0.role == .user })?.text,
-           !firstUserMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return firstUserMessage
+           let compactTitle = Self.compactTitle(from: firstUserMessage) {
+            return compactTitle
         }
         return conversation.title
     }
@@ -1626,6 +1670,30 @@ private struct ConversationSidebarRow: View {
             return "\(max(1, Int(interval / month))) mo"
         }
         return "\(max(1, Int(interval / year))) y"
+    }
+
+    private static func compactTitle(from text: String) -> String? {
+        var title = ""
+        var previousWasWhitespace = false
+        let limit = 140
+
+        for character in text {
+            if character.isWhitespace || character.isNewline {
+                guard !title.isEmpty, !previousWasWhitespace else { continue }
+                title.append(" ")
+                previousWasWhitespace = true
+            } else {
+                title.append(character)
+                previousWasWhitespace = false
+            }
+
+            if title.count >= limit {
+                return title.trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+            }
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty ? nil : trimmedTitle
     }
 }
 
@@ -1779,8 +1847,12 @@ private struct LocalImageThumbnail: View {
     }
 }
 
-private struct WordPressAgentMessageRow: View {
+private struct WordPressAgentMessageRow: View, Equatable {
     let message: WordPressAgentMessage
+
+    static func == (lhs: WordPressAgentMessageRow, rhs: WordPressAgentMessageRow) -> Bool {
+        lhs.message == rhs.message
+    }
 
     private var isUser: Bool {
         message.role == .user
@@ -1807,7 +1879,7 @@ private struct WordPressAgentMessageRow: View {
                 }
 
                 if !message.text.isEmpty {
-                    MarkdownMessageText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
+                    MessageBodyText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -1837,7 +1909,7 @@ private struct WordPressAgentMessageRow: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                MarkdownMessageText(text: message.text, foregroundStyle: .primary)
+                MessageBodyText(text: message.text, foregroundStyle: .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 12) {
@@ -1862,7 +1934,7 @@ private struct WordPressAgentMessageRow: View {
 
     private var systemMessage: some View {
         Label {
-            MarkdownMessageText(text: message.text, foregroundStyle: .red)
+            MessageBodyText(text: message.text, foregroundStyle: .red)
         } icon: {
             Image(systemName: "exclamationmark.triangle.fill")
         }
@@ -1882,14 +1954,133 @@ private struct WordPressAgentTypingRow: View {
         HStack(spacing: 10) {
             WordPressComLogoMark()
                 .frame(width: 24, height: 24)
-            ProgressView()
-                .controlSize(.small)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
             Text("Thinking...")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct MessageBodyText: View {
+    let text: String
+    let foregroundStyle: Color
+    var isOnDarkBackground = false
+
+    @State private var isExpanded = false
+
+    private static let inlineMarkdownByteLimit = 2_500
+    private static let collapsedPreviewCharacterLimit = 600
+    private static let expandedPreviewCharacterLimit = 2_000
+    private static let inlineLineLimit = 80
+
+    var body: some View {
+        if shouldUseCompactPreview {
+            compactPreview
+        } else {
+            MarkdownMessageText(
+                text: text,
+                foregroundStyle: foregroundStyle,
+                isOnDarkBackground: isOnDarkBackground
+            )
+        }
+    }
+
+    private var shouldUseCompactPreview: Bool {
+        text.utf8.count > Self.inlineMarkdownByteLimit || Self.exceedsInlineLineLimit(text)
+    }
+
+    private var previewText: String {
+        let limit = isExpanded
+            ? Self.expandedPreviewCharacterLimit
+            : Self.collapsedPreviewCharacterLimit
+        let endIndex = text.index(text.startIndex, offsetBy: limit, limitedBy: text.endIndex) ?? text.endIndex
+        let isTruncated = endIndex < text.endIndex
+        var preview = String(text[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if preview.isEmpty {
+            preview = String(text[..<endIndex])
+        }
+        if isTruncated {
+            preview += "\n\n[Message preview truncated. Copy the full text to inspect everything.]"
+        }
+        return preview
+    }
+
+    private var compactPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(previewText)
+                .font(.system(size: 16))
+                .lineSpacing(4)
+                .foregroundStyle(foregroundStyle)
+                .lineLimit(isExpanded ? 24 : 8)
+
+            HStack(spacing: 10) {
+                Text(compactStatusText)
+                    .font(.system(size: 12, weight: .medium))
+
+                Spacer(minLength: 0)
+
+                if canExpandPreview {
+                    Button(isExpanded ? "Show less" : "Show more") {
+                        isExpanded.toggle()
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button("Copy full") {
+                    copyFullText()
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(secondaryTextColor)
+        }
+    }
+
+    private var canExpandPreview: Bool {
+        guard let collapsedEndIndex = text.index(
+            text.startIndex,
+            offsetBy: Self.collapsedPreviewCharacterLimit,
+            limitedBy: text.endIndex
+        ) else {
+            return false
+        }
+        return collapsedEndIndex < text.endIndex
+    }
+
+    private var compactStatusText: String {
+        let previewKind = isExpanded ? "Larger preview" : "Compact preview"
+        return "\(previewKind) of \(Self.formattedByteCount(text.utf8.count)) message"
+    }
+
+    private var secondaryTextColor: Color {
+        isOnDarkBackground
+            ? Color.white.opacity(0.72)
+            : Color(nsColor: .secondaryLabelColor)
+    }
+
+    private func copyFullText() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private static func formattedByteCount(_ byteCount: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    private static func exceedsInlineLineLimit(_ text: String) -> Bool {
+        var lineBreaks = 0
+        for character in text where character.isNewline {
+            lineBreaks += 1
+            if lineBreaks > inlineLineLimit {
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -1905,7 +2096,6 @@ private struct MarkdownMessageText: View {
                 case .text(_, let fragmentText):
                     if !fragmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(Self.messageAttributedString(from: fragmentText))
-                            .textSelection(.enabled)
                             .font(.system(size: 16))
                             .lineSpacing(4)
                             .foregroundStyle(foregroundStyle)
@@ -2314,7 +2504,6 @@ private struct MarkdownTableView: View {
         isHeader: Bool
     ) -> some View {
         Text(MarkdownMessageText.messageAttributedString(from: text))
-            .textSelection(.enabled)
             .font(.system(size: 14, weight: isHeader ? .semibold : .regular))
             .lineSpacing(3)
             .foregroundStyle(foregroundStyle)
