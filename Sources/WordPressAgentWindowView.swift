@@ -587,7 +587,7 @@ struct WordPressAgentWindowView: View {
                 return .handled
             }
 
-            guard let previewURL = WordPressAgentPreviewURLResolver.previewURL(forPossiblyBare: url) else {
+            guard let previewURL = WordPressAgentPreviewURLResolver.panelURL(forPossiblyBare: url) else {
                 NSWorkspace.shared.open(WordPressAgentPreviewURLResolver.defaultOpenURL(forPossiblyBare: url) ?? url)
                 return .handled
             }
@@ -1007,6 +1007,7 @@ private struct WordPressAgentPreviewPanel: View {
     let onPageUpdate: (UUID, URL?, String?, Bool) -> Void
 
     @State private var previewReloadTrigger = 0
+    @State private var requestedURLOverride: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1034,6 +1035,10 @@ private struct WordPressAgentPreviewPanel: View {
                 }
 
                 Spacer(minLength: 10)
+
+                if let postURLs = previewPostURLs {
+                    previewModeSwitch(postURLs: postURLs)
+                }
 
                 Button {
                     previewReloadTrigger += 1
@@ -1069,7 +1074,7 @@ private struct WordPressAgentPreviewPanel: View {
 
             WordPressAgentWebPreview(
                 previewID: preview.id,
-                url: preview.url,
+                url: requestedURLOverride ?? preview.url,
                 siteID: preview.siteID,
                 reloadTrigger: previewReloadTrigger,
                 onPageUpdate: onPageUpdate
@@ -1077,6 +1082,75 @@ private struct WordPressAgentPreviewPanel: View {
                 .id(preview.id)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: preview.id) { _ in
+            requestedURLOverride = nil
+        }
+    }
+
+    private var previewPostURLs: WordPressAgentPreviewPostURLs? {
+        WordPressAgentPreviewURLResolver.previewPostURLs(for: preview.currentURL)
+            ?? WordPressAgentPreviewURLResolver.previewPostURLs(for: requestedURLOverride ?? preview.url)
+    }
+
+    private var activePreviewViewMode: WordPressAgentPreviewViewMode? {
+        WordPressAgentPreviewURLResolver.viewMode(for: preview.currentURL)
+            ?? WordPressAgentPreviewURLResolver.viewMode(for: requestedURLOverride ?? preview.url)
+    }
+
+    private func previewModeSwitch(postURLs: WordPressAgentPreviewPostURLs) -> some View {
+        HStack(spacing: 0) {
+            previewModeButton(.preview, postURLs: postURLs)
+            previewModeButton(.edit, postURLs: postURLs)
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AgentPalette.separator, lineWidth: 1)
+        )
+    }
+
+    private func previewModeButton(
+        _ mode: WordPressAgentPreviewViewMode,
+        postURLs: WordPressAgentPreviewPostURLs
+    ) -> some View {
+        let isActive = activePreviewViewMode == mode
+        return Button {
+            requestedURLOverride = postURLs.url(for: mode)
+        } label: {
+            Image(systemName: previewModeIconName(mode))
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+        )
+        .help(previewModeHelp(mode))
+    }
+
+    private func previewModeIconName(_ mode: WordPressAgentPreviewViewMode) -> String {
+        switch mode {
+        case .preview:
+            return "eye"
+        case .edit:
+            return "square.and.pencil"
+        }
+    }
+
+    private func previewModeHelp(_ mode: WordPressAgentPreviewViewMode) -> String {
+        switch mode {
+        case .preview:
+            return "Show preview"
+        case .edit:
+            return "Edit post"
+        }
     }
 }
 
@@ -1287,14 +1361,14 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
             self.siteID = siteID
             self.appState = appState
 
-            let initialPreviewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+            let initialPreviewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
             guard loadedURL != initialPreviewURL else { return }
             loadedURL = initialPreviewURL
             loadPreviewURL(initialPreviewURL, in: webView)
         }
 
         private func navigate(_ url: URL, in webView: WKWebView) {
-            let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+            let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
             loadPreviewURL(previewURL, in: webView)
         }
 
@@ -1412,7 +1486,7 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 return
             }
 
-            if let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) {
+            if let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) {
                 if internalEffectivePreviewURL == url {
                     decisionHandler(.allow)
                     return

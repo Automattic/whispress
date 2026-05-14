@@ -1,5 +1,24 @@
 import Foundation
 
+enum WordPressAgentPreviewViewMode: Equatable {
+    case preview
+    case edit
+}
+
+struct WordPressAgentPreviewPostURLs: Equatable {
+    let previewURL: URL
+    let editURL: URL
+
+    func url(for mode: WordPressAgentPreviewViewMode) -> URL {
+        switch mode {
+        case .preview:
+            return previewURL
+        case .edit:
+            return editURL
+        }
+    }
+}
+
 enum WordPressAgentPreviewURLResolver {
     static func normalizedURL(from rawValue: String) -> URL? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17,7 +36,16 @@ enum WordPressAgentPreviewURLResolver {
             return nil
         }
 
-        return previewURL(for: url)
+        return panelURL(for: url)
+    }
+
+    static func panelURL(forPossiblyBare url: URL) -> URL? {
+        if let panelURL = panelURL(for: url) {
+            return panelURL
+        }
+
+        guard url.scheme == nil else { return nil }
+        return normalizedURL(from: url.absoluteString)
     }
 
     static func previewURL(forPossiblyBare url: URL) -> URL? {
@@ -36,6 +64,14 @@ enum WordPressAgentPreviewURLResolver {
 
         guard url.scheme == nil else { return nil }
         return normalizedURL(from: url.absoluteString)
+    }
+
+    static func panelURL(for url: URL) -> URL? {
+        guard isPreviewable(url) else { return nil }
+        if postID(fromAdminPostURL: url) != nil {
+            return url
+        }
+        return rewrittenWordPressPostQueryURL(for: url) ?? url
     }
 
     static func previewURL(for url: URL) -> URL? {
@@ -73,13 +109,39 @@ enum WordPressAgentPreviewURLResolver {
         return true
     }
 
+    static func previewPostURLs(for url: URL) -> WordPressAgentPreviewPostURLs? {
+        guard isPreviewable(url) else { return nil }
+
+        if let postID = postID(fromAdminPostURL: url),
+           let previewURL = rewrittenWordPressAdminPostURL(for: url),
+           let editURL = adminPostEditURL(for: url, postID: postID) {
+            return WordPressAgentPreviewPostURLs(previewURL: previewURL, editURL: editURL)
+        }
+
+        if let postID = postID(fromWordPressPostQueryURL: url),
+           let editURL = adminPostEditURL(for: url, postID: postID) {
+            return WordPressAgentPreviewPostURLs(
+                previewURL: rewrittenWordPressPostQueryURL(for: url) ?? url,
+                editURL: editURL
+            )
+        }
+
+        return nil
+    }
+
+    static func viewMode(for url: URL) -> WordPressAgentPreviewViewMode? {
+        if postID(fromAdminPostURL: url) != nil {
+            return .edit
+        }
+        if postID(fromWordPressPostQueryURL: url) != nil {
+            return .preview
+        }
+        return nil
+    }
+
     private static func rewrittenWordPressAdminPostURL(for url: URL) -> URL? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.path.lowercased() == "/wp-admin/post.php",
-              let postID = components.queryItems?.first(where: { $0.name == "post" })?.value?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !postID.isEmpty,
-              postID.allSatisfy(\.isNumber) else {
+              let postID = postID(fromAdminPostComponents: components) else {
             return nil
         }
 
@@ -102,7 +164,7 @@ enum WordPressAgentPreviewURLResolver {
         }
 
         let queryItems = components.queryItems ?? []
-        guard queryItems.contains(where: { isWordPressPostIDQueryItem($0) }),
+        guard postID(fromWordPressPostQueryItems: queryItems) != nil,
               !queryItems.contains(where: { $0.name == "preview" }) else {
             return nil
         }
@@ -111,15 +173,58 @@ enum WordPressAgentPreviewURLResolver {
         return components.url
     }
 
-    private static func isWordPressPostIDQueryItem(_ item: URLQueryItem) -> Bool {
-        guard ["p", "page_id", "attachment_id"].contains(item.name),
-              let value = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty,
-              value.allSatisfy(\.isNumber) else {
-            return false
+    private static func postID(fromAdminPostURL url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        return postID(fromAdminPostComponents: components)
+    }
+
+    private static func postID(fromAdminPostComponents components: URLComponents) -> String? {
+        guard components.path.lowercased() == "/wp-admin/post.php" else {
+            return nil
+        }
+        return components.queryItems?.first(where: { $0.name == "post" })?.value.flatMap(normalizedPostID)
+    }
+
+    private static func postID(fromWordPressPostQueryURL url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        return postID(fromWordPressPostQueryItems: components.queryItems ?? [])
+    }
+
+    private static func postID(fromWordPressPostQueryItems queryItems: [URLQueryItem]) -> String? {
+        queryItems
+            .first { ["p", "page_id", "attachment_id"].contains($0.name) }?
+            .value
+            .flatMap(normalizedPostID)
+    }
+
+    private static func normalizedPostID(_ value: String) -> String? {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty,
+              trimmedValue.allSatisfy(\.isNumber) else {
+            return nil
+        }
+        return trimmedValue
+    }
+
+    private static func adminPostEditURL(for url: URL, postID: String) -> URL? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
         }
 
-        return true
+        var editComponents = URLComponents()
+        editComponents.scheme = components.scheme
+        editComponents.host = components.host
+        editComponents.port = components.port
+        editComponents.path = "/wp-admin/post.php"
+        editComponents.queryItems = [
+            URLQueryItem(name: "post", value: postID),
+            URLQueryItem(name: "action", value: "edit")
+        ]
+        return editComponents.url
     }
 
     private static func hasPreviewQuery(_ url: URL) -> Bool {

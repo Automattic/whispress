@@ -2110,7 +2110,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let targetConversationID = conversationID
             ?? selectedWordPressAgentConversationID
             ?? startWordPressAgentConversation(siteID: selectedWordPressComSiteID)
-        let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+        let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
         let preview = WordPressAgentPreview(
             url: previewURL,
             title: title,
@@ -2158,7 +2158,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @MainActor
     func resolvedWordPressAgentPreviewURL(_ url: URL, siteID: Int?) async -> URL {
-        let previewURL = WordPressAgentPreviewURLResolver.previewURL(for: url) ?? url
+        let previewURL = WordPressAgentPreviewURLResolver.panelURL(for: url) ?? url
+        guard WordPressAgentPreviewURLResolver.viewMode(for: previewURL) != .edit else {
+            return previewURL
+        }
         guard let siteID else {
             return previewURL
         }
