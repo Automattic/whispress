@@ -13,7 +13,12 @@ the secret to catch misconfigured release builds before they ship.
 EOF
 }
 
-if [ "$#" -ne 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+if [ "$#" -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
+	usage
+	exit 0
+fi
+
+if [ "$#" -ne 1 ]; then
 	usage
 	exit 64
 fi
