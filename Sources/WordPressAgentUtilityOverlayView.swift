@@ -10,6 +10,7 @@ struct WordPressAgentUtilityOverlayView: View {
 
     @State private var draftMessage = ""
     @State private var pendingImageURLs: [URL] = []
+    @State private var composerTextHeight: CGFloat = 22
     @FocusState private var isPromptFocused: Bool
 
     private var selectedConversation: WordPressAgentConversation? {
@@ -35,28 +36,22 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
             if !pendingImageURLs.isEmpty {
                 UtilityOverlayAttachmentStrip(fileURLs: pendingImageURLs) { url in
                     pendingImageURLs.removeAll { $0 == url }
                 }
             }
 
-            TextField("Ask WordPress Agent", text: $draftMessage, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 15))
-                .lineLimit(1...4)
-                .focused($isPromptFocused)
-                .onSubmit(sendDraftMessage)
-                .disabled(isComposerDisabled)
+            composerTextView
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button {
                     selectImages()
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .regular))
-                        .frame(width: 28, height: 28)
+                        .font(.system(size: 17, weight: .regular))
+                        .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -67,26 +62,27 @@ struct WordPressAgentUtilityOverlayView: View {
                 Button {
                     appState.showWordPressAgentWindow()
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 5) {
                         Image(systemName: "globe")
-                            .font(.system(size: 17, weight: .medium))
+                            .font(.system(size: 15, weight: .medium))
                         Text(siteTitle)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .lineLimit(1)
                     }
-                    .frame(maxWidth: 176, alignment: .leading)
+                    .frame(maxWidth: 160, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Open WordPress Agent")
 
-                Spacer(minLength: 10)
+                Spacer(minLength: 8)
 
                 if selectedConversation?.isSending == true || appState.isTranscribing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 28, height: 28)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
                         .help("Working")
                 }
 
@@ -94,8 +90,8 @@ struct WordPressAgentUtilityOverlayView: View {
                     appState.toggleRecording()
                 } label: {
                     Image(systemName: appState.isRecording ? "stop.circle.fill" : "mic")
-                        .font(.system(size: 19, weight: .medium))
-                        .frame(width: 28, height: 28)
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -107,9 +103,9 @@ struct WordPressAgentUtilityOverlayView: View {
                     sendDraftMessage()
                 } label: {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 32, height: 32)
                         .background(
                             Circle()
                                 .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
@@ -120,8 +116,8 @@ struct WordPressAgentUtilityOverlayView: View {
                 .disabled(!canSendMessage)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(width: 560, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -143,7 +139,7 @@ struct WordPressAgentUtilityOverlayView: View {
     }
 
     private var canSendMessage: Bool {
-        (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImageURLs.isEmpty)
+        (Self.containsNonWhitespace(draftMessage) || !pendingImageURLs.isEmpty)
         && !isComposerDisabled
     }
 
@@ -153,20 +149,55 @@ struct WordPressAgentUtilityOverlayView: View {
             || appState.isTranscribing
     }
 
+    private var composerTextView: some View {
+        ZStack(alignment: .topLeading) {
+            AgentComposerTextView(
+                text: $draftMessage,
+                isFocused: Binding(
+                    get: { isPromptFocused },
+                    set: { isPromptFocused = $0 }
+                ),
+                height: $composerTextHeight,
+                fontSize: 15,
+                minimumHeight: 22,
+                maximumHeight: 160,
+                isDisabled: isComposerDisabled,
+                onSubmit: sendDraftMessage
+            )
+            .frame(height: composerTextHeight)
+
+            if draftMessage.isEmpty {
+                Text("Ask WordPress Agent")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
     private func sendDraftMessage() {
         guard canSendMessage else { return }
         let message = draftMessage
         let attachments = pendingImageURLs
+        draftMessage = ""
+        pendingImageURLs = []
         guard let conversationID = appState.submitWordPressAgentComposerMessage(
             message,
             attachments: attachments,
             siteID: activeSiteID,
             startsNewConversation: true
-        ) else { return }
+        ) else {
+            draftMessage = message
+            pendingImageURLs = attachments
+            return
+        }
 
-        draftMessage = ""
-        pendingImageURLs = []
         onSubmit(conversationID)
+    }
+
+    private static func containsNonWhitespace(_ text: String) -> Bool {
+        text.contains { !$0.isWhitespace && !$0.isNewline }
     }
 
     private func selectImages() {

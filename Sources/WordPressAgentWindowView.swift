@@ -13,11 +13,11 @@ struct WordPressAgentWindowView: View {
     @State private var shouldRestoreComposerFocusAfterSend = false
     @State private var previewSidebarWidth: CGFloat = 520
     @State private var previewSidebarResizeStartWidth: CGFloat?
+    @State private var composerTextHeight: CGFloat = 24
     @FocusState private var isComposerFocused: Bool
 
     private let workspaceMinimumWidth: CGFloat = 360
     private let previewMinimumWidth: CGFloat = 320
-    private let transcriptBottomAnchorID = "wordpress-agent-transcript-bottom"
     private static let pasteableImageContentTypes: [UTType] = [.fileURL, .image]
 
     private var selectedConversation: WordPressAgentConversation? {
@@ -473,10 +473,13 @@ struct WordPressAgentWindowView: View {
                                 previewSidebarResizeStartWidth = resolvedPreviewWidth
                             }
                             let startWidth = previewSidebarResizeStartWidth ?? resolvedPreviewWidth
-                            previewSidebarWidth = min(
+                            let nextWidth = min(
                                 max(startWidth - translationX, previewMinimumWidth),
                                 maximumPreviewWidth
                             )
+                            if abs(nextWidth - previewSidebarWidth) >= 6 {
+                                previewSidebarWidth = nextWidth
+                            }
                         },
                         onDragEnded: {
                             previewSidebarWidth = clampedPreviewSidebarWidth(
@@ -521,7 +524,13 @@ struct WordPressAgentWindowView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             workspaceHeader
-            transcript
+            WordPressAgentTranscriptView(
+                conversation: selectedConversation,
+                activeSite: activeSite,
+                activeWorkspaceTitle: activeWorkspaceTitle,
+                isSignedIn: appState.isWordPressComSignedIn
+            )
+            .equatable()
             composer
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
@@ -566,8 +575,10 @@ struct WordPressAgentWindowView: View {
             )
 
             if selectedConversation?.isSending == true {
-                ProgressView()
-                    .controlSize(.small)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
             }
 
             Spacer()
@@ -589,96 +600,6 @@ struct WordPressAgentWindowView: View {
         .padding(.trailing, 24)
         .padding(.top, 18)
         .padding(.bottom, 10)
-    }
-
-    @ViewBuilder
-    private var transcript: some View {
-        if let selectedConversation {
-            if selectedConversation.messages.isEmpty,
-               !selectedConversation.isSending,
-               selectedConversation.errorMessage == nil {
-                emptyWorkspace
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 24) {
-                            ForEach(selectedConversation.messages) { message in
-                                WordPressAgentMessageRow(message: message)
-                                    .id(message.id)
-                            }
-
-                            if selectedConversation.isSending {
-                                WordPressAgentTypingRow()
-                            }
-
-                            if let errorMessage = selectedConversation.errorMessage,
-                               shouldShowErrorSummary(errorMessage, in: selectedConversation) {
-                                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 4)
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id(transcriptBottomAnchorID)
-                        }
-                        .frame(maxWidth: 760)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 34)
-                        .padding(.top, 34)
-                        .padding(.bottom, 28)
-                    }
-                    .onAppear {
-                        scrollTranscriptToBottom(proxy, animated: false)
-                    }
-                    .onChange(of: selectedConversation.messages.count) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                    .onChange(of: selectedConversation.isSending) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                    .onChange(of: selectedConversation.errorMessage) { _ in
-                        scrollTranscriptToBottom(proxy)
-                    }
-                }
-            }
-        } else {
-            emptyWorkspace
-        }
-    }
-
-    private func scrollTranscriptToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let scroll = {
-            proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
-        }
-
-        if animated {
-            withAnimation(.easeOut(duration: 0.18)) {
-                scroll()
-            }
-        } else {
-            scroll()
-        }
-
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    scroll()
-                }
-            } else {
-                scroll()
-            }
-        }
-    }
-
-    private func shouldShowErrorSummary(_ errorMessage: String, in conversation: WordPressAgentConversation) -> Bool {
-        let trimmedError = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedError.isEmpty else { return false }
-        guard let lastMessage = conversation.messages.last else { return true }
-        return lastMessage.role != .system
-            || lastMessage.text.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedError
     }
 
     private var emptyWorkspace: some View {
@@ -705,32 +626,23 @@ struct WordPressAgentWindowView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 12) {
+            VStack(spacing: 4) {
                 if !pendingImageURLs.isEmpty {
                     ComposerAttachmentStrip(fileURLs: pendingImageURLs) { url in
                         pendingImageURLs.removeAll { $0 == url }
                     }
                 }
 
-                TextField("Ask WordPress Agent", text: $draftMessage, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 16))
-                    .lineLimit(1...5)
-                    .focused($isComposerFocused)
-                    .onSubmit(sendDraftMessage)
-                    .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
-                        pasteImagesFromClipboard()
-                    }
-                    .disabled(isComposerInputDisabled)
+                composerTextView
 
-                HStack(spacing: 14) {
+                HStack(spacing: 10) {
                     Button {
                         selectImages()
                         isComposerFocused = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 19, weight: .regular))
-                            .frame(width: 28, height: 28)
+                            .font(.system(size: 17, weight: .regular))
+                            .frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -744,8 +656,8 @@ struct WordPressAgentWindowView: View {
                         appState.toggleRecording()
                     } label: {
                         Image(systemName: appState.isRecording ? "stop.circle.fill" : "mic")
-                            .font(.system(size: 20, weight: .medium))
-                            .frame(width: 30, height: 30)
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 26, height: 26)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -757,9 +669,9 @@ struct WordPressAgentWindowView: View {
                         sendDraftMessage()
                     } label: {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(canSendMessage ? AgentPalette.primaryActionIcon : AgentPalette.secondaryText)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 32, height: 32)
                             .background(
                                 Circle()
                                     .fill(canSendMessage ? AgentPalette.primaryActionFill : AgentPalette.disabledControl)
@@ -770,13 +682,14 @@ struct WordPressAgentWindowView: View {
                     .disabled(!canSendMessage)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .fill(AgentPalette.composer)
                     .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
                             .stroke(AgentPalette.controlStroke, lineWidth: 1)
                     )
             )
@@ -806,7 +719,7 @@ struct WordPressAgentWindowView: View {
     }
 
     private var canSendMessage: Bool {
-        (!draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImageURLs.isEmpty)
+        (Self.containsNonWhitespace(draftMessage) || !pendingImageURLs.isEmpty)
         && !isComposerDisabled
     }
 
@@ -820,19 +733,58 @@ struct WordPressAgentWindowView: View {
         activeSiteID == nil || appState.isTranscribing
     }
 
+    private var composerTextView: some View {
+        ZStack(alignment: .topLeading) {
+            AgentComposerTextView(
+                text: $draftMessage,
+                isFocused: Binding(
+                    get: { isComposerFocused },
+                    set: { isComposerFocused = $0 }
+                ),
+                height: $composerTextHeight,
+                fontSize: 16,
+                minimumHeight: 24,
+                maximumHeight: 220,
+                isDisabled: isComposerInputDisabled,
+                onSubmit: sendDraftMessage
+            )
+            .frame(height: composerTextHeight)
+
+            if draftMessage.isEmpty {
+                Text("Ask WordPress Agent")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onPasteCommand(of: Self.pasteableImageContentTypes) { _ in
+            pasteImagesFromClipboard()
+        }
+    }
+
     private func sendDraftMessage() {
         let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingImageURLs
         guard !trimmedMessage.isEmpty || !attachments.isEmpty else { return }
-        guard appState.submitWordPressAgentComposerMessage(
-            trimmedMessage,
-            attachments: attachments,
-            siteID: activeSiteID
-        ) != nil else { return }
+        let message = draftMessage
         draftMessage = ""
         pendingImageURLs = []
+        guard appState.submitWordPressAgentComposerMessage(
+            message,
+            attachments: attachments,
+            siteID: activeSiteID
+        ) != nil else {
+            draftMessage = message
+            pendingImageURLs = attachments
+            return
+        }
         shouldRestoreComposerFocusAfterSend = true
         restoreComposerFocusSoon(clearPending: false)
+    }
+
+    private static func containsNonWhitespace(_ text: String) -> Bool {
+        text.contains { !$0.isWhitespace && !$0.isNewline }
     }
 
     private func restoreComposerFocusSoon(clearPending: Bool) {
@@ -1262,6 +1214,9 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         var onPageUpdate: (UUID, URL?, String?, Bool) -> Void
         private var loadedURL: URL?
         private var lastReloadTrigger = 0
+        private var lastReportedURL: URL?
+        private var lastReportedTitle: String?
+        private var lastReportedIsLoading: Bool?
 
         init(previewID: UUID, onPageUpdate: @escaping (UUID, URL?, String?, Bool) -> Void) {
             self.previewID = previewID
@@ -1372,6 +1327,14 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
         }
 
         private func reportPageUpdate(url: URL?, title: String?, isLoading: Bool) {
+            guard lastReportedURL != url
+                || lastReportedTitle != title
+                || lastReportedIsLoading != isLoading else {
+                return
+            }
+            lastReportedURL = url
+            lastReportedTitle = title
+            lastReportedIsLoading = isLoading
             onPageUpdate(previewID, url, title, isLoading)
         }
 
@@ -1540,8 +1503,8 @@ private struct ConversationSidebarRow: View {
 
     private var title: String {
         if let firstUserMessage = conversation.messages.first(where: { $0.role == .user })?.text,
-           !firstUserMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return firstUserMessage
+           let compactTitle = Self.compactTitle(from: firstUserMessage) {
+            return compactTitle
         }
         return conversation.title
     }
@@ -1626,6 +1589,30 @@ private struct ConversationSidebarRow: View {
             return "\(max(1, Int(interval / month))) mo"
         }
         return "\(max(1, Int(interval / year))) y"
+    }
+
+    private static func compactTitle(from text: String) -> String? {
+        var title = ""
+        var previousWasWhitespace = false
+        let limit = 140
+
+        for character in text {
+            if character.isWhitespace || character.isNewline {
+                guard !title.isEmpty, !previousWasWhitespace else { continue }
+                title.append(" ")
+                previousWasWhitespace = true
+            } else {
+                title.append(character)
+                previousWasWhitespace = false
+            }
+
+            if title.count >= limit {
+                return title.trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+            }
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty ? nil : trimmedTitle
     }
 }
 
@@ -1779,8 +1766,147 @@ private struct LocalImageThumbnail: View {
     }
 }
 
-private struct WordPressAgentMessageRow: View {
+private struct WordPressAgentTranscriptView: View, Equatable {
+    let conversation: WordPressAgentConversation?
+    let activeSite: WPCOMSite?
+    let activeWorkspaceTitle: String
+    let isSignedIn: Bool
+
+    private static let bottomAnchorID = "wordpress-agent-transcript-bottom"
+
+    static func == (lhs: WordPressAgentTranscriptView, rhs: WordPressAgentTranscriptView) -> Bool {
+        lhs.conversation == rhs.conversation
+            && lhs.activeSite == rhs.activeSite
+            && lhs.activeWorkspaceTitle == rhs.activeWorkspaceTitle
+            && lhs.isSignedIn == rhs.isSignedIn
+    }
+
+    var body: some View {
+        if let conversation {
+            if conversation.messages.isEmpty,
+               !conversation.isSending,
+               conversation.errorMessage == nil {
+                emptyWorkspace
+            } else {
+                transcript(for: conversation)
+            }
+        } else {
+            emptyWorkspace
+        }
+    }
+
+    private var emptyWorkspace: some View {
+        VStack(spacing: 14) {
+            if let activeSite {
+                RemoteSiteIcon(site: activeSite, size: 54, cornerRadius: 14)
+            } else {
+                WordPressComLogoMark()
+                    .frame(width: 54, height: 54)
+            }
+
+            Text(activeWorkspaceTitle)
+                .font(.system(size: 24, weight: .semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+
+            Text(isSignedIn ? "New chat" : "WordPress.com sign-in needed")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 40)
+    }
+
+    private func transcript(for conversation: WordPressAgentConversation) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 24) {
+                    ForEach(conversation.messages) { message in
+                        WordPressAgentMessageRow(message: message)
+                            .equatable()
+                            .id(message.id)
+                    }
+
+                    if conversation.isSending {
+                        WordPressAgentTypingRow()
+                    }
+
+                    if let errorMessage = conversation.errorMessage,
+                       Self.shouldShowErrorSummary(errorMessage, in: conversation) {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchorID)
+                }
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 34)
+                .padding(.top, 34)
+                .padding(.bottom, 28)
+            }
+            .onAppear {
+                Self.scrollToBottom(proxy, animated: false)
+            }
+            .onChange(of: conversation.messages.count) { _ in
+                Self.scrollToBottom(proxy)
+            }
+            .onChange(of: conversation.isSending) { _ in
+                Self.scrollToBottom(proxy)
+            }
+            .onChange(of: conversation.errorMessage) { _ in
+                Self.scrollToBottom(proxy)
+            }
+        }
+    }
+
+    private static func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
+            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                scroll()
+            }
+        } else {
+            scroll()
+        }
+
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    scroll()
+                }
+            } else {
+                scroll()
+            }
+        }
+    }
+
+    private static func shouldShowErrorSummary(
+        _ errorMessage: String,
+        in conversation: WordPressAgentConversation
+    ) -> Bool {
+        let trimmedError = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedError.isEmpty else { return false }
+        guard let lastMessage = conversation.messages.last else { return true }
+        return lastMessage.role != .system
+            || lastMessage.text.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedError
+    }
+}
+
+private struct WordPressAgentMessageRow: View, Equatable {
     let message: WordPressAgentMessage
+
+    static func == (lhs: WordPressAgentMessageRow, rhs: WordPressAgentMessageRow) -> Bool {
+        lhs.message == rhs.message
+    }
 
     private var isUser: Bool {
         message.role == .user
@@ -1807,7 +1933,7 @@ private struct WordPressAgentMessageRow: View {
                 }
 
                 if !message.text.isEmpty {
-                    MarkdownMessageText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
+                    MessageBodyText(text: message.text, foregroundStyle: .white, isOnDarkBackground: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -1837,7 +1963,7 @@ private struct WordPressAgentMessageRow: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                MarkdownMessageText(text: message.text, foregroundStyle: .primary)
+                MessageBodyText(text: message.text, foregroundStyle: .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 12) {
@@ -1862,7 +1988,7 @@ private struct WordPressAgentMessageRow: View {
 
     private var systemMessage: some View {
         Label {
-            MarkdownMessageText(text: message.text, foregroundStyle: .red)
+            MessageBodyText(text: message.text, foregroundStyle: .red)
         } icon: {
             Image(systemName: "exclamationmark.triangle.fill")
         }
@@ -1882,14 +2008,133 @@ private struct WordPressAgentTypingRow: View {
         HStack(spacing: 10) {
             WordPressComLogoMark()
                 .frame(width: 24, height: 24)
-            ProgressView()
-                .controlSize(.small)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
             Text("Thinking...")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct MessageBodyText: View {
+    let text: String
+    let foregroundStyle: Color
+    var isOnDarkBackground = false
+
+    @State private var isExpanded = false
+
+    private static let inlineMarkdownByteLimit = 2_500
+    private static let collapsedPreviewCharacterLimit = 600
+    private static let expandedPreviewCharacterLimit = 2_000
+    private static let inlineLineLimit = 80
+
+    var body: some View {
+        if shouldUseCompactPreview {
+            compactPreview
+        } else {
+            MarkdownMessageText(
+                text: text,
+                foregroundStyle: foregroundStyle,
+                isOnDarkBackground: isOnDarkBackground
+            )
+        }
+    }
+
+    private var shouldUseCompactPreview: Bool {
+        text.utf8.count > Self.inlineMarkdownByteLimit || Self.exceedsInlineLineLimit(text)
+    }
+
+    private var previewText: String {
+        let limit = isExpanded
+            ? Self.expandedPreviewCharacterLimit
+            : Self.collapsedPreviewCharacterLimit
+        let endIndex = text.index(text.startIndex, offsetBy: limit, limitedBy: text.endIndex) ?? text.endIndex
+        let isTruncated = endIndex < text.endIndex
+        var preview = String(text[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if preview.isEmpty {
+            preview = String(text[..<endIndex])
+        }
+        if isTruncated {
+            preview += "\n\n[Message preview truncated. Copy the full text to inspect everything.]"
+        }
+        return preview
+    }
+
+    private var compactPreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(previewText)
+                .font(.system(size: 16))
+                .lineSpacing(4)
+                .foregroundStyle(foregroundStyle)
+                .lineLimit(isExpanded ? 24 : 8)
+
+            HStack(spacing: 10) {
+                Text(compactStatusText)
+                    .font(.system(size: 12, weight: .medium))
+
+                Spacer(minLength: 0)
+
+                if canExpandPreview {
+                    Button(isExpanded ? "Show less" : "Show more") {
+                        isExpanded.toggle()
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button("Copy full") {
+                    copyFullText()
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(secondaryTextColor)
+        }
+    }
+
+    private var canExpandPreview: Bool {
+        guard let collapsedEndIndex = text.index(
+            text.startIndex,
+            offsetBy: Self.collapsedPreviewCharacterLimit,
+            limitedBy: text.endIndex
+        ) else {
+            return false
+        }
+        return collapsedEndIndex < text.endIndex
+    }
+
+    private var compactStatusText: String {
+        let previewKind = isExpanded ? "Larger preview" : "Compact preview"
+        return "\(previewKind) of \(Self.formattedByteCount(text.utf8.count)) message"
+    }
+
+    private var secondaryTextColor: Color {
+        isOnDarkBackground
+            ? Color.white.opacity(0.72)
+            : Color(nsColor: .secondaryLabelColor)
+    }
+
+    private func copyFullText() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private static func formattedByteCount(_ byteCount: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    private static func exceedsInlineLineLimit(_ text: String) -> Bool {
+        var lineBreaks = 0
+        for character in text where character.isNewline {
+            lineBreaks += 1
+            if lineBreaks > inlineLineLimit {
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -1905,7 +2150,6 @@ private struct MarkdownMessageText: View {
                 case .text(_, let fragmentText):
                     if !fragmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(Self.messageAttributedString(from: fragmentText))
-                            .textSelection(.enabled)
                             .font(.system(size: 16))
                             .lineSpacing(4)
                             .foregroundStyle(foregroundStyle)
@@ -2314,7 +2558,6 @@ private struct MarkdownTableView: View {
         isHeader: Bool
     ) -> some View {
         Text(MarkdownMessageText.messageAttributedString(from: text))
-            .textSelection(.enabled)
             .font(.system(size: 14, weight: isHeader ? .semibold : .regular))
             .lineSpacing(3)
             .foregroundStyle(foregroundStyle)
