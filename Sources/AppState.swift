@@ -1154,6 +1154,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return trimmedSessionID.isEmpty ? nil : trimmedSessionID
     }
 
+    private static func nonEmptyAgentMessageCount(in messages: [WordPressAgentMessage]) -> Int {
+        messages.filter {
+            $0.role == .agent
+                && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+    }
+
     private func scheduleCachedWordPressAgentConversationsPersistence() {
         guard shouldPersistWordPressAgentConversationsCache else { return }
 
@@ -1456,6 +1463,108 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return (summaries, chatsByID)
     }
 
+    private func reconcileWordPressAgentConversationFromHistory(
+        key: WordPressAgentConversationKey,
+        conversationID: String,
+        sessionID: String?,
+        taskID: String,
+        minimumAgentMessageCount: Int,
+        waitForRemoteAnswer: Bool
+    ) async -> WPCOMAgentResponse? {
+        guard let normalizedSessionID = Self.normalizedWordPressAgentSessionID(sessionID) else {
+            return nil
+        }
+
+        let pollDelays: [UInt64] = waitForRemoteAnswer
+            ? [0, 700_000_000, 1_400_000_000, 2_500_000_000]
+            : [0]
+
+        for delay in pollDelays {
+            guard !Task.isCancelled else { return nil }
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+
+            do {
+                if let response = try await reconcileWordPressAgentConversationFromHistoryOnce(
+                    key: key,
+                    conversationID: conversationID,
+                    normalizedSessionID: normalizedSessionID,
+                    originalSessionID: sessionID,
+                    taskID: taskID,
+                    minimumAgentMessageCount: minimumAgentMessageCount
+                ) {
+                    return response
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private func reconcileWordPressAgentConversationFromHistoryOnce(
+        key: WordPressAgentConversationKey,
+        conversationID: String,
+        normalizedSessionID: String,
+        originalSessionID: String?,
+        taskID: String,
+        minimumAgentMessageCount: Int
+    ) async throws -> WPCOMAgentResponse? {
+        let agentID = normalizedWordPressAgentID(key.agentID)
+        let page = try await fetchWordPressAgentConversationPage(
+            agentID: agentID,
+            pageNumber: 1,
+            itemsPerPage: wordpressAgentConversationPageSize
+        )
+
+        guard let summary = page.summaries.first(where: { summary in
+            Self.normalizedWordPressAgentSessionID(summary.sessionID) == normalizedSessionID
+                || Self.normalizedWordPressAgentSessionID(page.chatsByID[summary.chatID]?.sessionID) == normalizedSessionID
+        }) else {
+            return nil
+        }
+
+        let chat = page.chatsByID[summary.chatID]
+        let sourceMessages = chat?.messages ?? [summary.firstMessage, summary.lastMessage].compactMap { $0 }
+        let messages = sourceMessages.compactMap { wordPressAgentMessage(from: $0) }
+        let agentMessages = messages.filter {
+            $0.role == .agent
+                && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard agentMessages.count > minimumAgentMessageCount,
+              let latestAgentMessage = agentMessages.last else {
+            return nil
+        }
+
+        let resolvedSessionID = chat?.sessionID ?? summary.sessionID ?? originalSessionID
+        await MainActor.run {
+            if let index = self.wordpressAgentConversations.firstIndex(where: { $0.id == conversationID }) {
+                self.wordpressAgentConversations[index].sessionID = resolvedSessionID
+                self.wordpressAgentConversations[index].remoteChatID = summary.chatID
+            }
+            _ = self.mergeWordPressAgentHistory(
+                agentID: agentID,
+                summaries: [summary],
+                chatsByID: page.chatsByID,
+                removeMissingRemoteConversations: false,
+                preserveSendingConversations: false
+            )
+            if self.wordpressAgentConversations.contains(where: { $0.id == conversationID }) {
+                self.setActiveWordPressAgentConversation(conversationID)
+            }
+        }
+
+        return WPCOMAgentResponse(
+            text: latestAgentMessage.text,
+            state: "completed",
+            sessionID: resolvedSessionID,
+            taskID: taskID,
+            toolCalls: []
+        )
+    }
+
     func refreshLatestExternalAppSnapshot() {
         updateLatestExternalAppSnapshot(from: NSWorkspace.shared.frontmostApplication)
     }
@@ -1614,6 +1723,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private struct WordPressAgentAppendResult {
         let conversationID: String
         let sessionID: String?
+        let agentMessageCount: Int
     }
 
     @discardableResult
@@ -1621,7 +1731,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         agentID: String,
         summaries: [WPCOMAgentConversationSummary],
         chatsByID: [Int: WPCOMAgentChat],
-        removeMissingRemoteConversations: Bool
+        removeMissingRemoteConversations: Bool,
+        preserveSendingConversations: Bool = true
     ) -> Int {
         var mergedConversations = Self.deduplicatedWordPressAgentConversations(wordpressAgentConversations)
         var refreshedRemoteChatIDs = Set<Int>()
@@ -1645,7 +1756,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 chatID: summary.chatID,
                 sessionID: conversation.sessionID
             ) {
-                if mergedConversations[index].isSending {
+                if preserveSendingConversations && mergedConversations[index].isSending {
                     continue
                 }
                 let existingID = mergedConversations[index].id
@@ -2174,12 +2285,41 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 preuploadedMedia: preuploadedMedia,
                 conversationIDForPreview: appendResult.conversationID
             )
+            let responseText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let responseSessionID = response.sessionID ?? appendResult.sessionID
+            if responseText.isEmpty,
+               let reconciledResponse = await reconcileWordPressAgentConversationFromHistory(
+                   key: key,
+                   conversationID: appendResult.conversationID,
+                   sessionID: responseSessionID,
+                   taskID: response.taskID,
+                   minimumAgentMessageCount: appendResult.agentMessageCount,
+                   waitForRemoteAnswer: true
+               ) {
+                return WordPressAgentTurnResult(
+                    response: reconciledResponse,
+                    conversationID: appendResult.conversationID
+                )
+            }
             await MainActor.run {
                 self.recordWordPressAgentResponse(
                     response,
                     conversationID: appendResult.conversationID,
                     key: key
                 )
+            }
+
+            if !responseText.isEmpty {
+                Task {
+                    _ = await self.reconcileWordPressAgentConversationFromHistory(
+                        key: key,
+                        conversationID: appendResult.conversationID,
+                        sessionID: responseSessionID,
+                        taskID: response.taskID,
+                        minimumAgentMessageCount: appendResult.agentMessageCount + 1,
+                        waitForRemoteAnswer: true
+                    )
+                }
             }
             return WordPressAgentTurnResult(response: response, conversationID: appendResult.conversationID)
         } catch {
@@ -2486,7 +2626,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             wordpressAgentConversations[fallbackIndex].sessionID = sessionID
             return WordPressAgentAppendResult(
                 conversationID: wordpressAgentConversations[fallbackIndex].id,
-                sessionID: sessionID
+                sessionID: sessionID,
+                agentMessageCount: Self.nonEmptyAgentMessageCount(
+                    in: wordpressAgentConversations[fallbackIndex].messages
+                )
             )
         }
 
@@ -2496,6 +2639,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             wordpressAgentConversations[index].sessionID = UUID().uuidString
         }
 
+        let agentMessageCount = Self.nonEmptyAgentMessageCount(in: wordpressAgentConversations[index].messages)
         wordpressAgentConversations[index].messages.append(
             WordPressAgentMessage(role: role, text: text, state: state, attachments: attachments)
         )
@@ -2505,7 +2649,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
         return WordPressAgentAppendResult(
             conversationID: wordpressAgentConversations[index].id,
-            sessionID: wordpressAgentConversations[index].sessionID
+            sessionID: wordpressAgentConversations[index].sessionID,
+            agentMessageCount: agentMessageCount
         )
     }
 

@@ -2016,16 +2016,39 @@ private struct WordPressAgentTypingRow: View {
         HStack(spacing: 10) {
             WordPressComLogoMark()
                 .frame(width: 24, height: 24)
-            Image(systemName: "ellipsis")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18, height: 18)
+            ThinkingDots()
             Text("Thinking...")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ThinkingDots: View {
+    @State private var isAnimating = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(Color.secondary)
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(isAnimating ? 1 : 0.45)
+                    .opacity(isAnimating ? 1 : 0.35)
+                    .animation(
+                        .easeInOut(duration: 0.55)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index) * 0.14),
+                        value: isAnimating
+                    )
+            }
+        }
+        .frame(width: 18, height: 18)
+        .onAppear {
+            isAnimating = true
+        }
     }
 }
 
@@ -3187,6 +3210,14 @@ private extension WordPressAgentMessage {
         guard let state,
               !state.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "WordPress Agent"
+        }
+        switch state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "completed", "complete", "done", "success":
+            return "WordPress Agent"
+        case "working", "running", "submitted", "queued", "in_progress", "in progress":
+            return "Thinking"
+        default:
+            break
         }
         return state
     }
