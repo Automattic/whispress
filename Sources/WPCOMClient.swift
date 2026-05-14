@@ -876,20 +876,27 @@ final class WPCOMClient: NSObject {
     private struct SitePreviewOptions: Decodable {
         let unmappedURL: String?
         let frameNonce: String?
+        let jetpackFrameNonce: String?
 
         private enum CodingKeys: String, CodingKey {
             case unmappedURL = "unmapped_url"
             case frameNonce = "frame_nonce"
+            case jetpackFrameNonce = "jetpack_frame_nonce"
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             unmappedURL = Self.decodeString(container, forKey: .unmappedURL)
             frameNonce = Self.decodeString(container, forKey: .frameNonce)
+            jetpackFrameNonce = Self.decodeString(container, forKey: .jetpackFrameNonce)
         }
 
         var previewOptions: WPCOMSitePreviewOptions {
-            WPCOMSitePreviewOptions(unmappedURL: unmappedURL, frameNonce: frameNonce)
+            // Simple WordPress.com sites usually expose `frame_nonce`; Jetpack/Atomic
+            // responses can expose the same preview-frame token as `jetpack_frame_nonce`.
+            // The preview URL builder only needs one nonce, so prefer the generic name
+            // and fall back to the Jetpack-specific field when needed.
+            WPCOMSitePreviewOptions(unmappedURL: unmappedURL, frameNonce: frameNonce ?? jetpackFrameNonce)
         }
 
         private static func decodeString(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> String? {
@@ -1353,18 +1360,35 @@ final class WPCOMClient: NSObject {
             throw WPCOMClientError.invalidResponse("Missing WordPress.com username for preview authentication.")
         }
 
+        // The preview WebView needs real WordPress.com browser cookies, not just the
+        // REST API bearer token used by native requests. Reuse an existing valid
+        // WebKit cookie so reloads and back/forward navigation do not repeatedly
+        // ask wp-login.php to mint another browser session.
         let existingCookies = await Self.allCookies(in: cookieStore)
         if Self.hasWordPressComAuthCookie(username: trimmedUsername, in: existingCookies) {
             return
         }
 
         let request = try await wordPressComAuthRequest(username: trimmedUsername)
+
+        // Use a one-off URLSession that bypasses the system proxy only for this
+        // cookie-bootstrap request. We observed the macOS proxy path turning the
+        // mobile token login into a normal 200 login page response with empty
+        // `wordpress_logged_in`/`wordpress_sec` cookies. Direct routing returns
+        // the expected redirect plus real cookies. Keep the user's proxy setting
+        // for normal API traffic; this special case exists because wp-login.php is
+        // browser cookie infrastructure, not a normal JSON API endpoint.
         let session = sessionProvider.isolatedSession(bypassesSystemProxy: true)
         defer { session.finishTasksAndInvalidate() }
         let (_, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw WPCOMClientError.invalidResponse("No HTTP response")
         }
+
+        // URLSession may move Set-Cookie values into its private cookie storage
+        // before returning, while some responses still expose cookies in headers.
+        // Merge both sources and validate the combined set before copying anything
+        // into WebKit.
         let sessionCookies = session.configuration.httpCookieStorage?.cookies ?? []
         let responseCookies = Self.cookies(from: httpResponse, for: request.url!)
 
@@ -1380,6 +1404,9 @@ final class WPCOMClient: NSObject {
             throw WPCOMClientError.invalidResponse("WordPress.com did not return a usable logged-in cookie for preview authentication.")
         }
 
+        // A failed bootstrap can return empty WordPress.com auth cookies. Do not
+        // copy those into the WebView, because an empty cookie with the same name
+        // can overwrite a previously usable browser session.
         let cookiesToCopy = cookies.filter { !Self.isEmptyWordPressComAuthCookie($0) }
         await Self.setCookies(cookiesToCopy, into: cookieStore)
         let webViewCookies = await Self.allCookies(in: cookieStore)
@@ -1403,10 +1430,19 @@ final class WPCOMClient: NSObject {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.wordPressAppUserAgent(), forHTTPHeaderField: "User-Agent")
         request.setValue(authorizationHeader, forHTTPHeaderField: "Authorization")
+
+        // WordPress.com mobile clients authenticate wp-login.php by sending the
+        // bearer token in form data. Keep the Authorization header too, but do not
+        // rely on it: login infrastructure can fail to pass HTTP_AUTHORIZATION
+        // through to PHP on wp-login.php. The empty password and redirect fields
+        // mirror the mobile-compatible path and keep this as a cookie bootstrap,
+        // not a password login attempt.
         request.httpBody = Self.formURLEncodedBody([
             "log": trimmedUsername,
-            "rememberme": "true",
-            "authorization": authorizationHeader
+            "pwd": "",
+            "rememberme": "forever",
+            "authorization": authorizationHeader,
+            "redirect_to": "https://wordpress.com/"
         ])
         return request
     }
@@ -1425,6 +1461,11 @@ final class WPCOMClient: NSObject {
 
     func fetchSitePreviewOptions(siteID: Int) async throws -> WPCOMSitePreviewOptions {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(siteID)")!
+        // These options let us turn a public-looking post URL into the private
+        // preview URL WordPress.com expects: unmapped host first, then the frame
+        // nonce used by the preview shell. Request both nonce spellings because
+        // simple WordPress.com and Jetpack/Atomic sites have not always exposed
+        // the field under the same option name.
         components.queryItems = [
             URLQueryItem(name: "fields", value: "ID,options"),
             URLQueryItem(name: "options", value: "unmapped_url,frame_nonce,jetpack_frame_nonce")

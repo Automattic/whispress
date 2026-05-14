@@ -2130,6 +2130,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return
         }
 
+        // Preview auth has two different cookie stories. Simple WordPress.com
+        // sites need wordpress.com login cookies so private draft previews do not
+        // fall through to public 404/login pages. Jetpack/Atomic sites may also
+        // need site-scoped read-access cookies from a separate endpoint.
         do {
             try await wpcomClient.loadWordPressComAuthCookies(
                 username: wordpressComUser.username,
@@ -2140,6 +2144,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if let siteID {
+            // Atomic read-access cookies are best effort. Simple WordPress.com
+            // sites do not have them, and Jetpack/Atomic previews can still work
+            // once the WordPress.com cookie and frame nonce are present. Log the
+            // failure, but do not block the WebView on this optional endpoint.
             do {
                 try await wpcomClient.loadAtomicReadAccessCookies(siteID: siteID, into: cookieStore)
             } catch {

@@ -52,6 +52,11 @@ enum WordPressAgentPreviewURLResolver {
             return previewURL(for: url)
         }
 
+        // WordPress.com preview frames are usually served from the site's
+        // unmapped URL, even when the agent gave us a mapped-domain link. Apply
+        // that host rewrite before appending the frame nonce so simple
+        // WordPress.com and Jetpack/Atomic previews both enter the authenticated
+        // preview shell instead of the public post route.
         previewURL = unmappedURL(for: previewURL, unmappedURLString: sitePreviewOptions.unmappedURL) ?? previewURL
         previewURL = addingFrameNonceIfNeeded(to: previewURL, frameNonce: sitePreviewOptions.frameNonce) ?? previewURL
         return previewURL

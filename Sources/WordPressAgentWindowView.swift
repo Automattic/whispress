@@ -1303,6 +1303,12 @@ private struct WordPressAgentWebPreview: NSViewRepresentable {
                 return
             }
 
+            // Do not start a speculative WebView navigation before auth prep.
+            // Draft previews are very sensitive to the first request: simple
+            // WordPress.com sites can answer an unauthenticated hit with a public
+            // 404 or wp-login page, and WebKit will show that stale-looking state
+            // while the cookie bootstrap is still running. Resolve the preview
+            // URL, copy cookies into WebKit, then make the first real load.
             loadTask = Task { @MainActor [weak self, weak webView] in
                 guard let webView else { return }
                 let previewURL = await appState.resolvedWordPressAgentPreviewURL(initialPreviewURL, siteID: siteID)
