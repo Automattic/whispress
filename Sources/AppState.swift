@@ -732,6 +732,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var isCapturingShortcut = false
     private var isAwaitingMicrophonePermission = false
     private var pendingMicrophonePermissionTriggerMode: RecordingTriggerMode?
+    private var pendingMicrophonePermissionRoutesToWordPressAgent = false
     private var nextWordPressAgentConversationsPage = 1
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var elevenLabsSpeechTask: Task<Void, Never>?
@@ -1153,6 +1154,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return trimmedSessionID.isEmpty ? nil : trimmedSessionID
     }
 
+    private static func nonEmptyAgentMessageCount(in messages: [WordPressAgentMessage]) -> Int {
+        messages.filter {
+            $0.role == .agent
+                && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+    }
+
     private func scheduleCachedWordPressAgentConversationsPersistence() {
         guard shouldPersistWordPressAgentConversationsCache else { return }
 
@@ -1455,6 +1463,108 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return (summaries, chatsByID)
     }
 
+    private func reconcileWordPressAgentConversationFromHistory(
+        key: WordPressAgentConversationKey,
+        conversationID: String,
+        sessionID: String?,
+        taskID: String,
+        minimumAgentMessageCount: Int,
+        waitForRemoteAnswer: Bool
+    ) async -> WPCOMAgentResponse? {
+        guard let normalizedSessionID = Self.normalizedWordPressAgentSessionID(sessionID) else {
+            return nil
+        }
+
+        let pollDelays: [UInt64] = waitForRemoteAnswer
+            ? [0, 700_000_000, 1_400_000_000, 2_500_000_000]
+            : [0]
+
+        for delay in pollDelays {
+            guard !Task.isCancelled else { return nil }
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+
+            do {
+                if let response = try await reconcileWordPressAgentConversationFromHistoryOnce(
+                    key: key,
+                    conversationID: conversationID,
+                    normalizedSessionID: normalizedSessionID,
+                    originalSessionID: sessionID,
+                    taskID: taskID,
+                    minimumAgentMessageCount: minimumAgentMessageCount
+                ) {
+                    return response
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private func reconcileWordPressAgentConversationFromHistoryOnce(
+        key: WordPressAgentConversationKey,
+        conversationID: String,
+        normalizedSessionID: String,
+        originalSessionID: String?,
+        taskID: String,
+        minimumAgentMessageCount: Int
+    ) async throws -> WPCOMAgentResponse? {
+        let agentID = normalizedWordPressAgentID(key.agentID)
+        let page = try await fetchWordPressAgentConversationPage(
+            agentID: agentID,
+            pageNumber: 1,
+            itemsPerPage: wordpressAgentConversationPageSize
+        )
+
+        guard let summary = page.summaries.first(where: { summary in
+            Self.normalizedWordPressAgentSessionID(summary.sessionID) == normalizedSessionID
+                || Self.normalizedWordPressAgentSessionID(page.chatsByID[summary.chatID]?.sessionID) == normalizedSessionID
+        }) else {
+            return nil
+        }
+
+        let chat = page.chatsByID[summary.chatID]
+        let sourceMessages = chat?.messages ?? [summary.firstMessage, summary.lastMessage].compactMap { $0 }
+        let messages = sourceMessages.compactMap { wordPressAgentMessage(from: $0) }
+        let agentMessages = messages.filter {
+            $0.role == .agent
+                && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard agentMessages.count > minimumAgentMessageCount,
+              let latestAgentMessage = agentMessages.last else {
+            return nil
+        }
+
+        let resolvedSessionID = chat?.sessionID ?? summary.sessionID ?? originalSessionID
+        await MainActor.run {
+            if let index = self.wordpressAgentConversations.firstIndex(where: { $0.id == conversationID }) {
+                self.wordpressAgentConversations[index].sessionID = resolvedSessionID
+                self.wordpressAgentConversations[index].remoteChatID = summary.chatID
+            }
+            _ = self.mergeWordPressAgentHistory(
+                agentID: agentID,
+                summaries: [summary],
+                chatsByID: page.chatsByID,
+                removeMissingRemoteConversations: false,
+                preserveSendingConversations: false
+            )
+            if self.wordpressAgentConversations.contains(where: { $0.id == conversationID }) {
+                self.setActiveWordPressAgentConversation(conversationID)
+            }
+        }
+
+        return WPCOMAgentResponse(
+            text: latestAgentMessage.text,
+            state: "completed",
+            sessionID: resolvedSessionID,
+            taskID: taskID,
+            toolCalls: []
+        )
+    }
+
     func refreshLatestExternalAppSnapshot() {
         updateLatestExternalAppSnapshot(from: NSWorkspace.shared.frontmostApplication)
     }
@@ -1613,6 +1723,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private struct WordPressAgentAppendResult {
         let conversationID: String
         let sessionID: String?
+        let agentMessageCount: Int
     }
 
     @discardableResult
@@ -1620,7 +1731,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         agentID: String,
         summaries: [WPCOMAgentConversationSummary],
         chatsByID: [Int: WPCOMAgentChat],
-        removeMissingRemoteConversations: Bool
+        removeMissingRemoteConversations: Bool,
+        preserveSendingConversations: Bool = true
     ) -> Int {
         var mergedConversations = Self.deduplicatedWordPressAgentConversations(wordpressAgentConversations)
         var refreshedRemoteChatIDs = Set<Int>()
@@ -1644,7 +1756,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 chatID: summary.chatID,
                 sessionID: conversation.sessionID
             ) {
-                if mergedConversations[index].isSending {
+                if preserveSendingConversations && mergedConversations[index].isSending {
                     continue
                 }
                 let existingID = mergedConversations[index].id
@@ -2173,12 +2285,41 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 preuploadedMedia: preuploadedMedia,
                 conversationIDForPreview: appendResult.conversationID
             )
+            let responseText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let responseSessionID = response.sessionID ?? appendResult.sessionID
+            if responseText.isEmpty,
+               let reconciledResponse = await reconcileWordPressAgentConversationFromHistory(
+                   key: key,
+                   conversationID: appendResult.conversationID,
+                   sessionID: responseSessionID,
+                   taskID: response.taskID,
+                   minimumAgentMessageCount: appendResult.agentMessageCount,
+                   waitForRemoteAnswer: true
+               ) {
+                return WordPressAgentTurnResult(
+                    response: reconciledResponse,
+                    conversationID: appendResult.conversationID
+                )
+            }
             await MainActor.run {
                 self.recordWordPressAgentResponse(
                     response,
                     conversationID: appendResult.conversationID,
                     key: key
                 )
+            }
+
+            if !responseText.isEmpty {
+                Task {
+                    _ = await self.reconcileWordPressAgentConversationFromHistory(
+                        key: key,
+                        conversationID: appendResult.conversationID,
+                        sessionID: responseSessionID,
+                        taskID: response.taskID,
+                        minimumAgentMessageCount: appendResult.agentMessageCount + 1,
+                        waitForRemoteAnswer: true
+                    )
+                }
             }
             return WordPressAgentTurnResult(response: response, conversationID: appendResult.conversationID)
         } catch {
@@ -2485,7 +2626,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             wordpressAgentConversations[fallbackIndex].sessionID = sessionID
             return WordPressAgentAppendResult(
                 conversationID: wordpressAgentConversations[fallbackIndex].id,
-                sessionID: sessionID
+                sessionID: sessionID,
+                agentMessageCount: Self.nonEmptyAgentMessageCount(
+                    in: wordpressAgentConversations[fallbackIndex].messages
+                )
             )
         }
 
@@ -2495,6 +2639,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             wordpressAgentConversations[index].sessionID = UUID().uuidString
         }
 
+        let agentMessageCount = Self.nonEmptyAgentMessageCount(in: wordpressAgentConversations[index].messages)
         wordpressAgentConversations[index].messages.append(
             WordPressAgentMessage(role: role, text: text, state: state, attachments: attachments)
         )
@@ -2504,7 +2649,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         setActiveWordPressAgentConversation(wordpressAgentConversations[index].id)
         return WordPressAgentAppendResult(
             conversationID: wordpressAgentConversations[index].id,
-            sessionID: wordpressAgentConversations[index].sessionID
+            sessionID: wordpressAgentConversations[index].sessionID,
+            agentMessageCount: agentMessageCount
         )
     }
 
@@ -3235,13 +3381,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func toggleRecording() {
+        toggleRecording(routeToWordPressAgent: false)
+    }
+
+    func toggleRecordingForWordPressAgentUtilityOverlay() {
+        toggleRecording(routeToWordPressAgent: true)
+    }
+
+    private func toggleRecording(routeToWordPressAgent: Bool) {
         os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
         cancelPendingShortcutStart()
         if isRecording {
             stopAndTranscribe()
         } else {
             shortcutSessionController.beginManual(mode: .toggle)
-            startRecording(triggerMode: .toggle)
+            startRecording(triggerMode: .toggle, routeToWordPressAgent: routeToWordPressAgent)
         }
     }
 
@@ -3420,7 +3574,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         scheduleReadyStatusReset(after: 2, matching: ["Fix Edit Mode modifier"])
     }
 
-    private func startRecording(triggerMode: RecordingTriggerMode) {
+    private func startRecording(triggerMode: RecordingTriggerMode, routeToWordPressAgent: Bool = false) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !isRecording && !isTranscribing else { return }
@@ -3433,9 +3587,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             manualCommandRequested: scheduledSelectionSnapshot == nil
                 ? hotkeyManager.currentPressedModifiers.contains(commandModeManualModifier.shortcutModifier)
                 : scheduledManualCommandInvocation,
+            routeToWordPressAgent: routeToWordPressAgent,
             startedAt: t0
         ) else { return }
-        guard ensureMicrophoneAccess() else { return }
+        guard ensureMicrophoneAccess(routeToWordPressAgent: routeToWordPressAgent) else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         beginRecording(triggerMode: triggerMode)
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
@@ -3445,12 +3600,65 @@ final class AppState: ObservableObject, @unchecked Sendable {
         triggerMode: RecordingTriggerMode,
         selectionSnapshot: AppSelectionSnapshot? = nil,
         manualCommandRequested: Bool? = nil,
+        routeToWordPressAgent: Bool = false,
         startedAt: CFAbsoluteTime? = nil
     ) -> Bool {
         activeRecordingTriggerMode = triggerMode
         currentSessionWordPressAgentConversationKey = nil
         currentSessionWordPressAgentConversationID = nil
         currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+
+        let shouldRouteToWordPressAgent =
+            routeToWordPressAgent || isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused
+
+        if shouldRouteToWordPressAgent {
+            guard isWordPressComSignedIn,
+                  let agentConversationKey = wordPressAgentWindowDictationKey() else {
+                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
+                statusText = "WordPress.com sign-in required"
+                activeRecordingTriggerMode = nil
+                currentSessionIntent = .dictation
+                currentSessionWordPressComSiteID = nil
+                currentSessionWordPressAgentConversationKey = nil
+                currentSessionWordPressAgentConversationID = nil
+                currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+                shortcutSessionController.reset()
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+                return false
+            }
+
+            let shouldStartNewAgentConversation = routeToWordPressAgent || isWordPressAgentUtilityOverlayFocused
+            let agentConversationID: String?
+            if shouldStartNewAgentConversation {
+                guard let newConversationID = startWordPressAgentConversation(
+                    siteID: agentConversationKey.siteID,
+                    agentID: agentConversationKey.agentID
+                ) else {
+                    activeRecordingTriggerMode = nil
+                    currentSessionIntent = .dictation
+                    currentSessionWordPressComSiteID = nil
+                    currentSessionWordPressAgentConversationKey = nil
+                    currentSessionWordPressAgentConversationID = nil
+                    currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+                    shortcutSessionController.reset()
+                    return false
+                }
+                agentConversationID = newConversationID
+            } else {
+                let agentConversationIndex = ensureWordPressAgentConversation(for: agentConversationKey)
+                agentConversationID = wordpressAgentConversations.indices.contains(agentConversationIndex)
+                    ? wordpressAgentConversations[agentConversationIndex].id
+                    : nil
+            }
+            currentSessionIntent = .dictation
+            currentSessionWordPressComSiteID = agentConversationKey.siteID
+            currentSessionWordPressAgentConversationKey = agentConversationKey
+            currentSessionWordPressAgentConversationID = agentConversationID
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = shouldStartNewAgentConversation
+            overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
+            return true
+        }
+
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
@@ -3467,34 +3675,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
-
-        if isWordPressAgentWindowFocused || isWordPressAgentUtilityOverlayFocused {
-            guard isWordPressComSignedIn,
-                  let agentConversationKey = wordPressAgentWindowDictationKey() else {
-                errorMessage = "Sign in with WordPress.com and choose a default site before using agent dictation."
-                statusText = "WordPress.com sign-in required"
-                activeRecordingTriggerMode = nil
-                currentSessionIntent = .dictation
-                currentSessionWordPressComSiteID = nil
-                currentSessionWordPressAgentConversationKey = nil
-                currentSessionWordPressAgentConversationID = nil
-                currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
-                shortcutSessionController.reset()
-                NotificationCenter.default.post(name: .showSettings, object: nil)
-                return false
-            }
-
-            let agentConversationIndex = ensureWordPressAgentConversation(for: agentConversationKey)
-            currentSessionIntent = .dictation
-            currentSessionWordPressComSiteID = agentConversationKey.siteID
-            currentSessionWordPressAgentConversationKey = agentConversationKey
-            currentSessionWordPressAgentConversationID = wordpressAgentConversations.indices.contains(agentConversationIndex)
-                ? wordpressAgentConversations[agentConversationIndex].id
-                : nil
-            currentSessionShouldOpenWordPressAgentWindowOnCompletion = isWordPressAgentUtilityOverlayFocused
-            overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
-            return true
-        }
 
         guard isWordPressComSignedIn,
               let resolvedSiteID = effectiveWordPressComSiteID(for: selectionSnapshot.bundleIdentifier) else {
@@ -3525,7 +3705,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    private func ensureMicrophoneAccess() -> Bool {
+    private func ensureMicrophoneAccess(routeToWordPressAgent: Bool = false) -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
         case .authorized:
@@ -3535,12 +3715,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 return false
             }
 
-            prepareForMicrophonePermissionPrompt(triggerMode: triggerMode)
+            prepareForMicrophonePermissionPrompt(
+                triggerMode: triggerMode,
+                routeToWordPressAgent: routeToWordPressAgent
+            )
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
                     guard let strongSelf = self else { return }
                     let pendingTriggerMode = strongSelf.pendingMicrophonePermissionTriggerMode
+                    let pendingRoutesToWordPressAgent = strongSelf.pendingMicrophonePermissionRoutesToWordPressAgent
                     strongSelf.pendingMicrophonePermissionTriggerMode = nil
+                    strongSelf.pendingMicrophonePermissionRoutesToWordPressAgent = false
                     strongSelf.isAwaitingMicrophonePermission = false
                     strongSelf.restartHotkeyMonitoring()
 
@@ -3548,7 +3733,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     if granted {
                         strongSelf.errorMessage = nil
                         if triggerMode == .toggle {
-                            guard strongSelf.prepareRecordingStart(triggerMode: .toggle) else { return }
+                            guard strongSelf.prepareRecordingStart(
+                                triggerMode: .toggle,
+                                routeToWordPressAgent: pendingRoutesToWordPressAgent
+                            ) else { return }
                             strongSelf.shortcutSessionController.beginManual(mode: .toggle)
                             strongSelf.beginRecording(triggerMode: .toggle)
                         } else {
@@ -3566,6 +3754,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.currentSessionIntent = .dictation
                         strongSelf.currentSessionWordPressComSiteID = nil
+                        strongSelf.currentSessionWordPressAgentConversationKey = nil
+                        strongSelf.currentSessionWordPressAgentConversationID = nil
+                        strongSelf.currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
                         strongSelf.shortcutSessionController.reset()
                         strongSelf.showMicrophonePermissionAlert()
                     }
@@ -3578,15 +3769,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
             currentSessionWordPressComSiteID = nil
+            currentSessionWordPressAgentConversationKey = nil
+            currentSessionWordPressAgentConversationID = nil
+            currentSessionShouldOpenWordPressAgentWindowOnCompletion = false
+            pendingMicrophonePermissionRoutesToWordPressAgent = false
             shortcutSessionController.reset()
             showMicrophonePermissionAlert()
             return false
         }
     }
 
-    private func prepareForMicrophonePermissionPrompt(triggerMode: RecordingTriggerMode) {
+    private func prepareForMicrophonePermissionPrompt(
+        triggerMode: RecordingTriggerMode,
+        routeToWordPressAgent: Bool = false
+    ) {
         isAwaitingMicrophonePermission = true
         pendingMicrophonePermissionTriggerMode = triggerMode
+        pendingMicrophonePermissionRoutesToWordPressAgent = routeToWordPressAgent
         hotkeyManager.stop()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
@@ -3998,6 +4197,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             }
                             agentReply = try await self.callWordPressAgentMessage(
                                 message: agentMessage,
+                                conversationID: sessionWordPressAgentConversationID,
                                 key: sessionWordPressAgentConversationKey,
                                 context: appContext
                             )

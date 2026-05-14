@@ -33,7 +33,10 @@ struct AgentComposerTextView: NSViewRepresentable {
             coordinator?.updateHeight(contentHeight: contentHeight)
         }
 
-        let textView = NSTextView()
+        let textView = AgentComposerNSTextView()
+        textView.onDidMoveToWindow = { [weak coordinator = context.coordinator] in
+            coordinator?.scheduleFocusIfNeeded()
+        }
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.delegate = context.coordinator
@@ -77,9 +80,8 @@ struct AgentComposerTextView: NSViewRepresentable {
         if isDisabled,
            textView.window?.firstResponder === textView {
             textView.window?.makeFirstResponder(nil)
-        } else if isFocused,
-                  textView.window?.firstResponder !== textView {
-            textView.window?.makeFirstResponder(textView)
+        } else {
+            context.coordinator.focusIfNeeded()
         }
     }
 
@@ -123,6 +125,35 @@ struct AgentComposerTextView: NSViewRepresentable {
             return true
         }
 
+        func focusIfNeeded(retryIfNeeded: Bool = true) {
+            guard parent.isFocused,
+                  !parent.isDisabled,
+                  let textView,
+                  textView.window?.firstResponder !== textView else {
+                return
+            }
+
+            guard let window = textView.window else {
+                if retryIfNeeded {
+                    scheduleFocusIfNeeded()
+                }
+                return
+            }
+
+            if !window.makeFirstResponder(textView), retryIfNeeded {
+                scheduleFocusIfNeeded()
+            }
+        }
+
+        func scheduleFocusIfNeeded() {
+            let delays: [TimeInterval] = [0, 0.05, 0.15]
+            for delay in delays {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.focusIfNeeded(retryIfNeeded: false)
+                }
+            }
+        }
+
         func updateHeight(contentHeight: CGFloat) {
             let nextHeight = min(max(contentHeight, parent.minimumHeight), parent.maximumHeight)
             let shouldScroll = contentHeight > parent.maximumHeight + 0.5
@@ -139,6 +170,15 @@ struct AgentComposerTextView: NSViewRepresentable {
                 }
             }
         }
+    }
+}
+
+private final class AgentComposerNSTextView: NSTextView {
+    var onDidMoveToWindow: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onDidMoveToWindow?()
     }
 }
 

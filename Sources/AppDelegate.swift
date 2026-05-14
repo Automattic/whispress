@@ -323,6 +323,22 @@ private extension NSRect {
     }
 }
 
+private extension NSView {
+    func firstEditableTextView() -> NSTextView? {
+        if let textView = self as? NSTextView, textView.isEditable {
+            return textView
+        }
+
+        for subview in subviews {
+            if let textView = subview.firstEditableTextView() {
+                return textView
+            }
+        }
+
+        return nil
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
@@ -732,7 +748,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         let openOverlayItem = actionItem("Quick Ask WordPress Agent", imageName: "text.bubble") { [weak self] in
-            self?.showWordPressAgentUtilityOverlay()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self?.showWordPressAgentUtilityOverlay()
+            }
         }
         openOverlayItem.isEnabled = appState.isWordPressComSignedIn
             && !appState.isRecording
@@ -1055,6 +1073,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let agentUtilityOverlayWindow, agentUtilityOverlayWindow.isVisible {
             bringWindowToFront(agentUtilityOverlayWindow)
+            focusEditableTextView(in: agentUtilityOverlayWindow)
             appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow.isKeyWindow)
             return
         }
@@ -1064,6 +1083,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             if let agentUtilityOverlayWindow {
                 bringWindowToFront(agentUtilityOverlayWindow)
+                focusEditableTextView(in: agentUtilityOverlayWindow)
             }
             appState.setWordPressAgentUtilityOverlayFocused(agentUtilityOverlayWindow?.isKeyWindow == true)
         }
@@ -1140,6 +1160,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         bringWindowToFront(window)
+        focusEditableTextView(in: window)
         appState.setWordPressAgentUtilityOverlayFocused(window.isKeyWindow)
     }
 
@@ -1176,6 +1197,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        DispatchQueue.main.async { [weak window] in
+            guard let window, window.isVisible else { return }
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func focusEditableTextView(in window: NSWindow, attempt: Int = 0) {
+        guard window.isVisible else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+
+        if let textView = window.contentView?.firstEditableTextView() {
+            window.makeFirstResponder(textView)
+            return
+        }
+
+        guard attempt < 8 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak window] in
+            guard let window else { return }
+            self.focusEditableTextView(in: window, attempt: attempt + 1)
+        }
     }
 
     private func showWordPressAgentWindow(conversationID: String? = nil) {

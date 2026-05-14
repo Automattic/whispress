@@ -87,7 +87,7 @@ struct WordPressAgentUtilityOverlayView: View {
                 }
 
                 Button {
-                    appState.toggleRecording()
+                    appState.toggleRecordingForWordPressAgentUtilityOverlay()
                 } label: {
                     Image(systemName: appState.isRecording ? "stop.circle.fill" : "mic")
                         .font(.system(size: 17, weight: .medium))
@@ -129,8 +129,11 @@ struct WordPressAgentUtilityOverlayView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .onAppear {
-            DispatchQueue.main.async {
-                isPromptFocused = true
+            requestPromptFocus()
+        }
+        .onChange(of: isComposerDisabled) { isDisabled in
+            if !isDisabled {
+                requestPromptFocus()
             }
         }
         .onExitCommand {
@@ -198,6 +201,13 @@ struct WordPressAgentUtilityOverlayView: View {
 
     private static func containsNonWhitespace(_ text: String) -> Bool {
         text.contains { !$0.isWhitespace && !$0.isNewline }
+    }
+
+    private func requestPromptFocus() {
+        isPromptFocused = true
+        DispatchQueue.main.async {
+            isPromptFocused = true
+        }
     }
 
     private func selectImages() {
