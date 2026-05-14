@@ -14,14 +14,22 @@ struct AgentComposerTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = AgentComposerScrollView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.wantsLayer = true
+        scrollView.layer?.masksToBounds = true
+        scrollView.contentView.drawsBackground = false
+        scrollView.contentView.wantsLayer = true
+        scrollView.contentView.layer?.masksToBounds = true
 
         let textView = NSTextView()
         textView.drawsBackground = false
+        textView.backgroundColor = .clear
         textView.delegate = context.coordinator
         textView.font = .systemFont(ofSize: fontSize)
         textView.textColor = .labelColor
@@ -34,12 +42,11 @@ struct AgentComposerTextView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.heightTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(
-            width: scrollView.contentSize.width,
-            height: .greatestFiniteMagnitude
-        )
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
 
         context.coordinator.textView = textView
@@ -104,6 +111,33 @@ struct AgentComposerTextView: NSViewRepresentable {
 
             parent.onSubmit()
             return true
+        }
+    }
+}
+
+private final class AgentComposerScrollView: NSScrollView {
+    override func layout() {
+        super.layout()
+
+        guard let textView = documentView as? NSTextView else { return }
+        let contentSize = contentView.bounds.size
+        let documentWidth = max(contentSize.width, 1)
+        let documentHeight = max(textView.frame.height, contentSize.height)
+        let targetSize = NSSize(width: documentWidth, height: documentHeight)
+
+        textView.minSize = NSSize(width: 0, height: contentSize.height)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.containerSize = NSSize(
+            width: documentWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+
+        if abs(textView.frame.width - targetSize.width) > 0.5
+            || textView.frame.height < targetSize.height {
+            textView.setFrameSize(targetSize)
         }
     }
 }
